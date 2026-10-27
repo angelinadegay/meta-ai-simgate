@@ -1,0 +1,33 @@
+{
+  "name": "gale",
+  "label": "Gale Crater, Mars",
+  "kind": "real",
+  "body": "mars",
+  "surface": "regolith",
+  "size_m": 40.47,
+  "meters_per_pixel": 1.0117,
+  "grid": [
+    40,
+    40
+  ],
+  "relief_m": 17.472,
+  "base_elevation_m": -2492.0,
+  "max_slope_deg": 26.1,
+  "typical_slope_deg": 21.5,
+  "mean_slope_deg": 17.3,
+  "source": "https://astrogeo-ard.s3.us-west-2.amazonaws.com/mars/mro/hirise/controlled/dtm/PSP_008437_1750_PSP_008938_1750/DTEEC_008437_1750_008938_1750_U01.tif",
+  "source_shape": [
+    12512,
+    6770
+  ],
+  "window_top_left_px": [
+    9330,
+    1340
+  ],
+  "window_origin_projected_m": [
+    8198573.25,
+    -294957.03
+  ],
+  "crs": "IAU_2015:49910",
+  "credit": "NASA/JPL/University of Arizona HiRISE; DTM via USGS on AWS Open Data (CC0 1.0)"
+}

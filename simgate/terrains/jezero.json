@@ -1,0 +1,33 @@
+{
+  "name": "jezero",
+  "label": "Jezero Crater, Mars",
+  "kind": "real",
+  "body": "mars",
+  "surface": "regolith",
+  "size_m": 39.646,
+  "meters_per_pixel": 1.0166,
+  "grid": [
+    39,
+    39
+  ],
+  "relief_m": 15.516,
+  "base_elevation_m": -2520.15,
+  "max_slope_deg": 20.7,
+  "typical_slope_deg": 18.2,
+  "mean_slope_deg": 16.0,
+  "source": "https://astrogeo-ard.s3.us-west-2.amazonaws.com/mars/mro/hirise/controlled/dtm/ESP_045994_1985_ESP_046060_1985/DTEEC_045994_1985_046060_1985_U01.tif",
+  "source_shape": [
+    14175,
+    6864
+  ],
+  "window_top_left_px": [
+    4806,
+    2394
+  ],
+  "window_origin_projected_m": [
+    4589308.47,
+    1094566.03
+  ],
+  "crs": "IAU_2015:49910",
+  "credit": "NASA/JPL/University of Arizona HiRISE; DTM via USGS on AWS Open Data (CC0 1.0)"
+}

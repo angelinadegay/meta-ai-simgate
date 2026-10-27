@@ -1,0 +1,33 @@
+{
+  "name": "ares3",
+  "label": "Acidalia Planitia (Ares 3 site), Mars",
+  "kind": "real",
+  "body": "mars",
+  "surface": "regolith",
+  "size_m": 40.251,
+  "meters_per_pixel": 1.0321,
+  "grid": [
+    39,
+    39
+  ],
+  "relief_m": 13.28,
+  "base_elevation_m": -4108.23,
+  "max_slope_deg": 24.0,
+  "typical_slope_deg": 19.3,
+  "mean_slope_deg": 14.9,
+  "source": "https://astrogeo-ard.s3.us-west-2.amazonaws.com/mars/mro/hirise/controlled/dtm/ESP_041277_2115_ESP_040776_2115/DTEEC_041277_2115_040776_2115_A01.tif",
+  "source_shape": [
+    16486,
+    8042
+  ],
+  "window_top_left_px": [
+    6678,
+    1125
+  ],
+  "window_origin_projected_m": [
+    -1699608.5,
+    1861816.7
+  ],
+  "crs": "IAU_2015:49910",
+  "credit": "NASA/JPL/University of Arizona HiRISE; DTM via USGS on AWS Open Data (CC0 1.0)"
+}
