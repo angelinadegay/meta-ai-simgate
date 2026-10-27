@@ -91,6 +91,14 @@ Evidence rules:
   to explain why, e.g. "the 0.15 m step is taller than the 0.09 m it can usually climb".
 - For buildings, explain using the period, drift and resonance numbers given."""
 
+EXPLAIN_STRESS_SYSTEM = """You are the Stress-test Explainer in a physics sandbox for non-experts.
+Explain the measured results in 3–5 short plain sentences. State how many runs passed, compare the
+baseline with the variations, and identify the clearest pattern across the runs: which changed
+condition aligns with failures and any measured threshold supported by the data. Treat association
+as an inference and say "likely"; do not claim causation or invent thresholds. Use only reported
+metrics, and finish with one concrete suggestion to type next. No markdown headings or bullet lists.
+"""
+
 
 class PlannedVariation(Variation):
     label: str = Field(min_length=1, max_length=80)
@@ -498,5 +506,65 @@ def explain(spec: SceneSpec, metrics: dict) -> str:
     return llm.chat(
         [{"role": "system", "content": EXPLAIN_SYSTEM},
          {"role": "user", "content": f"Scene: {spec.title}\nAssumptions: {spec.assumptions}\nMetrics: {json.dumps(metrics)}"}],
+        temperature=0.4,
+    ).strip()
+
+
+def _mock_explain_stress(results: list[dict]) -> str:
+    measured = [result for result in results if not result.get("error")]
+    passed = [result for result in measured if result.get("passed")]
+    failed = [result for result in measured if not result.get("passed")]
+    if not measured:
+        return "No runs produced usable measurements. Try the stress test again with a shorter simulation duration."
+
+    text = f"{len(passed)} of {len(results)} runs passed."
+    baseline = next((result for result in measured if result.get("label") == "Baseline"), None)
+    if baseline:
+        summary = baseline["summary"]
+        text += (f" Baseline measured {summary.get('forward_progress_m', 0)} m forward progress "
+                 f"and {summary.get('max_tilt_deg', 0)}° maximum tilt.")
+
+    if not failed:
+        text += " No failures were measured, so these conditions did not establish a failure threshold."
+        return text + " Try a steeper slope or a larger payload."
+
+    knobs = ("gravity", "surface", "friction", "payload_kg", "slope_deg", "obstacle_scale", "push_n", "seed")
+    counts = {
+        key: sum(key in result.get("changes", {}) for result in failed)
+        for key in knobs
+    }
+    key = max(counts, key=counts.get)
+    if not counts[key]:
+        pattern = "The failures did not share a changed condition, so no single-knob pattern is clear."
+        suggestion = "Try repeating one failed run while changing only one condition."
+    else:
+        failed_values = [result["changes"][key] for result in failed if key in result.get("changes", {})]
+        passed_values = [result["changes"][key] for result in passed if key in result.get("changes", {})]
+        numeric_failed = [value for value in failed_values if isinstance(value, (int, float))]
+        numeric_passed = [value for value in passed_values if isinstance(value, (int, float))]
+        if key == "surface":
+            pattern = f"Failures were measured on {', '.join(map(str, dict.fromkeys(failed_values)))}."
+        elif numeric_failed and numeric_passed and max(numeric_failed) < min(numeric_passed):
+            pattern = (f"Runs failed at {key} values up to {max(numeric_failed):g}, while passing "
+                       f"examples started at {min(numeric_passed):g}; that boundary likely matters.")
+        elif numeric_failed and numeric_passed and min(numeric_failed) > max(numeric_passed):
+            pattern = (f"Runs failed at {key} values from {min(numeric_failed):g}, while passing "
+                       f"examples ended at {max(numeric_passed):g}; that boundary likely matters.")
+        else:
+            pattern = f"Failures clustered in runs that changed {key} to {', '.join(map(str, dict.fromkeys(failed_values)))}."
+        sample = failed[0]
+        suggestion = f"Try repeating {sample['label']} while varying only {key} to isolate its effect."
+    text += f" {pattern} {suggestion}"
+    return text
+
+
+def explain_stress(spec: SceneSpec, results: list[dict]) -> str:
+    if config.MOCK_MODE:
+        return _mock_explain_stress(results)
+    evidence = [{key: value for key, value in result.items() if key != "ghost"} for result in results]
+    return llm.chat(
+        [{"role": "system", "content": EXPLAIN_STRESS_SYSTEM},
+         {"role": "user", "content": f"Scene: {spec.title}\nAssumptions: {spec.assumptions}\n"
+                                    f"Stress-test results: {json.dumps(evidence)}"}],
         temperature=0.4,
     ).strip()

@@ -142,6 +142,26 @@ class Session:
         await self.emit({"type": "batch_done", "total": len(results), "passed": passed,
                          "failed": len(results) - passed})
         await self.agent("Batch runner", "done", f"{len(results)}/{len(results)} done.")
+        rows = []
+        for result in results:
+            summary = result.get("summary", {})
+            metrics = {}
+            if summary.get("time_to_goal_s") is not None:
+                metrics["time_to_goal_s"] = summary["time_to_goal_s"]
+            elif summary.get("final_distance_m") is not None:
+                metrics["final_distance_m"] = summary["final_distance_m"]
+            elif summary.get("forward_progress_m") is not None:
+                metrics["forward_progress_m"] = summary["forward_progress_m"]
+            for key in ("max_tilt_deg", "slip_ratio"):
+                if summary.get(key) is not None:
+                    metrics[key] = summary[key]
+            rows.append({"id": result["id"], "label": result["label"], "passed": result["passed"],
+                         "reason": result["reason"], "metrics": metrics})
+        await self.emit({"type": "report", "rows": rows, "passed": passed, "total": len(results)})
+        await self.agent("Explainer", "working", "Finding the pattern across the stress runs…")
+        explanation = await asyncio.to_thread(agents.explain_stress, spec, results)
+        await self.agent("Explainer", "done", "Stress-test pattern summarized.")
+        await self.emit({"type": "explanation", "message": explanation})
 
     async def run(self) -> None:
         assert self.spec and self.sim and self.build

@@ -54,6 +54,12 @@
   .check small { display: block; color: var(--muted); }
   .kv { display: grid; grid-template-columns: 1fr auto; gap: 2px 10px; }
   .kv span:nth-child(odd) { color: var(--muted); }
+  #reportRows { display: flex; flex-direction: column; gap: 4px; max-height: 34vh; overflow-y: auto; }
+  .stress-row { display: grid; grid-template-columns: 12px 1fr; gap: 0 7px; width: 100%; padding: 6px 7px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel-2); color: var(--text); font: inherit; text-align: left; }
+  .stress-row .dot { grid-row: span 2; padding-top: 1px; color: var(--bad); }
+  .stress-row.pass .dot { color: var(--ok); }
+  .stress-row small { color: var(--muted); }
+  #stressExplanation { margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--line); color: var(--text); }
   #player { left: 14px; right: 14px; bottom: 14px; flex-direction: row; align-items: center; }
   #player .card { display: flex; align-items: center; gap: 12px; width: 100%; }
   #play { font: inherit; width: 34px; height: 34px; border-radius: 50%; border: 0; background: var(--accent); color: #1a1205; cursor: pointer; font-weight: 700; }
@@ -106,6 +112,7 @@
     <div class="hud" id="topright">
       <div class="card" id="checksCard" hidden><h3>Physics checks</h3><div id="checks"></div></div>
       <div class="card" id="metricsCard" hidden><h3>Results</h3><div id="badge" hidden></div><div class="kv" id="metrics"></div></div>
+      <div class="card" id="reportCard" hidden><h3>Report card</h3><div id="reportCounts"></div><div id="reportRows"></div><div id="stressExplanation"></div></div>
     </div>
     <div class="hud" id="player" hidden>
       <div class="card">
@@ -134,6 +141,8 @@ const EXAMPLES = [
   "Rover crossing craters on the Moon",
   "A 5-story building in an earthquake",
 ];
+const batchResults = new Map();
+let batchIsActive = false;
 
 // ── Chat timeline ───────────────────────────────────────────────────────
 const log = $("log");
@@ -186,10 +195,17 @@ ws.onmessage = (m) => {
       const label = ev.message.startsWith("This scene already ran") ? "Run again" : "Run";
       chips(q, ev.stress_test_available ? [label, "Stress test"] : [label], label); d.appendChild(q); break;
     }
-    case "run_start": disableRunButtons(); startRun(); break;
+    case "run_start": batchIsActive = false; $("reportCard").hidden = true; disableRunButtons(); startRun(); break;
     case "frames": for (const f of ev.frames) { frames.push(f); addTrailPoint(f); } $("scrub").max = frames.length - 1; break;
     case "metrics": renderMetrics(ev.metrics); streaming = false; break;
-    case "explanation": addMsg(ev.message); break;
+    case "batch_start":
+      batchIsActive = true; batchResults.clear(); $("reportCard").hidden = true; $("metricsCard").hidden = true; break;
+    case "batch_result": batchResults.set(ev.result.id, ev.result); break;
+    case "report": renderReport(ev); break;
+    case "explanation":
+      addMsg(ev.message);
+      if (batchIsActive) $("stressExplanation").textContent = ev.message;
+      break;
     case "error": addMsg(ev.message, "err"); break;
   }
 };
@@ -203,6 +219,26 @@ function renderChecks(checks) {
     d.innerHTML = `<span class="ic">${c.passed ? "✓" : "✕"}</span><div><span></span><small></small></div>`;
     d.querySelector("span:not(.ic)").textContent = c.name; d.querySelector("small").textContent = c.detail;
     $("checks").appendChild(d);
+  }
+  function renderReport(report) {
+    $("metricsCard").hidden = true; $("reportCard").hidden = false;
+    $("reportCounts").textContent = `${report.passed} of ${report.total} runs passed`;
+    $("reportRows").replaceChildren();
+    for (const row of report.rows) {
+      const button = document.createElement("button"); button.type = "button";
+      button.className = `stress-row ${row.passed ? "pass" : "fail"}`;
+      const dot = document.createElement("i"); dot.className = "dot"; dot.textContent = "●";
+      const label = document.createElement("strong"); label.textContent = row.label;
+      const reason = document.createElement("span"); reason.textContent = row.reason;
+      const metrics = document.createElement("small");
+      const names = { time_to_goal_s: "goal time", final_distance_m: "distance left", forward_progress_m: "progress",
+        max_tilt_deg: "max tilt", slip_ratio: "slip" };
+      metrics.textContent = Object.entries(row.metrics || {}).map(([key, value]) =>
+        `${names[key] || key}: ${key === "slip_ratio" ? `${Math.round(value * 100)}%` : `${value}${key.endsWith("_deg") ? "°" : key.endsWith("_s") ? " s" : key.endsWith("_m") ? " m" : ""}`}`).join(" · ");
+      button.append(dot, label, reason, metrics);
+      button.onclick = () => { if (typeof replayBatchRun === "function") replayBatchRun(row.id); };
+      $("reportRows").appendChild(button);
+    }
   }
 }
 const LABELS = { obstacles_cleared: "Obstacles passed", goal_reached: "Reached goal", time_to_goal_s: "Time to goal (s)", final_distance_m: "Left to goal (m)",
@@ -340,6 +376,7 @@ function geomMesh(g) {
 }
 
 function loadScene(s) {
+  batchIsActive = false; batchResults.clear(); $("reportCard").hidden = true;
   clearWorld(); current = s; frames = []; idx = 0; $("empty").hidden = true; $("player").hidden = true; $("metricsCard").hidden = true;
   terrainMesh = null; resetTrail();
   if (s.kind === "mujoco") {
