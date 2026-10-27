@@ -156,7 +156,8 @@ class Session:
                 if summary.get(key) is not None:
                     metrics[key] = summary[key]
             rows.append({"id": result["id"], "label": result["label"], "passed": result["passed"],
-                         "reason": result["reason"], "metrics": metrics})
+                         "reason": result["reason"], "metrics": metrics,
+                         "ghost_status": result.get("ghost_status")})
         await self.emit({"type": "report", "rows": rows, "passed": passed, "total": len(results)})
         await self.agent("Explainer", "working", "Finding the pattern across the stress runs…")
         explanation = await asyncio.to_thread(agents.explain_stress, spec, results)

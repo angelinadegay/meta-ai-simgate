@@ -1,8 +1,11 @@
 """Parallel execution of robot-scene variations."""
 from concurrent.futures import FIRST_COMPLETED, Future, ProcessPoolExecutor, wait
+import base64
+import json
 import os
 import time
 from typing import Callable, Literal
+import zlib
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
@@ -10,6 +13,7 @@ from .spec import Disturbance, SceneSpec
 
 RUN_TIMEOUT_SECONDS = 120.0
 MAX_BATCH_RUNS = 24
+MAX_BATCH_GHOST_BYTES = 4 * 1024 * 1024
 Surface = Literal["rock", "regolith", "gravel", "sand", "mud", "ice"]
 
 
@@ -69,6 +73,7 @@ def _validate_variation(base_spec: SceneSpec, raw: dict) -> tuple[Variation, Sce
 
 
 def _result_error(run_id: int, label: str, changes: dict, message: str) -> dict:
+    geometry_changed = any(key in changes for key in ("slope_deg", "obstacle_scale", "seed"))
     return {
         "id": f"run-{run_id}",
         "label": label,
@@ -77,7 +82,48 @@ def _result_error(run_id: int, label: str, changes: dict, message: str) -> dict:
         "passed": False,
         "reason": "error",
         "ghost": None,
+        "ghost_status": "not in ghost view" if geometry_changed else "unavailable",
         "error": message,
+    }
+
+
+def _robot_geom_ids(code: str) -> tuple[list[int], int]:
+    import mujoco
+
+    model = mujoco.MjModel.from_xml_string(code)
+    robot = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "rover")
+    if robot < 0:
+        raise ValueError("The simulation has no robot body named 'rover'.")
+    geom_ids = [
+        geom for geom in range(model.ngeom)
+        if int(model.body_rootid[int(model.geom_bodyid[geom])]) == robot
+    ]
+    chassis = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, "chassis")
+    if not geom_ids or chassis not in geom_ids:
+        raise ValueError("The simulation has no robot geoms to record.")
+    return geom_ids, geom_ids.index(chassis)
+
+
+def _stopped_time(frames: list[list], chassis_index: int, outcome: str | None) -> float | None:
+    if outcome != "stuck" or len(frames) < 2:
+        return None
+    positions = [frame[1][chassis_index][:2] for frame in frames]
+    window = 45
+    for start in range(min(8, len(frames) - 1), max(1, len(frames) - window)):
+        end = min(start + window, len(frames) - 1)
+        if end - start >= 30 and sum((a - b) ** 2 for a, b in zip(positions[end], positions[start])) ** 0.5 < 0.3:
+            return frames[start][0]
+    return max(0.0, frames[-1][0] - 3.0)
+
+
+def _encode_ghost(geom_ids: list[int], frames: list[list]) -> dict:
+    raw = json.dumps(frames, separators=(",", ":"), allow_nan=False).encode("utf-8")
+    packed = zlib.compress(raw, level=9)
+    return {
+        "encoding": "deflate-base64",
+        "geom_ids": geom_ids,
+        "frame_count": len(frames),
+        "data": base64.b64encode(packed).decode("ascii"),
     }
 
 
@@ -97,9 +143,23 @@ def _run_worker(run_id: int, label: str, base_spec_json: str, raw_variation: dic
             raise ValueError("Stress tests currently support robot scenes only.")
         sim = agents.route(spec)
         build = sim.build(spec)
-        for _ in sim.run(spec, build):
-            pass
+        ghost_allowed = not any(key in changes for key in ("slope_deg", "obstacle_scale", "seed"))
+        ghost_ids, chassis_index = _robot_geom_ids(build.code) if ghost_allowed else ([], -1)
+        ghost_frames = []
+        frame_number = 0
+        for chunk in sim.run(spec, build):
+            for frame in chunk:
+                if ghost_allowed and frame_number % 2 == 0:
+                    robot_poses = [
+                        [round(float(value), 3) for value in frame["poses"][geom_id]]
+                        for geom_id in ghost_ids
+                    ]
+                    ghost_frames.append([round(float(frame["t"]), 3), robot_poses])
+                frame_number += 1
         summary = sim.summary()
+        stopped_at = _stopped_time(ghost_frames, chassis_index, summary.get("outcome")) if ghost_allowed else None
+        if stopped_at is not None:
+            summary["stopped_making_progress_at_s"] = stopped_at
         has_goal = spec.mission is not None and spec.mission.has_goal()
         passed = bool(summary.get("goal_reached")) if has_goal else (
             not summary.get("flipped", False) and summary.get("forward_progress_m", 0) >= 1.0
@@ -117,7 +177,8 @@ def _run_worker(run_id: int, label: str, base_spec_json: str, raw_variation: dic
             "summary": summary,
             "passed": passed,
             "reason": reason,
-            "ghost": None,
+            "ghost": _encode_ghost(ghost_ids, ghost_frames) if ghost_allowed else None,
+            "ghost_status": "available" if ghost_allowed else "not in ghost view",
         }
     except Exception as exc:
         return _result_error(run_id, label, changes, f"{type(exc).__name__}: {exc}")
@@ -150,8 +211,17 @@ def run_batch(
     executor: ProcessPoolExecutor | None = None
     running: dict[Future, tuple[int, str, float]] = {}
     requested_changes: dict[int, dict] = {}
+    ghost_bytes = 0
 
     def store(result: dict) -> None:
+        nonlocal ghost_bytes
+        if result.get("ghost") is not None:
+            size = len(result["ghost"]["data"].encode("ascii")) + 256
+            if ghost_bytes + size > MAX_BATCH_GHOST_BYTES:
+                result["ghost"] = None
+                result["ghost_status"] = "not in ghost view (batch payload limit)"
+            else:
+                ghost_bytes += size
         run_id = int(result["id"].removeprefix("run-"))
         results[run_id] = result
         _notify(on_result, result)

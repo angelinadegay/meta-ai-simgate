@@ -142,6 +142,7 @@ const EXAMPLES = [
   "A 5-story building in an earthquake",
 ];
 const batchResults = new Map();
+let batchDecodeTasks = [];
 let batchIsActive = false;
 
 // ── Chat timeline ───────────────────────────────────────────────────────
@@ -199,9 +200,16 @@ ws.onmessage = (m) => {
     case "frames": for (const f of ev.frames) { frames.push(f); addTrailPoint(f); } $("scrub").max = frames.length - 1; break;
     case "metrics": renderMetrics(ev.metrics); streaming = false; break;
     case "batch_start":
-      batchIsActive = true; batchResults.clear(); $("reportCard").hidden = true; $("metricsCard").hidden = true; break;
-    case "batch_result": batchResults.set(ev.result.id, ev.result); break;
-    case "report": renderReport(ev); break;
+      batchIsActive = true; batchResults.clear(); batchDecodeTasks = []; clearGhosts();
+      frames = []; idx = 0; streaming = false; $("player").hidden = true;
+      $("reportCard").hidden = true; $("metricsCard").hidden = true;
+      if (current?.kind === "mujoco") { resetTrail(); applyFrame({ t: 0, poses: current.poses }); }
+      break;
+    case "batch_result": receiveBatchResult(ev.result); break;
+    case "report":
+      renderReport(ev);
+      Promise.all([...batchDecodeTasks]).then(() => setupGhostView(ev));
+      break;
     case "explanation":
       addMsg(ev.message);
       if (batchIsActive) $("stressExplanation").textContent = ev.message;
@@ -220,25 +228,46 @@ function renderChecks(checks) {
     d.querySelector("span:not(.ic)").textContent = c.name; d.querySelector("small").textContent = c.detail;
     $("checks").appendChild(d);
   }
-  function renderReport(report) {
-    $("metricsCard").hidden = true; $("reportCard").hidden = false;
-    $("reportCounts").textContent = `${report.passed} of ${report.total} runs passed`;
-    $("reportRows").replaceChildren();
-    for (const row of report.rows) {
-      const button = document.createElement("button"); button.type = "button";
-      button.className = `stress-row ${row.passed ? "pass" : "fail"}`;
-      const dot = document.createElement("i"); dot.className = "dot"; dot.textContent = "●";
-      const label = document.createElement("strong"); label.textContent = row.label;
-      const reason = document.createElement("span"); reason.textContent = row.reason;
-      const metrics = document.createElement("small");
-      const names = { time_to_goal_s: "goal time", final_distance_m: "distance left", forward_progress_m: "progress",
-        max_tilt_deg: "max tilt", slip_ratio: "slip" };
-      metrics.textContent = Object.entries(row.metrics || {}).map(([key, value]) =>
-        `${names[key] || key}: ${key === "slip_ratio" ? `${Math.round(value * 100)}%` : `${value}${key.endsWith("_deg") ? "°" : key.endsWith("_s") ? " s" : key.endsWith("_m") ? " m" : ""}`}`).join(" · ");
-      button.append(dot, label, reason, metrics);
-      button.onclick = () => { if (typeof replayBatchRun === "function") replayBatchRun(row.id); };
-      $("reportRows").appendChild(button);
-    }
+}
+async function decodeGhost(ghost) {
+  if (ghost.encoding !== "deflate-base64" || typeof DecompressionStream === "undefined")
+    throw new Error("This browser cannot decode the stress-test ghost tracks.");
+  const bytes = Uint8Array.from(atob(ghost.data), (char) => char.charCodeAt(0));
+  const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream("deflate"));
+  const json = await new Response(stream).text();
+  return { geomIds: ghost.geom_ids, frames: JSON.parse(json) };
+}
+function receiveBatchResult(result) {
+  const task = (async () => {
+    if (result.ghost) result.ghostTrack = await decodeGhost(result.ghost);
+    batchResults.set(result.id, result);
+    const row = document.querySelector(`[data-run-id="${CSS.escape(result.id)}"]`);
+    if (row) row.disabled = !result.ghostTrack;
+  })().catch((error) => addMsg(`Could not load ghost track: ${error.message}`, "err"));
+  batchDecodeTasks.push(task);
+}
+function renderReport(report) {
+  $("metricsCard").hidden = true; $("reportCard").hidden = false;
+  $("reportCounts").textContent = `${report.passed} of ${report.total} runs passed`;
+  $("reportRows").replaceChildren();
+  for (const row of report.rows) {
+    const button = document.createElement("button"); button.type = "button";
+    button.className = `stress-row ${row.passed ? "pass" : "fail"}`;
+    const dot = document.createElement("i"); dot.className = "dot"; dot.textContent = "●";
+    const label = document.createElement("strong"); label.textContent = row.label;
+    const reason = document.createElement("span"); reason.textContent = row.reason;
+    const metrics = document.createElement("small");
+    const names = { time_to_goal_s: "goal time", final_distance_m: "distance left", forward_progress_m: "progress",
+      max_tilt_deg: "max tilt", slip_ratio: "slip" };
+    const metricText = Object.entries(row.metrics || {}).map(([key, value]) =>
+      `${names[key] || key}: ${key === "slip_ratio" ? `${Math.round(value * 100)}%` : `${value}${key.endsWith("_deg") ? "°" : key.endsWith("_s") ? " s" : key.endsWith("_m") ? " m" : ""}`}`).join(" · ");
+    const status = row.ghost_status && row.ghost_status !== "available" ? row.ghost_status : "";
+    metrics.textContent = [metricText, status].filter(Boolean).join(" · ");
+    button.append(dot, label, reason, metrics);
+    button.dataset.runId = row.id;
+    button.disabled = !batchResults.get(row.id)?.ghostTrack;
+    button.onclick = () => replayBatchRun(row.id);
+    $("reportRows").appendChild(button);
   }
 }
 const LABELS = { obstacles_cleared: "Obstacles passed", goal_reached: "Reached goal", time_to_goal_s: "Time to goal (s)", final_distance_m: "Left to goal (m)",
@@ -301,6 +330,8 @@ addEventListener("resize", resize); resize();
 
 let current = null, frames = [], playing = true, streaming = false, idx = 0, acc = 0, followCam = true;
 const meshes = [];
+let batchPlayback = false, batchTimeline = [], batchGhostRuns = [], activeBatchRunId = null, ghostGroup = null;
+let hiddenBaseGeomIds = [];
 
 // Path trail: where the robot's body has been, drawn up to the current playback frame.
 const TRAIL_MAX = 4000;
@@ -314,6 +345,105 @@ function addTrailPoint(f) {
   const p = f.poses[current.follow_geom]; if (!p) return;
   trail.geometry.attributes.position.setXYZ(trailCount++, p[0], p[1], p[2] + 0.05);
   trail.geometry.attributes.position.needsUpdate = true;
+}
+function clearGhosts() {
+  if (ghostGroup) {
+    world.remove(ghostGroup);
+    ghostGroup.traverse((object) => {
+      if (object.isMesh) {
+        if (Array.isArray(object.material)) object.material.forEach((material) => material.dispose());
+        else object.material.dispose();
+      }
+    });
+    ghostGroup = null;
+  }
+  for (const id of hiddenBaseGeomIds) if (meshes[id]) meshes[id].visible = true;
+  hiddenBaseGeomIds = []; batchGhostRuns = []; batchTimeline = []; activeBatchRunId = null; batchPlayback = false;
+}
+
+function setupGhostView(report) {
+  clearGhosts();
+  if (!current || current.kind !== "mujoco") return;
+  const runs = report.rows.map((row) => batchResults.get(row.id)).filter((result) => result?.ghostTrack);
+  if (!runs.length) return;
+  resetTrail(); idx = 0; acc = 0;
+  applyFrame({ t: 0, poses: current.poses });
+  ghostGroup = new THREE.Group();
+  for (const result of runs) {
+    const group = new THREE.Group();
+    const meshesById = new Map();
+    for (const id of result.ghostTrack.geomIds) {
+      const base = meshes[id];
+      if (!base) continue;
+      const clone = base.clone();
+      clone.material = base.material.clone();
+      clone.material.transparent = true; clone.material.opacity = 0.35; clone.material.depthWrite = false;
+      group.add(clone); meshesById.set(id, clone);
+    }
+    ghostGroup.add(group);
+    batchGhostRuns.push({ result, meshes: meshesById, group, frames: result.ghostTrack.frames });
+  }
+  world.add(ghostGroup);
+  const baseline = batchGhostRuns.find((run) => run.result.id === "run-0");
+  if (baseline) {
+    for (const id of baseline.result.ghostTrack.geomIds) {
+      if (meshes[id]) { meshes[id].visible = false; hiddenBaseGeomIds.push(id); }
+    }
+  }
+  const frameCount = Math.max(...batchGhostRuns.map((run) => run.frames.length));
+  batchTimeline = Array.from({ length: frameCount }, (_, i) => i / 15);
+  batchPlayback = true; playing = true; streaming = false;
+  $("player").hidden = false; $("scrub").max = frameCount - 1; $("scrub").value = 0;
+  $("play").textContent = "❚❚"; $("note").textContent = `Ghost view · ${batchGhostRuns.length} runs`;
+  applyBatchFrame(0);
+}
+
+function applyBatchFrame(frameIndex) {
+  if (!batchTimeline.length) return;
+  const time = batchTimeline[frameIndex] || 0;
+  for (const run of batchGhostRuns) {
+    run.group.visible = activeBatchRunId === null || activeBatchRunId === run.result.id;
+    if (!run.frames.length) continue;
+    const frame = run.frames[Math.min(frameIndex, run.frames.length - 1)];
+    for (let i = 0; i < run.result.ghostTrack.geomIds.length; i++) {
+      const mesh = run.meshes.get(run.result.ghostTrack.geomIds[i]), pose = frame[1][i];
+      if (!mesh || !pose) continue;
+      mesh.position.set(pose[0], pose[1], pose[2]);
+      mesh.quaternion.set(pose[4], pose[5], pose[6], pose[3]);
+      const summary = run.result.summary || {};
+      let color = 0xb9c8d8, opacity = 0.35;
+      if (run.result.passed) {
+        const greenAt = summary.time_to_goal_s ?? run.frames[run.frames.length - 1][0];
+        if (time >= greenAt) color = 0x34d399;
+      } else {
+        const failureAt = summary.fall_started_at_s ?? summary.stopped_making_progress_at_s ?? run.frames[run.frames.length - 1][0];
+        if (time >= failureAt) {
+          color = 0xf87171;
+          const remaining = Math.max(0.25, run.frames[run.frames.length - 1][0] - failureAt);
+          opacity = Math.max(0.04, 0.35 * (1 - (time - failureAt) / remaining));
+        }
+      }
+      mesh.material.color.setHex(color); mesh.material.opacity = opacity;
+    }
+  }
+  const baseline = batchGhostRuns.find((run) => run.result.id === "run-0");
+  const target = baseline?.meshes.get(current.follow_geom);
+  if (target && followCam) {
+    world.updateMatrixWorld(true);
+    const before = controls.target.clone();
+    controls.target.lerp(target.getWorldPosition(new THREE.Vector3()), 0.08);
+    camera.position.add(controls.target.clone().sub(before));
+  }
+  $("time").textContent = `${time.toFixed(2)} s`; $("scrub").value = frameIndex;
+}
+
+function replayBatchRun(runId) {
+  if (!batchGhostRuns.some((run) => run.result.id === runId)) return;
+  activeBatchRunId = runId; batchPlayback = true; playing = true; idx = 0; acc = 0;
+  $("play").textContent = "❚❚";
+  const selected = batchGhostRuns.find((run) => run.result.id === runId);
+  $("note").textContent = `Replay · ${selected.result.label}`;
+  applyBatchFrame(0);
 }
 
 // Click-to-set start or goal: raycast onto the terrain, convert to simulator coordinates (z-up).
@@ -340,7 +470,7 @@ renderer.domElement.addEventListener("pointerup", (e) => {
   setPick(pickMode);   // one click, then back to orbiting
 });
 
-function clearWorld() { world.remove(trail); while (world.children.length) { const c = world.children.pop(); c.traverse?.((o) => { o.geometry?.dispose(); o.material?.dispose?.(); }); } meshes.length = 0; }
+function clearWorld() { clearGhosts(); world.remove(trail); while (world.children.length) { const c = world.children.pop(); c.traverse?.((o) => { o.geometry?.dispose(); o.material?.dispose?.(); }); } meshes.length = 0; }
 
 function heightColor(base, t) { return new THREE.Color(base[0], base[1], base[2]).multiplyScalar(0.55 + 0.65 * t); }
 
@@ -468,14 +598,30 @@ function applyFrame(f) {
   $("time").textContent = `${f.t.toFixed(2)} s`; $("scrub").value = idx;
 }
 
-function startRun() { resetTrail(); frames = []; idx = 0; acc = 0; playing = true; streaming = true; $("player").hidden = false; $("play").textContent = "❚❚"; if (frameParts) frameParts.maxDisp = 1e-6; }
-$("play").onclick = () => { playing = !playing; if (playing && idx >= frames.length - 1 && !streaming) idx = 0; $("play").textContent = playing ? "❚❚" : "▶"; };
-$("scrub").oninput = (e) => { idx = +e.target.value; playing = false; $("play").textContent = "▶"; applyFrame(frames[idx]); };
+function startRun() { clearGhosts(); resetTrail(); frames = []; idx = 0; acc = 0; playing = true; streaming = true; $("player").hidden = false; $("play").textContent = "❚❚"; if (frameParts) frameParts.maxDisp = 1e-6; }
+$("play").onclick = () => {
+  playing = !playing;
+  const end = batchPlayback ? batchTimeline.length : frames.length;
+  if (playing && idx >= end - 1 && !streaming) { idx = 0; if (batchPlayback) applyBatchFrame(0); }
+  $("play").textContent = playing ? "❚❚" : "▶";
+};
+$("scrub").oninput = (e) => {
+  idx = +e.target.value; playing = false; $("play").textContent = "▶";
+  if (batchPlayback) applyBatchFrame(idx); else applyFrame(frames[idx]);
+};
 
 const clock = new THREE.Clock();
 function tick() {
   const dt = clock.getDelta();
-  if (playing && frames.length) {
+  if (playing && batchPlayback && batchTimeline.length) {
+    acc += dt;
+    while (acc >= 1 / 15) {
+      acc -= 1 / 15;
+      if (idx < batchTimeline.length - 1) idx++;
+      else { playing = false; $("play").textContent = "▶"; break; }
+    }
+    applyBatchFrame(idx);
+  } else if (playing && frames.length) {
     acc += dt;
     while (acc >= 1 / 30) { acc -= 1 / 30; if (idx < frames.length - 1) idx++; else if (!streaming) { playing = false; $("play").textContent = "▶"; } }
     applyFrame(frames[idx]);
