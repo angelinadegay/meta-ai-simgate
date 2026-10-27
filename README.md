@@ -154,7 +154,27 @@ prompt ─► Planner ─► SceneSpec ─► Router ─► Builder ─► Check
 - Cards show the physics checks and the results, with plain-language labels.
 - **Show code** shows the simulation code the Builder wrote.
 
-### 8. Model support
+### 8. Stress test (robots)
+
+- With a robot scene open, click **Stress test** or ask *"stress test"*, *"how robust?"*,
+  *"test it under different conditions"*, or *"will it work on Mars?"*. The unchanged scene runs first
+  as **Baseline**, followed by up to 23 variations in parallel. Each run has a 120-second timeout;
+  failed or timed-out runs appear as errors instead of aborting the batch.
+- The planner can vary gravity, surface, friction, added payload, slope angle (slope terrain only),
+  obstacle scale (when obstacles exist), lateral push and terrain seed. Surface changes reset friction
+  to the surface preset. Gravity changes the gravity value directly and does not change the body/world,
+  including for real terrain. Payload mass is added to the robot's mass; a push lasts 0.3 seconds near
+  the middle of the run.
+- A run passes if it reaches its goal. Without a goal, it passes if it stays upright and makes at least
+  1 m of forward progress. The report card lists each outcome and measured progress or goal distance,
+  maximum tilt and slip, followed by a summary of the pattern across runs.
+- The ghost view overlays the baseline and same-geometry variations on one timeline; clicking an
+  available report row replays that run alone. Robot poses are recorded at 15 fps, rounded to three
+  decimals and compressed, with a 4 MiB ghost-track budget (the complete batch payload stays below
+  about 5 MB). Slope, obstacle-scale and seed variations change geometry, so they remain in the report
+  but are marked **not in ghost view**. The follow camera tracks the baseline.
+
+### 9. Model support
 
 The prototype works with any OpenAI-compatible endpoint, configured in `.env`:
 
@@ -166,9 +186,9 @@ The prototype works with any OpenAI-compatible endpoint, configured in `.env`:
 
 Without a key, it runs in mock mode.
 
-### 9. Tests
+### 10. Tests
 
-`python tests/test_pipeline.py` runs 18 offline tests:
+`python tests/test_pipeline.py` runs 20 offline tests:
 
 | Test | Checks that |
 | --- | --- |
@@ -190,6 +210,8 @@ Without a key, it runs in mock mode.
 | `course_layout` | Six obstacle kinds are placed in order, clear of start and goal; the terrain grows to fit |
 | `mock_course_parsing` | "10 small rocks, a big step, stairs and a narrow trench" parses correctly; edits add and remove obstacles |
 | `planner_routes_by_domain` | Buildings go to OpenSees, robots go to MuJoCo |
+| `batch_stress_conditions_and_ghosts` | Baseline ordering, gravity/surface changes, icy-slope failure, push effect, invalid-knob errors, ghost eligibility and payload budget |
+| `stress_trigger_requires_robot_scene` | Stress-test phrases start a batch only when a robot scene is already active |
 
 ---
 
@@ -217,6 +239,7 @@ Things to try:
 - *"A robot dog walking on real terrain: Jezero Crater, Mars"* → **Run** → *"use six legs"* → **Run**
 - *"Rover on the Moon, drive from the west to the crater floor"* → **Run**
 - *"Rover obstacle course: 10 small rocks, a step, stairs and a gap"* → **Run** → *"use six wheels"* → **Run**
+- *"How robust is this rover?"* → **Stress test** → compare the report card and ghost view
 - *"A 5-story building in an earthquake"* → **Run** → *"make it stiffer"* → **Run**
 
 ## Physics checks
@@ -240,11 +263,12 @@ Things to try:
 | `simgate/spec.py` | The shared scene spec, reference defaults and missions |
 | `simgate/presets.py` | Reference gravity and friction values |
 | `simgate/agents.py` | Planner, Router, Builder and Explainer, each with a model or mock rules |
+| `simgate/batch.py` | Parallel robot-condition runs and compressed ghost tracks |
 | `simgate/orchestrator.py` | Runs a session and streams events to the browser |
 | `simgate/backends/` | One file per simulator (`mujoco_backend.py`, `opensees_backend.py`) |
 | `simgate/terrain_data.py` | Loads real-terrain presets |
 | `scripts/` | HiRISE converter and fake test-data generator |
-| `server.py`, `static/index.html` | FastAPI WebSocket server and three.js viewer |
+| `server.py`, `static/vendor/index.html` | FastAPI WebSocket server and three.js viewer |
 | `tests/test_pipeline.py` | Offline test suite |
 
 To add a simulator: add a domain to `SceneSpec`, subclass `Simulator` in `backends/`, register it in
@@ -263,7 +287,6 @@ To add a simulator: add a domain to `SceneSpec`, subclass `Simulator` in `backen
 ## Planned next
 
 - Steering around obstacles (route planning)
-- Stress tests across many conditions at once, with a ghost view and a report card
 - Upload your own robot (MJCF, URDF) and a trained ONNX policy, wired up by inspector and adapter agents
 - A robot gallery from MuJoCo Menagerie, with mesh rendering
 - Quick-tune swarm, and voice editing if time allows
