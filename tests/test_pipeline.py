@@ -381,6 +381,34 @@ def test_stress_trigger_requires_robot_scene():
     asyncio.run(scenario())
 
 
+def test_stress_planner_falls_back_when_conditions_do_not_apply():
+    import json
+    from unittest.mock import patch
+
+    spec = SceneSpec(
+        domain="robot_terrain",
+        terrain=Terrain(kind="flat"),
+    ).fill_defaults()
+    invalid_plan = {
+        "variations": [
+            {"label": "Angle", "slope_deg": 30},
+            {"label": "Moon", "gravity": 1.62},
+            {"label": "Mars", "gravity": 3.71},
+            {"label": "Earth", "gravity": 9.81},
+            {"label": "Sand", "surface": "sand"},
+            {"label": "Ice", "surface": "ice"},
+            {"label": "Payload", "payload_kg": 5},
+            {"label": "Push", "push_n": 30},
+        ],
+    }
+    with patch.object(agents.config, "MOCK_MODE", False), \
+            patch.object(agents.llm, "chat", return_value=json.dumps(invalid_plan)) as chat:
+        variations = agents.plan_stress(spec, "stress test")
+    assert chat.call_count == 2
+    assert all(variation["label"].startswith("Fallback: ") for variation in variations)
+    assert all("slope_deg" not in variation for variation in variations)
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):

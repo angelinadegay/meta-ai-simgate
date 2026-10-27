@@ -338,28 +338,39 @@ def plan_stress(spec: SceneSpec, text: str) -> list[dict]:
     """Choose validated condition overrides for a robot-scene stress test."""
     if spec.domain != "robot_terrain" or spec.robot is None:
         raise ValueError("Stress tests currently support robot scenes only.")
+    fallback = [
+        {"label": "Moon gravity", "gravity": 1.62},
+        {"label": "Mars gravity", "gravity": 3.71},
+        {"label": "Earth gravity", "gravity": 9.81},
+        {"label": "Sand", "surface": "sand"},
+        {"label": "Ice", "surface": "ice"},
+        {"label": "+5 kg payload", "payload_kg": 5},
+        {"label": "30 N sideways push", "push_n": 30},
+    ]
+    if spec.obstacles:
+        fallback.append({"label": "Obstacles ×1.3", "obstacle_scale": 1.3})
     if config.MOCK_MODE:
-        variations = [
-            {"label": "Moon gravity", "gravity": 1.62},
-            {"label": "Mars gravity", "gravity": 3.71},
-            {"label": "Earth gravity", "gravity": 9.81},
-            {"label": "Sand", "surface": "sand"},
-            {"label": "Ice", "surface": "ice"},
-            {"label": "+5 kg payload", "payload_kg": 5},
-            {"label": "30 N sideways push", "push_n": 30},
-        ]
-        if spec.obstacles:
-            variations.append({"label": "Obstacles ×1.3", "obstacle_scale": 1.3})
-        return variations
+        return fallback
 
     messages = [
         {"role": "system", "content": STRESS_PLANNER_SYSTEM},
-        {"role": "user", "content": f"Scene:\n{spec.model_dump_json()}\n\nStress-test request: {text}"},
+        {"role": "user", "content": (
+            f"Scene:\n{spec.model_dump_json()}\n"
+            f"Applicable-condition facts: terrain.kind={spec.terrain.kind if spec.terrain else 'none'}; "
+            f"obstacles_present={bool(spec.obstacles)}.\n\nStress-test request: {text}"
+        )},
     ]
     last_error = ""
     for _ in range(2):
         if last_error:
-            messages.append({"role": "user", "content": f"That JSON was invalid: {last_error}. Return corrected JSON only."})
+            messages.append({
+                "role": "user",
+                "content": (
+                    f"The previous plan was invalid: {last_error}. "
+                    "Return corrected JSON only. Do not use slope_deg unless terrain.kind is slope; "
+                    "do not use obstacle_scale unless obstacles are present."
+                ),
+            })
         reply = llm.chat(messages)
         messages.append({"role": "assistant", "content": reply})
         try:
@@ -370,7 +381,7 @@ def plan_stress(spec: SceneSpec, text: str) -> list[dict]:
             return variations
         except (ValueError, ValidationError) as exc:
             last_error = str(exc)[:500]
-    raise RuntimeError(f"Stress planner could not produce a valid plan: {last_error}")
+    return [{**variation, "label": f"Fallback: {variation['label']}"} for variation in fallback]
 
 
 STRESS_REQUEST = re.compile(

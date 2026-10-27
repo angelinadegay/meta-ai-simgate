@@ -188,7 +188,7 @@ Without a key, it runs in mock mode.
 
 ### 10. Tests
 
-`python tests/test_pipeline.py` runs 20 offline tests:
+`python tests/test_pipeline.py` runs 21 offline tests:
 
 | Test | Checks that |
 | --- | --- |
@@ -212,6 +212,7 @@ Without a key, it runs in mock mode.
 | `planner_routes_by_domain` | Buildings go to OpenSees, robots go to MuJoCo |
 | `batch_stress_conditions_and_ghosts` | Baseline ordering, gravity/surface changes, icy-slope failure, push effect, invalid-knob errors, ghost eligibility and payload budget |
 | `stress_trigger_requires_robot_scene` | Stress-test phrases start a batch only when a robot scene is already active |
+| `stress_planner_falls_back_when_conditions_do_not_apply` | A repeated model suggestion for an inapplicable slope variation falls back to compatible conditions |
 
 ---
 

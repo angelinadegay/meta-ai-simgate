@@ -109,12 +109,17 @@ class Session:
         spec = self.spec.model_copy(deep=True)
         await self.agent("Stress planner", "working", "Choosing conditions for this robot scene…")
         variations = await asyncio.to_thread(agents.plan_stress, spec, text)
+        used_fallback = bool(variations) and all(
+            variation.get("label", "").startswith("Fallback: ") for variation in variations
+        )
         labels = ["Baseline"] + [
             f"{variation.get('label', 'Variation')}: "
             + ", ".join(f"{key}={value}" for key, value in variation.items() if key != "label")
             for variation in variations
         ]
-        await self.agent("Stress planner", "done", "Planned " + "; ".join(labels) + ".")
+        notice = ("The model suggested conditions that don't fit this scene; using compatible defaults. "
+                  if used_fallback else "")
+        await self.agent("Stress planner", "done", notice + "Planned " + "; ".join(labels) + ".")
 
         total = min(len(variations) + 1, 24)
         await self.emit({"type": "batch_start", "total": total})
