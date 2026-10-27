@@ -1,0 +1,451 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SimGate</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #0d1015; --panel: #151a21; --panel-2: #1b212a; --line: #262e39;
+    --text: #e6e9ee; --muted: #8b95a3; --accent: #f59e0b; --ok: #34d399; --warn: #fbbf24; --bad: #f87171;
+    --planner: #a78bfa; --router: #60a5fa; --builder: #f59e0b; --checker: #34d399; --simulator: #f472b6; --explainer: #22d3ee;
+  }
+  * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text); font: 14px/1.5 Inter, system-ui, sans-serif; }
+  .app { display: grid; grid-template-columns: minmax(340px, 420px) 1fr; height: 100vh; }
+  aside { display: flex; flex-direction: column; border-right: 1px solid var(--line); background: var(--panel); min-height: 0; }
+  header { padding: 16px 18px 12px; border-bottom: 1px solid var(--line); }
+  header h1 { margin: 0; font-size: 17px; letter-spacing: .2px; }
+  header h1 span { color: var(--accent); }
+  header p { margin: 2px 0 0; color: var(--muted); font-size: 12.5px; }
+  .mode { display: inline-block; margin-top: 8px; font-size: 11px; padding: 2px 8px; border-radius: 99px; background: var(--panel-2); color: var(--muted); border: 1px solid var(--line); }
+  #log { flex: 1; overflow-y: auto; padding: 14px 16px; display: flex; flex-direction: column; gap: 8px; }
+  .msg { padding: 10px 12px; border-radius: 10px; max-width: 95%; white-space: pre-wrap; }
+  .msg.user { align-self: flex-end; background: #2a3342; }
+  .msg.bot { background: var(--panel-2); border: 1px solid var(--line); }
+  .msg.err { background: #2a1517; border: 1px solid #5b2327; color: #fecaca; }
+  .agent { display: grid; grid-template-columns: 82px 1fr; gap: 8px; font-size: 12.5px; color: var(--muted); align-items: start; }
+  .agent b { font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: .5px; padding-top: 1px; }
+  .agent .dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-right: 6px; background: currentColor; }
+  .agent.working .dot { animation: pulse 1s infinite; }
+  .agent.warning span { color: var(--warn); }
+  @keyframes pulse { 50% { opacity: .25; } }
+  .quick { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
+  .chip { font: inherit; font-size: 12px; padding: 5px 10px; border-radius: 99px; border: 1px solid var(--line); background: transparent; color: var(--text); cursor: pointer; }
+  .chip:hover { border-color: var(--accent); }
+  .chip.primary { background: var(--accent); color: #1a1205; border-color: var(--accent); font-weight: 600; }
+  form { padding: 12px 14px; border-top: 1px solid var(--line); display: flex; gap: 8px; }
+  form input { flex: 1; font: inherit; padding: 10px 12px; border-radius: 9px; border: 1px solid var(--line); background: var(--bg); color: var(--text); outline: none; }
+  form input:focus { border-color: var(--accent); }
+  form button { font: inherit; font-weight: 600; padding: 0 14px; border-radius: 9px; border: 0; background: var(--accent); color: #1a1205; cursor: pointer; }
+  main { position: relative; min-width: 0; }
+  #view { position: absolute; inset: 0; }
+  .empty { position: absolute; inset: 0; display: grid; place-items: center; color: var(--muted); text-align: center; pointer-events: none; }
+  .hud { position: absolute; display: flex; flex-direction: column; gap: 10px; }
+  .card { background: rgba(21,26,33,.88); backdrop-filter: blur(6px); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; font-size: 12.5px; }
+  .card h3 { margin: 0 0 6px; font-size: 11px; text-transform: uppercase; letter-spacing: .6px; color: var(--muted); }
+  #topright { top: 14px; right: 14px; width: 280px; }
+  .check { display: flex; gap: 8px; margin: 3px 0; }
+  .check .ic { width: 14px; flex: none; }
+  .check.pass .ic { color: var(--ok); } .check.fail .ic { color: var(--bad); }
+  .check small { display: block; color: var(--muted); }
+  .kv { display: grid; grid-template-columns: 1fr auto; gap: 2px 10px; }
+  .kv span:nth-child(odd) { color: var(--muted); }
+  #player { left: 14px; right: 14px; bottom: 14px; flex-direction: row; align-items: center; }
+  #player .card { display: flex; align-items: center; gap: 12px; width: 100%; }
+  #play { font: inherit; width: 34px; height: 34px; border-radius: 50%; border: 0; background: var(--accent); color: #1a1205; cursor: pointer; font-weight: 700; }
+  #scrub { flex: 1; accent-color: var(--accent); }
+  #time { font-family: 'JetBrains Mono', monospace; color: var(--muted); min-width: 92px; text-align: right; }
+  #note { color: var(--muted); font-size: 11.5px; }
+  #tools { position: absolute; top: 14px; left: 14px; display: flex; gap: 6px; }
+  #tools .chip { background: rgba(21,26,33,.88); }
+  #tools .chip.on { border-color: var(--accent); color: var(--accent); }
+  #pickHint { position: absolute; top: 52px; left: 14px; font-size: 12px; color: var(--accent); }
+  .badge { margin: -2px 0 8px; padding: 6px 9px; border-radius: 7px; font-weight: 600; font-size: 12.5px; }
+  .badge.ok { background: rgba(52,211,153,.15); color: var(--ok); } .badge.miss { background: rgba(248,113,113,.15); color: var(--bad); }
+  #code { position: absolute; top: 56px; left: 14px; bottom: 80px; width: min(560px, 55%); display: none; overflow: auto; margin: 0; padding: 12px; font: 11.5px/1.45 'JetBrains Mono', monospace; color: #c9d1d9; }
+  @media (max-width: 860px) {
+    .app { grid-template-columns: 1fr; grid-template-rows: 55vh 45vh; } aside { order: 2; }
+    #topright { width: 190px; max-height: calc(100% - 100px); overflow-y: auto; top: 8px; right: 8px; }
+    .card { font-size: 11px; padding: 8px 10px; } .check small { display: none; }
+    #player { left: 8px; right: 8px; bottom: 8px; } #note { display: none; } #code { width: calc(100% - 28px); }
+  }
+</style>
+<script type="importmap">
+{ "imports": { "three": "/static/vendor/three.module.js" } }
+</script>
+</head>
+<body>
+<div class="app">
+  <aside>
+    <header>
+      <h1>Sim<span>Gate</span></h1>
+      <p>Describe a physical scenario. Agents pick the simulator, build it, check it and run it.</p>
+      <span class="mode" id="mode">connecting…</span>
+    </header>
+    <div id="log">
+      <div class="msg bot">Hi! Describe a world to simulate, or try one of these:
+        <div class="quick" id="examples"></div>
+      </div>
+    </div>
+    <form id="form"><input id="input" autocomplete="off" placeholder="e.g. Can a small rover climb a rocky hill on Mars?"><button>Send</button></form>
+  </aside>
+  <main>
+    <div id="view"></div>
+    <div class="empty" id="empty">The scene appears here as the agents build it.</div>
+    <div id="tools">
+      <button class="chip" id="codeBtn" hidden>Show code</button>
+      <button class="chip" id="startBtn" hidden title="Then click the terrain">Set start</button>
+      <button class="chip" id="goalBtn" hidden title="Then click the terrain">Set goal</button>
+    </div>
+    <div id="pickHint" hidden></div>
+    <pre class="card" id="code"></pre>
+    <div class="hud" id="topright">
+      <div class="card" id="checksCard" hidden><h3>Physics checks</h3><div id="checks"></div></div>
+      <div class="card" id="metricsCard" hidden><h3>Results</h3><div id="badge" hidden></div><div class="kv" id="metrics"></div></div>
+    </div>
+    <div class="hud" id="player" hidden>
+      <div class="card">
+        <button id="play" title="Play/pause">❚❚</button>
+        <input id="scrub" type="range" min="0" max="0" value="0">
+        <span id="note"></span>
+        <span id="time">0.00 s</span>
+      </div>
+    </div>
+  </main>
+</div>
+
+<script type="module">
+import * as THREE from "three";
+import { OrbitControls } from "/static/vendor/OrbitControls.js";
+
+const $ = (id) => document.getElementById(id);
+const AGENT_COLORS = { Planner: "--planner", Router: "--router", Builder: "--builder", Checker: "--checker", Simulator: "--simulator", Explainer: "--explainer", "Stress planner": "--planner", "Batch runner": "--simulator" };
+const EXAMPLES = [
+  "Can a small rover climb a rocky hill on Mars?",
+  "Rover obstacle course: 10 small rocks, a step, stairs and a gap",
+  "A six-wheel rover on Mars hills with scattered boulders",
+  "A robot dog walking across Mars hills",
+  "A six-legged spider robot crossing Moon craters",
+  "A rover on a 25 degree icy slope on Earth",
+  "Rover crossing craters on the Moon",
+  "A 5-story building in an earthquake",
+];
+
+// ── Chat timeline ───────────────────────────────────────────────────────
+const log = $("log");
+function scroll() { log.scrollTop = log.scrollHeight; }
+function addMsg(text, cls = "bot") { const d = document.createElement("div"); d.className = `msg ${cls}`; d.textContent = text; log.appendChild(d); scroll(); return d; }
+let lastAgentRow = {};
+function addAgent(ev) {
+  const row = document.createElement("div");
+  row.className = `agent ${ev.status}`;
+  row.style.color = `var(${AGENT_COLORS[ev.agent] || "--muted"})`;
+  row.innerHTML = `<b><i class="dot"></i>${ev.agent}</b><span></span>`;
+  row.querySelector("span").textContent = ev.message;
+  row.querySelector("span").style.color = ev.status === "warning" ? "var(--warn)" : "var(--muted)";
+  // Replace a "working" row with its result to keep the log tidy.
+  const prev = lastAgentRow[ev.agent];
+  if (prev && prev.classList.contains("working") && prev === log.lastElementChild) prev.replaceWith(row); else log.appendChild(row);
+  lastAgentRow[ev.agent] = row; scroll();
+}
+// One click = one run: every Run button goes inactive once a run is requested or starts.
+function disableRunButtons() { document.querySelectorAll(".chip.run").forEach((b) => { b.disabled = true; }); }
+function chips(container, items, primary) {
+  for (const t of items) {
+    const b = document.createElement("button"); b.type = "button"; b.className = "chip" + (t === primary ? " primary" : ""); b.textContent = t;
+    if (t === primary) b.classList.add("run");
+    b.onclick = () => { if (b.classList.contains("run")) disableRunButtons(); send(t); };
+    container.appendChild(b);
+  }
+}
+chips($("examples"), EXAMPLES);
+
+// ── Socket ──────────────────────────────────────────────────────────────
+const ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws`);
+function send(text) { addMsg(text, "user"); ws.send(JSON.stringify({ text })); }
+$("form").onsubmit = (e) => { e.preventDefault(); const t = $("input").value.trim(); if (t) { send(t); $("input").value = ""; } };
+
+ws.onmessage = (m) => {
+  const ev = JSON.parse(m.data);
+  switch (ev.type) {
+    case "hello":
+      $("mode").textContent = ev.mock_mode ? "Mock mode · no model configured" : `Model · ${ev.model}`;
+      // Installed real-terrain presets become one-tap examples.
+      chips($("examples"), (ev.terrains || []).map((t) => `A robot dog walking on real terrain: ${t.label}`));
+      break;
+    case "agent": addAgent(ev); break;
+    case "scene": loadScene(ev.scene); $("code").textContent = ev.code; $("codeBtn").hidden = false;
+      $("startBtn").hidden = $("goalBtn").hidden = ev.scene.kind !== "mujoco"; break;
+    case "checks": renderChecks(ev.checks); break;
+    case "question": {
+      const d = addMsg(ev.message); const q = document.createElement("div"); q.className = "quick";
+      const label = ev.message.startsWith("This scene already ran") ? "Run again" : "Run";
+      chips(q, ev.stress_test_available ? [label, "Stress test"] : [label], label); d.appendChild(q); break;
+    }
+    case "run_start": disableRunButtons(); startRun(); break;
+    case "frames": for (const f of ev.frames) { frames.push(f); addTrailPoint(f); } $("scrub").max = frames.length - 1; break;
+    case "metrics": renderMetrics(ev.metrics); streaming = false; break;
+    case "explanation": addMsg(ev.message); break;
+    case "error": addMsg(ev.message, "err"); break;
+  }
+};
+ws.onclose = () => { $("mode").textContent = "Disconnected · reload the page"; };
+
+function renderChecks(checks) {
+  $("checksCard").hidden = false;
+  $("checks").innerHTML = "";
+  for (const c of checks) {
+    const d = document.createElement("div"); d.className = `check ${c.passed ? "pass" : "fail"}`;
+    d.innerHTML = `<span class="ic">${c.passed ? "✓" : "✕"}</span><div><span></span><small></small></div>`;
+    d.querySelector("span:not(.ic)").textContent = c.name; d.querySelector("small").textContent = c.detail;
+    $("checks").appendChild(d);
+  }
+}
+const LABELS = { obstacles_cleared: "Obstacles passed", goal_reached: "Reached goal", time_to_goal_s: "Time to goal (s)", final_distance_m: "Left to goal (m)",
+  closest_distance_m: "Closest to goal (m)", path_length_m: "Path travelled (m)", path_efficiency: "Path efficiency", distance_m: "Distance (m)", forward_progress_m: "Forward progress (m)", climbed_m: "Climbed (m)", max_tilt_deg: "Max tilt (°)", flipped: "Tipped over", gravity: "Gravity (m/s²)", friction: "Friction",
+  period_s: "Period (s)", code_period_estimate_s: "Code estimate (s)", building_freq_hz: "Building freq (Hz)", shaking_freq_hz: "Shaking freq (Hz)", pga_g: "Peak ground accel (g)",
+  max_roof_displacement_cm: "Max roof sway (cm)", max_story_drift_pct: "Max story drift (%)", damage_estimate: "Damage estimate",
+  fall_direction: "Fell toward", local_slope_deg: "Slope there (°)", slope_along_heading_deg: "Slope ahead (°, + uphill)",
+  cross_slope_deg: "Sideways slope (°)", max_slope_on_path_deg: "Steepest slope crossed (°)",
+  slip_ratio: "Foot/wheel slip", slip_ratio_last_1s_before_fall: "Slip in last 1 s before fall", left_terrain: "Went off the terrain edge" };
+const PERCENT = new Set(["slip_ratio", "slip_ratio_last_1s_before_fall", "path_efficiency"]);
+const OUTCOME = { fell: "it fell", stuck: "stuck", out_of_time: "out of time", left_terrain: "went off the edge" };
+function renderMetrics(m) {
+  $("metricsCard").hidden = false; $("metrics").innerHTML = "";
+  const badge = $("badge"); badge.hidden = !("goal_reached" in m);
+  if ("goal_reached" in m) {
+    badge.className = `badge ${m.goal_reached ? "ok" : "miss"}`;
+    badge.textContent = m.goal_reached ? `Goal reached in ${m.time_to_goal_s} s` : `Missed by ${m.final_distance_m} m · ${OUTCOME[m.outcome] || m.outcome}`;
+    trail.material.color.set(m.goal_reached ? 0x34d399 : 0xf87171);
+    if (m.stopped_by) badge.textContent += ` at the ${m.stopped_by.kind}`;
+  }
+  // Highlight the obstacle that stopped the robot, and dim the ones it got past.
+  if (current?.course) for (const ob of m.obstacles || []) {
+    for (const g of current.geoms) if (g.name && g.name.startsWith(ob.name + "_")) {
+      const mesh = meshes[g.id]; if (!mesh) continue;
+      if (m.stopped_by && m.stopped_by.name === ob.name) { mesh.material.emissive = new THREE.Color(0xf87171); mesh.material.emissiveIntensity = 0.6; }
+    }
+  }
+  for (const [k, label] of Object.entries(LABELS)) if (k in m && m[k] !== null && m[k] !== undefined && !(k === "left_terrain" && !m[k]) && !(k === "forward_progress_m" && "goal_reached" in m)) {
+    const a = document.createElement("span");
+    a.textContent = k === "local_slope_deg" ? (m.flipped ? "Slope where it fell (°)" : "Slope at the end (°)") : label;
+    const b = document.createElement("span");
+    b.textContent = typeof m[k] === "boolean" ? (m[k] ? "yes" : "no") : PERCENT.has(k) ? `${Math.round(m[k] * 100)}%`
+      : k === "obstacles_cleared" ? `${m[k]} of ${m.obstacles_total}` : m[k];
+    $("metrics").append(a, b);
+  }
+}
+$("codeBtn").onclick = () => { const c = $("code"); const show = c.style.display !== "block"; c.style.display = show ? "block" : "none"; $("codeBtn").textContent = show ? "Hide code" : "Show code"; };
+
+// ── 3D view ─────────────────────────────────────────────────────────────
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.shadowMap.enabled = true;
+$("view").appendChild(renderer.domElement);
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x0d1015);
+scene.fog = new THREE.Fog(0x0d1015, 30, 80);
+const camera = new THREE.PerspectiveCamera(50, 1, 0.05, 500);
+camera.position.set(-14, 8, 10);
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+scene.add(new THREE.HemisphereLight(0xdfe7ff, 0x2a2018, 0.9));
+const sun = new THREE.DirectionalLight(0xffffff, 1.6); sun.position.set(-10, 20, 8); sun.castShadow = true;
+sun.shadow.mapSize.set(2048, 2048); Object.assign(sun.shadow.camera, { left: -15, right: 15, top: 15, bottom: -15 });
+scene.add(sun);
+// Simulators use z-up; three.js is y-up. One rotated group converts all coordinates.
+const world = new THREE.Group(); world.rotation.x = -Math.PI / 2; scene.add(world);
+
+function resize() { const r = $("view").getBoundingClientRect(); renderer.setSize(r.width, r.height); camera.aspect = r.width / r.height; camera.updateProjectionMatrix(); }
+addEventListener("resize", resize); resize();
+
+let current = null, frames = [], playing = true, streaming = false, idx = 0, acc = 0, followCam = true;
+const meshes = [];
+
+// Path trail: where the robot's body has been, drawn up to the current playback frame.
+const TRAIL_MAX = 4000;
+const trail = new THREE.Line(new THREE.BufferGeometry(), new THREE.LineBasicMaterial({ color: 0x22d3ee }));
+trail.geometry.setAttribute("position", new THREE.BufferAttribute(new Float32Array(TRAIL_MAX * 3), 3));
+trail.frustumCulled = false;
+let trailCount = 0;
+function resetTrail() { trailCount = 0; trail.geometry.setDrawRange(0, 0); trail.material.color.set(0x22d3ee); }
+function addTrailPoint(f) {
+  if (!current || current.kind !== "mujoco" || trailCount >= TRAIL_MAX) return;
+  const p = f.poses[current.follow_geom]; if (!p) return;
+  trail.geometry.attributes.position.setXYZ(trailCount++, p[0], p[1], p[2] + 0.05);
+  trail.geometry.attributes.position.needsUpdate = true;
+}
+
+// Click-to-set start or goal: raycast onto the terrain, convert to simulator coordinates (z-up).
+let terrainMesh = null, pickMode = null;
+function setPick(mode) {
+  pickMode = pickMode === mode ? null : mode;
+  $("startBtn").classList.toggle("on", pickMode === "start"); $("goalBtn").classList.toggle("on", pickMode === "goal");
+  $("pickHint").hidden = !pickMode; $("pickHint").textContent = pickMode ? `Click the terrain to place the ${pickMode}` : "";
+}
+$("startBtn").onclick = () => setPick("start");
+$("goalBtn").onclick = () => setPick("goal");
+let downAt = null;
+renderer.domElement.addEventListener("pointerdown", (e) => { downAt = [e.clientX, e.clientY]; });
+renderer.domElement.addEventListener("pointerup", (e) => {
+  if (!pickMode || !terrainMesh || !downAt || Math.hypot(e.clientX - downAt[0], e.clientY - downAt[1]) > 5) return;  // a drag rotates the view
+  const r = renderer.domElement.getBoundingClientRect();
+  const ray = new THREE.Raycaster();
+  ray.setFromCamera(new THREE.Vector2(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1), camera);
+  const hit = ray.intersectObject(terrainMesh)[0]; if (!hit) return;
+  const p = world.worldToLocal(hit.point.clone());
+  const x = Math.round(p.x * 10) / 10, y = Math.round(p.y * 10) / 10;
+  addMsg(`Set ${pickMode} at (${x}, ${y})`, "user");
+  ws.send(JSON.stringify({ type: `set_${pickMode}`, x, y }));
+  setPick(pickMode);   // one click, then back to orbiting
+});
+
+function clearWorld() { world.remove(trail); while (world.children.length) { const c = world.children.pop(); c.traverse?.((o) => { o.geometry?.dispose(); o.material?.dispose?.(); }); } meshes.length = 0; }
+
+function heightColor(base, t) { return new THREE.Color(base[0], base[1], base[2]).multiplyScalar(0.55 + 0.65 * t); }
+
+function hfieldMesh(h, base) {
+  const [sx, sy, sz] = h.size; const { nrow, ncol, data } = h;
+  const geo = new THREE.BufferGeometry(); const pos = [], col = [], index = [];
+  for (let r = 0; r < nrow; r++) for (let c = 0; c < ncol; c++) {
+    const v = data[r * ncol + c];
+    pos.push(-sx + 2 * sx * c / (ncol - 1), -sy + 2 * sy * r / (nrow - 1), v * sz);
+    const k = heightColor(base, v); col.push(k.r, k.g, k.b);
+  }
+  for (let r = 0; r < nrow - 1; r++) for (let c = 0; c < ncol - 1; c++) {
+    const a = r * ncol + c, b = a + 1, d = a + ncol, e = d + 1; index.push(a, b, e, a, e, d);
+  }
+  geo.setIndex(index); geo.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3)); geo.setAttribute("color", new THREE.Float32BufferAttribute(col, 3));
+  geo.computeVertexNormals();
+  const m = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.95, flatShading: true }));
+  m.receiveShadow = true; return m;
+}
+
+function geomMesh(g) {
+  const [a, b, c] = g.size; let geo;
+  switch (g.type) {
+    case "box": geo = new THREE.BoxGeometry(2 * a, 2 * b, 2 * c); break;
+    case "sphere": geo = new THREE.SphereGeometry(a, 24, 16); break;
+    case "cylinder": geo = new THREE.CylinderGeometry(a, a, 2 * b, 28); geo.rotateX(Math.PI / 2); break;
+    case "capsule": geo = new THREE.CapsuleGeometry(a, 2 * b, 8, 16); geo.rotateX(Math.PI / 2); break;
+    default: return null;
+  }
+  const [r, gg, bb, al] = g.rgba;
+  const m = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ color: new THREE.Color(r, gg, bb), transparent: al < 1, opacity: al, roughness: 0.6, metalness: 0.1 }));
+  m.castShadow = true; return m;
+}
+
+function loadScene(s) {
+  clearWorld(); current = s; frames = []; idx = 0; $("empty").hidden = true; $("player").hidden = true; $("metricsCard").hidden = true;
+  terrainMesh = null; resetTrail();
+  if (s.kind === "mujoco") {
+    for (const g of s.geoms) {
+      const m = g.type === "hfield" ? hfieldMesh(g.hfield, g.rgba) : geomMesh(g);
+      if (g.type === "hfield") terrainMesh = m;
+      meshes[g.id] = m; if (m) world.add(m);
+    }
+    world.add(trail);
+    applyFrame({ t: 0, poses: s.poses });
+    const target = meshes[s.follow_geom];
+    const start = target ? target.getWorldPosition(new THREE.Vector3()) : new THREE.Vector3();
+    controls.target.copy(start); camera.position.set(start.x - 3.2, start.y + 2.2, start.z + 2.6);
+  } else if (s.kind === "frame") {
+    buildFrame(s);
+  }
+}
+
+// Building: two parallel frames with floor slabs, members colored by drift.
+const DEPTH = 4;
+let frameParts = null;
+function buildFrame(s) {
+  const nodes = Object.fromEntries(Object.entries(s.nodes).map(([k, v]) => [k, v]));
+  const xs = Object.values(nodes).map((v) => v[0]); const ys = Object.values(nodes).map((v) => v[1]);
+  const W = Math.max(...xs), H = Math.max(...ys);
+  const ground = new THREE.Mesh(new THREE.BoxGeometry(W + 12, DEPTH + 10, 0.3), new THREE.MeshStandardMaterial({ color: 0x3a3127, roughness: 1 }));
+  ground.position.set(W / 2, DEPTH / 2, -0.15); ground.receiveShadow = true; world.add(ground);
+  const mat = () => new THREE.MeshStandardMaterial({ color: 0x9aa4b2, roughness: 0.5, metalness: 0.4 });
+  const members = [];
+  for (const yOff of [0, DEPTH]) for (const [i, j, kind] of s.members) {
+    const m = new THREE.Mesh(new THREE.CylinderGeometry(kind === "column" ? 0.12 : 0.1, kind === "column" ? 0.12 : 0.1, 1, 12), mat());
+    m.castShadow = true; world.add(m); members.push({ m, i: String(i), j: String(j), kind, yOff });
+  }
+  const slabs = [];
+  for (const [i, j, kind] of s.members) if (kind === "beam") {
+    const sl = new THREE.Mesh(new THREE.BoxGeometry(1, DEPTH, 0.15), new THREE.MeshStandardMaterial({ color: 0x6b7686, roughness: 0.8, transparent: true, opacity: 0.85 }));
+    sl.castShadow = true; world.add(sl); slabs.push({ m: sl, i: String(i), j: String(j) });
+  }
+  frameParts = { nodes, members, slabs, W, H, maxDisp: 1e-6 };
+  camera.position.set(W / 2 - H * 1.2, H * 0.8, H * 1.6 + 6); controls.target.set(W / 2, H / 2, -DEPTH / 2);
+  placeFrame({});
+}
+const UP = new THREE.Vector3(0, 1, 0);
+function placeMember(mesh, a, b) {
+  const va = new THREE.Vector3(...a), vb = new THREE.Vector3(...b); const d = vb.clone().sub(va);
+  mesh.position.copy(va).add(vb).multiplyScalar(0.5); mesh.scale.set(1, d.length(), 1);
+  mesh.quaternion.setFromUnitVectors(UP, d.normalize());
+}
+function driftColor(pct) { const t = Math.min(pct / 2.5, 1); return new THREE.Color().setHSL(0.33 * (1 - t), 0.75, 0.5); }
+function placeFrame(disp, ground = 0) {
+  const P = frameParts; if (!P) return;
+  for (const v of Object.values(disp)) P.maxDisp = Math.max(P.maxDisp, Math.abs(v[0]));
+  const scale = Math.min(Math.max((0.06 * P.H) / P.maxDisp, 1), 200);
+  const pos = (k) => { const [x, z] = P.nodes[k]; const d = disp[k] || [0, 0]; return [x + d[0] * scale, z + d[1] * scale]; };
+  for (const { m, i, j, kind, yOff } of P.members) {
+    const [xa, za] = pos(i), [xb, zb] = pos(j);
+    placeMember(m, [xa, yOff, za], [xb, yOff, zb]);
+    if (kind === "column") {
+      const dz = Math.abs(P.nodes[j][1] - P.nodes[i][1]) || 1;
+      const drift = Math.abs(((disp[j]?.[0] || 0) - (disp[i]?.[0] || 0)) / dz) * 100;
+      m.material.color.copy(driftColor(drift));
+    }
+  }
+  for (const { m, i, j } of P.slabs) {
+    const [xa, za] = pos(i), [xb, zb] = pos(j);
+    m.position.set((xa + xb) / 2, DEPTH / 2, (za + zb) / 2); m.scale.set(Math.abs(xb - xa), 1, 1);
+  }
+  $("note").textContent = scale > 1.5 ? `Sway exaggerated ×${scale.toFixed(0)} · color = story drift` : "color = story drift";
+}
+
+function applyFrame(f) {
+  if (!current || !f) return;
+  if (current.kind === "mujoco") {
+    current.geoms.forEach((g, k) => {
+      const m = meshes[g.id]; if (!m || g.type === "hfield") return;
+      const p = f.poses[k]; m.position.set(p[0], p[1], p[2]); m.quaternion.set(p[4], p[5], p[6], p[3]);
+    });
+    trail.geometry.setDrawRange(0, Math.min(idx + 1, trailCount));
+    // Follow cam: move the camera with the robot so it stays the same size on screen.
+    const target = meshes[current.follow_geom];
+    if (target && followCam) {
+      const before = controls.target.clone();
+      controls.target.lerp(target.getWorldPosition(new THREE.Vector3()), 0.08);
+      camera.position.add(controls.target.clone().sub(before));
+    }
+  } else if (current.kind === "frame") {
+    placeFrame(f.disp, f.ground);
+  }
+  $("time").textContent = `${f.t.toFixed(2)} s`; $("scrub").value = idx;
+}
+
+function startRun() { resetTrail(); frames = []; idx = 0; acc = 0; playing = true; streaming = true; $("player").hidden = false; $("play").textContent = "❚❚"; if (frameParts) frameParts.maxDisp = 1e-6; }
+$("play").onclick = () => { playing = !playing; if (playing && idx >= frames.length - 1 && !streaming) idx = 0; $("play").textContent = playing ? "❚❚" : "▶"; };
+$("scrub").oninput = (e) => { idx = +e.target.value; playing = false; $("play").textContent = "▶"; applyFrame(frames[idx]); };
+
+const clock = new THREE.Clock();
+function tick() {
+  const dt = clock.getDelta();
+  if (playing && frames.length) {
+    acc += dt;
+    while (acc >= 1 / 30) { acc -= 1 / 30; if (idx < frames.length - 1) idx++; else if (!streaming) { playing = false; $("play").textContent = "▶"; } }
+    applyFrame(frames[idx]);
+  }
+  controls.update(); renderer.render(scene, camera); requestAnimationFrame(tick);
+}
+tick();
+</script>
+</body>
+</html>

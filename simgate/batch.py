@@ -2,15 +2,15 @@
 from concurrent.futures import FIRST_COMPLETED, Future, ProcessPoolExecutor, wait
 import os
 import time
-from typing import Callable
+from typing import Callable, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-from . import agents
-from .spec import SceneSpec
+from .spec import Disturbance, SceneSpec
 
 RUN_TIMEOUT_SECONDS = 120.0
 MAX_BATCH_RUNS = 24
+Surface = Literal["rock", "regolith", "gravel", "sand", "mud", "ice"]
 
 
 class Variation(BaseModel):
@@ -18,12 +18,13 @@ class Variation(BaseModel):
 
     label: str | None = Field(default=None, min_length=1, max_length=80)
     gravity: float | None = Field(default=None, gt=0, le=30)
-    surface: str | None = Field(default=None, pattern="^(rock|regolith|gravel|sand|mud|ice)$")
+    surface: Surface | None = None
     friction: float | None = Field(default=None, ge=0, le=2)
     payload_kg: float | None = Field(default=None, ge=0, le=1000)
     slope_deg: float | None = Field(default=None, ge=-89, le=89)
     obstacle_scale: float | None = Field(default=None, gt=0, le=10)
-    seed: int | None = None
+    push_n: float | None = Field(default=None, gt=0, le=1000)
+    seed: int | None = Field(default=None, ge=0)
 
 
 def _validate_variation(base_spec: SceneSpec, raw: dict) -> tuple[Variation, SceneSpec, dict]:
@@ -59,6 +60,8 @@ def _validate_variation(base_spec: SceneSpec, raw: dict) -> tuple[Variation, Sce
         if spec.terrain is None:
             raise ValueError("seed requires terrain.")
         spec.terrain.seed = knobs["seed"]
+    if "push_n" in knobs:
+        spec.disturbance = Disturbance(push_n=knobs["push_n"])
     spec.assumptions = []
     spec.fill_defaults()
     changes = {key: value for key, value in knobs.items()}
@@ -81,6 +84,8 @@ def _result_error(run_id: int, label: str, changes: dict, message: str) -> dict:
 def _run_worker(run_id: int, label: str, base_spec_json: str, raw_variation: dict | None) -> dict:
     changes = {key: value for key, value in raw_variation.items() if key != "label"} if raw_variation else {}
     try:
+        from . import agents
+
         base_spec = SceneSpec.model_validate_json(base_spec_json)
         if raw_variation is None:
             spec = base_spec.model_copy(deep=True)
@@ -144,6 +149,7 @@ def run_batch(
     base_json = base_spec.model_dump_json()
     executor: ProcessPoolExecutor | None = None
     running: dict[Future, tuple[int, str, float]] = {}
+    requested_changes: dict[int, dict] = {}
 
     def store(result: dict) -> None:
         run_id = int(result["id"].removeprefix("run-"))
@@ -159,13 +165,15 @@ def run_batch(
         jobs = [(0, baseline_label, None)]
         for run_id, raw in enumerate(raw_variations, start=1):
             label = raw.get("label") if isinstance(raw, dict) else None
+            changes = {key: value for key, value in raw.items() if key != "label"} if isinstance(raw, dict) else {}
+            requested_changes[run_id] = changes
             if not isinstance(label, str) or not label.strip():
                 label = f"Variation {run_id}"
             try:
                 Variation.model_validate(raw)
                 jobs.append((run_id, label, raw))
             except (ValidationError, TypeError, ValueError) as exc:
-                store(_result_error(run_id, label, {}, f"Invalid variation: {exc}"))
+                store(_result_error(run_id, label, changes, f"Invalid variation: {exc}"))
 
         for run_id, label, raw in jobs:
             future = executor.submit(_run_worker, run_id, label, base_json, raw)
@@ -184,7 +192,8 @@ def run_batch(
                 try:
                     store(future.result())
                 except Exception as exc:
-                    store(_result_error(run_id, label, {}, f"{type(exc).__name__}: {exc}"))
+                    store(_result_error(run_id, label, requested_changes.get(run_id, {}),
+                                        f"{type(exc).__name__}: {exc}"))
 
             now = time.monotonic()
             expired = [
@@ -195,10 +204,12 @@ def run_batch(
             if expired:
                 for future, run_id, label in expired:
                     running.pop(future)
-                    store(_result_error(run_id, label, {}, f"Timed out after {timeout:g} seconds."))
+                    store(_result_error(run_id, label, requested_changes.get(run_id, {}),
+                                        f"Timed out after {timeout:g} seconds."))
                 for future, (run_id, label, _) in list(running.items()):
                     running.pop(future)
-                    store(_result_error(run_id, label, {}, "Worker stopped after another run timed out."))
+                    store(_result_error(run_id, label, requested_changes.get(run_id, {}),
+                                        "Worker stopped after another run timed out."))
                     future.cancel()
                 processes = list((executor._processes or {}).values())
                 for process in processes:

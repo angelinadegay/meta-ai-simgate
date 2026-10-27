@@ -1,0 +1,502 @@
+"""The agent team: Planner, Router, Builder, Checker, Explainer.
+
+Each agent works with or without a model. Without one (MOCK mode), simple
+rules stand in so the pipeline can be tested offline.
+"""
+import json
+import re
+
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
+
+from . import config, llm
+from .backends import REGISTRY, describe
+from .backends.base import BuildResult, Simulator
+from .batch import Variation, _validate_variation
+from .spec import SceneSpec
+from .terrain_data import list_presets
+
+SCHEMA_HINT = json.dumps(SceneSpec.model_json_schema(), separators=(",", ":"))
+
+PLANNER_SYSTEM = f"""You are the Planner in a physics sandbox for people with no simulation experience.
+Turn the user's request into a JSON scene spec. Available simulators:
+{describe()}
+
+Rules:
+- Choose the domain that fits the question.
+- Use realistic values. If the user doesn't say something, pick a sensible default and add a short plain-English line to "assumptions".
+- environment.body is one of earth, moon, mars, titan, europa, enceladus. Saturn and Jupiter have no solid surface: use titan or europa and note it in assumptions.
+- Leave environment.gravity and environment.friction null unless the user gives numbers; the system fills real reference values.
+- robot.kind is "rover" (wheels) or "walker" (legs). Use "walker" for anything that walks: legs, dog, quadruped, insect, spider, hexapod. legs is 4 or 6.
+- Keep the walker's gait_freq_hz and stride_deg at their defaults unless the user asks to walk faster/slower or take bigger steps; large changes can make it fall.
+- Real terrain: when the user asks for a real place or "real terrain", set terrain.kind to "real" and terrain.preset to one of the available presets below. Never invent a preset name; if none fits, use generated terrain and say so in assumptions.
+- Start and goal: when the user wants the robot to get somewhere ("reach", "get to", "go to", "from X to Y",
+  "drive down to the bottom", "climb to the top"), fill "mission". Prefer named places in start_place / goal_place:
+  start_area, center, lowest, highest, north, south, east, west. The system finds them on the actual terrain
+  (crater floor, valley or bottom = lowest; rim, summit, peak or top = highest). Use start_xy / goal_xy only when the
+  user gives coordinates: metres, (0, 0) at the centre, +x east, +y north, terrain spans ±size_m/2.
+  Leave start_heading_deg null (the robot starts facing the goal) and leave duration_s at its default unless the
+  user gives a time limit. Without a destination, leave mission null.
+- Obstacles: when the user asks for an obstacle course or names obstacles (rocks, boulders, a step, stairs,
+  a gap/trench/ditch/crevasse, a ramp, a wall, logs), fill "obstacles" in the order they should be met.
+  Give kind, size (small/medium/large) and count; use height_m only for an exact number the user gives
+  (for a gap it is the width). Leave placement "path" unless the user says scattered or names a place.
+  Never give coordinates for obstacles; the system places them. A course gets a goal on its far side
+  automatically, so mission can stay null. Use terrain kind "flat" for a course unless the user asks for
+  other terrain. When editing, keep existing obstacles unless the user removes them.
+- Reply with ONLY the JSON object.
+
+Available real-terrain presets:
+{{presets}}
+
+JSON schema:
+{SCHEMA_HINT}"""
+
+EDIT_RULES = """
+
+You are now EDITING an existing spec. Apply the user's change, keep everything else the same,
+and return the full updated JSON. If the change needs a different simulator, change "domain"."""
+
+EXPLAIN_SYSTEM = """You are the Explainer in a physics sandbox for non-experts.
+Given the scene and the run metrics, explain in 3–5 short plain sentences what happened and why,
+using the physics (gravity, friction, slope, resonance, drift). Then suggest one concrete thing to try next,
+phrased as something the user could type. No markdown headings, no bullet lists.
+
+Evidence rules:
+- Base the explanation on the measurements you're given. State measured facts plainly
+  (e.g. "it tipped backward at 5.1 s on a 32° patch, facing uphill").
+- Anything you infer rather than measure, mark with "likely". Never invent causes that weren't measured:
+  no specific rocks, bumps, foot placements or wind unless the data shows them.
+- Robot metrics: fall_direction is relative to the way the robot was facing; slope_along_heading_deg > 0 means
+  uphill ahead, < 0 downhill ahead; cross_slope_deg is the sideways tilt of the ground; downhill_side says
+  which side of the robot was downhill; local_slope_deg is measured where the fall began (or at the end if it
+  didn't fall); tilt_trace shows tilt over time, so you can tell a sudden fall from a slow build-up.
+- Slip: slip_ratio is the share of foot/wheel contact time the touching point slid faster than 0.3 m/s.
+  For the walkers' simple fixed gait, 0.15–0.30 is normal scuffing on firm ground. Above about 0.4 is real
+  slipping. Wheels rolling normally are near 0.
+- Tested settings: the walkers use an open-loop rhythmic gait tuned at gait_freq_hz 2.0 and stride_deg 15.
+  At those settings the 6-legged walker stayed upright on all 9 test terrains (flat, hills, rocky, craters,
+  sand, ice, a 10° gravel slope, on Earth, Mars, Moon, Titan and Europa); the 4-legged walker fell on the
+  10° gravel slope. If you suggest gait settings outside the tested values, say they are untested.
+- left_terrain = true means the robot ended outside the simulated patch of ground (it slid or drove off the edge);
+  mention it, because the 3D view will show it falling into empty space.
+- Start and goal: when goal_reached is present, lead with whether the robot reached the goal and how long it took,
+  or how close it got (closest_distance_m, final_distance_m). outcome says how the attempt ended: reached, fell,
+  stuck (no real movement in its last 3 s), out_of_time (still moving when time ran out) or left_terrain.
+  path_efficiency is progress toward the goal divided by the distance travelled (1.0 = a straight line).
+  The robot steers itself straight at the goal; it does not plan a route around steep ground.
+- Obstacles: obstacles lists each one in course order with its height (gap: width_m is the opening, height_m its
+  depth), whether the robot touched it (touched_at_s) and got past it (cleared). stopped_by is the first obstacle it
+  didn't get past. robot_rough_limits are measured limits for this robot (climb_m: tallest step it usually
+  climbs; gap_m: widest gap it usually crosses, 0 = it can't cross gaps). Compare the obstacle to those limits
+  to explain why, e.g. "the 0.15 m step is taller than the 0.09 m it can usually climb".
+- For buildings, explain using the period, drift and resonance numbers given."""
+
+
+class PlannedVariation(Variation):
+    label: str = Field(min_length=1, max_length=80)
+
+
+class StressPlan(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    variations: list[PlannedVariation] = Field(min_length=8, max_length=16)
+
+
+STRESS_PLANNER_SYSTEM = f"""You are the Stress planner in a physical simulation sandbox.
+Choose 8–16 useful condition variations for the user's robustness question. The unchanged scene is
+added separately as the Baseline; do not include it in your variations.
+Use only the supported knobs in the schema. Vary gravity without changing the environment body,
+and use surface rather than friction when comparing named materials. Make variations relevant:
+"will it work on Mars?" should emphasize Mars gravity and surfaces; "how robust?" should mix
+gravity, surfaces, payload, and disturbances. Only use slope_deg for slope terrain and obstacle_scale
+when the scene has obstacles. Return JSON only, matching this schema:
+{json.dumps(StressPlan.model_json_schema(), separators=(",", ":"))}"""
+
+
+def presets_text() -> str:
+    found = list_presets()
+    if not found:
+        return "(none installed)"
+    return "\n".join(f"- {name}: {m['label']} ({m.get('body', '?')}, {m['size_m']:.0f} m square, "
+                     f"{m['relief_m']:.1f} m relief, typical slope {m.get('typical_slope_deg', '?')}°)" for name, m in found.items())
+
+
+def planner_system() -> str:
+    """Built per request, so newly added terrain presets show up without a restart."""
+    return PLANNER_SYSTEM.replace("{presets}", presets_text())
+
+
+AFFIRM = re.compile(r"^\s*(y|yes|yep|yeah|ok|okay|sure|go|run|run it|looks good|looks right|correct|perfect|do it)\b", re.I)
+
+
+# ── Planner ────────────────────────────────────────────────────────────────
+
+def _mock_plan(text: str, current: SceneSpec | None = None) -> SceneSpec:
+    t = text.lower()
+    spec = current.model_copy(deep=True) if current else None
+    is_structure = any(w in t for w in ("building", "house", "tower", "frame", "story", "storey", "earthquake", "quake"))
+    is_robot = any(w in t for w in ("robot", "rover", "walk", "leg", "dog", "quadruped", "hexapod", "spider", "insect"))
+    if spec is None or (is_structure and spec.domain != "structure") or (is_robot and spec.domain != "robot_terrain"):
+        spec = SceneSpec(domain="structure" if is_structure else "robot_terrain")
+    spec.assumptions = []
+
+    for body in ("earth", "moon", "mars", "titan", "europa", "enceladus"):
+        if body in t:
+            spec.environment.body, spec.environment.gravity = body, None
+    if "saturn" in t:
+        spec.environment.body, spec.environment.gravity = "titan", None
+        spec.assumptions.append("Saturn has no solid surface, so I used its moon Titan.")
+    surface_given = False
+    for surface in ("ice", "sand", "mud", "gravel", "regolith", "rock"):
+        if re.search(rf"\b{surface}\b(?! field)", t):   # "rocks" (obstacles) and "rocky" (terrain) are not the surface
+            spec.environment.surface, spec.environment.friction, surface_given = surface, None, True
+    if not surface_given and current is None:   # sensible ground for each world
+        typical = {"moon": "regolith", "mars": "regolith", "titan": "sand", "europa": "ice", "enceladus": "ice"}
+        spec.environment.surface = typical.get(spec.environment.body, spec.environment.surface)
+        spec.environment.friction = None
+
+    if spec.domain == "robot_terrain":
+        from .spec import Robot, Terrain
+        spec.terrain = spec.terrain or Terrain()
+        spec.robot = spec.robot or Robot()
+        for kind in ("slope", "hills", "rocky", "craters", "flat"):
+            if kind in t or (kind == "slope" and ("hill" in t and "climb" in t)):
+                spec.terrain.kind = kind
+        real = list_presets()
+        named = [n for n, meta in real.items() if n.lower() in t or meta["label"].split()[0].lower() in t]
+        wants_real = any(w in t for w in ("real terrain", "real mars", "real data", "nasa", "hirise", "real ground"))
+        if named or (wants_real and real):
+            pick = named[0] if named else next((n for n, meta in real.items() if meta.get("body") in t), next(iter(real)))
+            spec.terrain.kind, spec.terrain.preset = "real", pick
+        elif wants_real:
+            spec.assumptions.append("No real-terrain data is installed yet, so I generated terrain instead.")
+        if m := re.search(r"(\d+)\s*(?:°|deg|degree)", t):
+            spec.terrain.kind, spec.terrain.slope_deg = "slope", float(m.group(1))
+        if "steeper" in t:
+            spec.terrain.kind = "slope"
+            spec.terrain.slope_deg = min(spec.terrain.slope_deg + 10 if spec.terrain.slope_deg else 20, 45)
+        if "bigger rock" in t or "rougher" in t:
+            spec.terrain.roughness = min(spec.terrain.roughness + 0.3, 1.0)
+        rb = spec.robot
+        if any(w in t for w in ("walk", "leg", "dog", "quadruped", "hexapod", "spider", "insect")):
+            rb.kind = "walker"
+        if "wheel" in t or "rover" in t:
+            rb.kind = "rover"
+        six = "six" in t or re.search(r"\b6[\s-]*(?:leg|wheel)", t) or any(w in t for w in ("hexapod", "insect", "spider"))
+        if six:
+            rb.legs, rb.wheels = 6, 6
+        if re.search(r"\b(?:four|4)[\s-]*(?:leg|wheel)", t):
+            rb.legs, rb.wheels = 4, 4
+        _mock_obstacles(spec, t)
+        _mock_mission(spec, t)
+        if "bigger wheel" in t or "larger wheel" in t:
+            rb.wheel_radius = round(rb.wheel_radius * 1.5, 3)
+        if "longer leg" in t:
+            rb.leg_length = round(min(rb.leg_length * 1.3, 0.4), 3)
+        if "faster" in t:
+            rb.drive_speed *= 1.5
+            rb.gait_freq_hz = round(min(rb.gait_freq_hz * 1.25, 3.0), 2)
+        if "slower" in t:
+            rb.drive_speed /= 1.5
+            rb.gait_freq_hz = round(max(rb.gait_freq_hz / 1.25, 0.8), 2)
+        what = f"{rb.legs}-legged walker" if rb.kind == "walker" else f"{rb.wheels}-wheel rover"
+        if spec.terrain.kind == "real":
+            spec.title = f"{what.capitalize()} on real terrain: {list_presets()[spec.terrain.preset]['label']}"
+        else:
+            spec.title = f"{what.capitalize()} on {spec.terrain.kind} terrain, {spec.environment.body.title()}"
+    else:
+        from .spec import Load, Structure
+        spec.structure = spec.structure or Structure()
+        spec.load = spec.load or Load()
+        if m := re.search(r"(\d+)[\s-]*(?:story|storey|floor)", t):
+            spec.structure.stories = int(m.group(1))
+        if "taller" in t:
+            spec.structure.stories += 2
+        if "stronger" in t or "stiffer" in t:
+            spec.structure.section = "heavy"
+        if "harder" in t or "stronger quake" in t:
+            spec.load.pga_g = round(spec.load.pga_g * 1.5, 2)
+        if m := re.search(r"(\d+(?:\.\d+)?)\s*g\b", t):
+            spec.load.pga_g = float(m.group(1))
+        spec.title = f"{spec.structure.stories}-story frame in an earthquake"
+    return spec.fill_defaults()
+
+
+PLACE_WORDS = [("lowest", ("lowest", "bottom", "crater floor", "valley", "low point")),
+               ("highest", ("highest", "top", "summit", "peak", "rim", "high point")),
+               ("center", ("center", "centre", "middle")),
+               ("north", ("north",)), ("south", ("south",)), ("east", ("east",)), ("west", ("west",))]
+
+
+OBSTACLE_WORDS = [("boulder", r"boulders?"), ("rock", r"rocks\b|rock field|rock garden|stones?"),
+                  ("stairs", r"stairs|staircase"), ("step", r"\bsteps?\b(?! up)|ledges?|curbs?|kerbs?"),
+                  ("gap", r"gaps?|trench|ditch|crevasse|crack"), ("ramp", r"ramps?"), ("wall", r"walls?"), ("log", r"logs?")]
+NUMBER_WORDS = {"a": 1, "an": 1, "one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "eight": 8, "ten": 10,
+                "some": 5, "few": 3, "a few": 3, "several": 6, "many": 12, "lots of": 15}
+
+
+def _mock_obstacles(spec: SceneSpec, t: str) -> None:
+    """Rule-based obstacles for MOCK mode: 'add 10 small rocks, a big step and a gap'."""
+    from .spec import Obstacle
+    if re.search(r"\b(?:no|remove|clear|without) (?:the )?(?:obstacles|course)", t):
+        spec.obstacles = []
+        return
+    found = []
+    for kind, pattern in OBSTACLE_WORDS:
+        for m in re.finditer(pattern, t):
+            if kind == "step" and re.match(r"steps? (?:up|on|by|of the stair)", t[m.start():m.end() + 14]):
+                continue
+            before = t[max(0, m.start() - 30):m.start()]
+            count = 1
+            if n := re.search(r"(\d+)\s+(?:\w+\s+)?$", before):
+                count = int(n.group(1))
+            else:
+                for word, value in NUMBER_WORDS.items():
+                    if re.search(rf"\b{word}\s+(?:\w+\s+)?$", before):
+                        count = value
+            size = "large" if re.search(r"(?:big|large|tall|high|huge|wide|deep)\s+$", before) else \
+                   "small" if re.search(r"(?:small|little|tiny|low|short|narrow)\s+$", before) else "medium"
+            plural = {"rock": 8, "boulder": 4, "log": 2}
+            if kind in plural and m.group(0).endswith("s") and count == 1:
+                count = plural[kind]
+            found.append((m.start(), Obstacle(kind=kind, size=size, count=min(count, 30),
+                                              placement="scattered" if "scatter" in t else "path")))
+            break    # one entry per kind per message
+    if found:
+        if not spec.obstacles and spec.terrain.kind not in ("real",) and not any(k in t for k in ("hill", "slope", "crater", "rocky")):
+            spec.terrain.kind, spec.terrain.roughness = "flat", 0.0
+        spec.obstacles = list(spec.obstacles) + [ob for _, ob in sorted(found, key=lambda f: f[0])]
+
+
+def _mock_mission(spec: SceneSpec, t: str) -> None:
+    """Rule-based start/goal for MOCK mode: 'from the west to the summit', 'reach the bottom', 'goal at 5, 3'."""
+    from .spec import Mission
+
+    def place_in(fragment: str) -> str | None:
+        hits = [(fragment.find(w), name) for name, words in PLACE_WORDS for w in words if w in fragment]
+        return min(hits)[1] if hits else None
+
+    nums = r"\(?\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*\)?"
+    goal_xy = re.search(r"(?:goal|go to|get to|reach)\s*(?:at|to)?\s*" + nums, t)
+    wants = goal_xy or any(w in t for w in ("reach", "get to", "go to", "goal", "destination", "make it to", "drive to", "walk to", "climb to")) \
+        or re.search(r"\bfrom (?:the )?.+? to (?:the )?(?:" + "|".join(w for _, ws in PLACE_WORDS for w in ws) + ")", t)
+    if not wants:
+        return
+    ms = spec.mission or Mission()
+    if goal_xy:
+        ms.goal_xy, ms.goal_place = [float(goal_xy.group(1)), float(goal_xy.group(2))], None
+    if m := re.search(r"from (?:the )?(.+?)\s+to\b(.*)", t):
+        ms.start_place = place_in(m.group(1)) or ms.start_place
+        if not goal_xy:
+            ms.goal_place = place_in(m.group(2)) or ms.goal_place
+    elif not goal_xy:
+        ms.goal_place = place_in(t) or ms.goal_place
+    if not ms.has_goal():
+        ms.goal_place = "center"
+        spec.assumptions.append("No place named for the goal, so I put it in the centre of the terrain.")
+    spec.mission = ms
+
+
+def _llm_spec(system: str, user: str) -> SceneSpec:
+    messages = [{"role": "system", "content": system}, {"role": "user", "content": user}]
+    last_error = ""
+    for _ in range(2):
+        if last_error:
+            messages.append({"role": "user", "content": f"That JSON was invalid: {last_error}. Return the corrected JSON only."})
+        reply = llm.chat(messages)
+        messages.append({"role": "assistant", "content": reply})
+        try:
+            return SceneSpec.model_validate(llm.extract_json(reply)).fill_defaults()
+        except (ValueError, ValidationError) as e:
+            last_error = str(e)[:500]
+    raise RuntimeError(f"Planner could not produce a valid spec: {last_error}")
+
+
+def plan(text: str) -> SceneSpec:
+    if config.MOCK_MODE:
+        return _mock_plan(text)
+    return _llm_spec(planner_system(), text)
+
+
+def edit(spec: SceneSpec, instruction: str) -> SceneSpec:
+    if config.MOCK_MODE:
+        return _mock_plan(instruction, spec)
+    clean = spec.model_copy(deep=True)
+    clean.assumptions = []
+    return _llm_spec(planner_system() + EDIT_RULES, f"Current spec:\n{clean.model_dump_json()}\n\nChange requested: {instruction}")
+
+
+def plan_stress(spec: SceneSpec, text: str) -> list[dict]:
+    """Choose validated condition overrides for a robot-scene stress test."""
+    if spec.domain != "robot_terrain" or spec.robot is None:
+        raise ValueError("Stress tests currently support robot scenes only.")
+    if config.MOCK_MODE:
+        variations = [
+            {"label": "Moon gravity", "gravity": 1.62},
+            {"label": "Mars gravity", "gravity": 3.71},
+            {"label": "Earth gravity", "gravity": 9.81},
+            {"label": "Sand", "surface": "sand"},
+            {"label": "Ice", "surface": "ice"},
+            {"label": "+5 kg payload", "payload_kg": 5},
+            {"label": "30 N sideways push", "push_n": 30},
+        ]
+        if spec.obstacles:
+            variations.append({"label": "Obstacles ×1.3", "obstacle_scale": 1.3})
+        return variations
+
+    messages = [
+        {"role": "system", "content": STRESS_PLANNER_SYSTEM},
+        {"role": "user", "content": f"Scene:\n{spec.model_dump_json()}\n\nStress-test request: {text}"},
+    ]
+    last_error = ""
+    for _ in range(2):
+        if last_error:
+            messages.append({"role": "user", "content": f"That JSON was invalid: {last_error}. Return corrected JSON only."})
+        reply = llm.chat(messages)
+        messages.append({"role": "assistant", "content": reply})
+        try:
+            plan = StressPlan.model_validate(llm.extract_json(reply))
+            variations = [variation.model_dump(exclude_none=True) for variation in plan.variations]
+            for variation in variations:
+                _validate_variation(spec, variation)
+            return variations
+        except (ValueError, ValidationError) as exc:
+            last_error = str(exc)[:500]
+    raise RuntimeError(f"Stress planner could not produce a valid plan: {last_error}")
+
+
+STRESS_REQUEST = re.compile(
+    r"\bstress[- ]tests?\b|\bhow robust\b|\btest (?:it )?under different conditions\b|\bwill it work on\b",
+    re.I,
+)
+
+
+def is_stress_test(text: str) -> bool:
+    return bool(STRESS_REQUEST.search(text))
+
+
+def is_approval(text: str) -> bool:
+    return bool(AFFIRM.match(text))
+
+
+RERUN = re.compile(r"^\s*(run (it )?again|re-?run|again|repeat( it)?|one more time)\b", re.I)
+
+
+def is_rerun(text: str) -> bool:
+    """An explicit request to run the current scene again (checked before plain approval)."""
+    return bool(RERUN.match(text))
+
+
+# ── Router ─────────────────────────────────────────────────────────────────
+
+def route(spec: SceneSpec) -> Simulator:
+    return REGISTRY[spec.domain]()
+
+
+# ── Builder ────────────────────────────────────────────────────────────────
+
+BUILDER_SYSTEM = """You are the Builder agent. You write simulation code in the simulator's own language.
+You receive a working template and a scene spec. Improve or extend the template to match the spec
+(for example add obstacles or details the user asked for) while keeping every named body, joint and
+actuator the template has. Reply with ONLY the complete code in one fenced block."""
+
+
+def build(sim: Simulator, spec: SceneSpec, log) -> BuildResult:
+    """Template build by default; in llm mode the model writes the code with a compile-and-fix loop."""
+    if config.MOCK_MODE or config.BUILDER_MODE != "llm" or not hasattr(sim, "template"):
+        return sim.build(spec)
+
+    template_code = sim.template(spec)[0]
+    lang = "xml" if sim.language.startswith("mjcf") else "python"
+    messages = [
+        {"role": "system", "content": BUILDER_SYSTEM},
+        {"role": "user", "content": f"Simulator: {sim.name} ({sim.language})\nSpec:\n{spec.model_dump_json()}\n\nTemplate:\n```{lang}\n{template_code}\n```"},
+    ]
+    for attempt in range(1, config.BUILDER_MAX_RETRIES + 1):
+        reply = llm.chat(messages, model=config.BUILDER_MODEL)
+        code = llm.extract_code(reply, lang)
+        try:
+            result = sim.build(spec, code=code)
+            log(f"Code compiled on attempt {attempt}.")
+            return result
+        except Exception as e:  # noqa: BLE001 - simulator errors vary by engine
+            err = str(e).splitlines()[0][:300]
+            log(f"Attempt {attempt} failed to compile: {err}. Sending the error back to fix.")
+            messages += [{"role": "assistant", "content": reply},
+                         {"role": "user", "content": f"The simulator rejected this code: {err}\nFix it and return the full code."}]
+    log("Falling back to the verified template.")
+    return sim.build(spec)
+
+
+# ── Explainer ──────────────────────────────────────────────────────────────
+
+def _mock_explain(spec: SceneSpec, m: dict) -> str:
+    if m.get("simulator") == "MuJoCo":
+        g, f = m["gravity"], m["friction"]
+        walker = spec.robot.kind == "walker"
+        who, moved, grip = ("The walker", "walked", "feet") if walker else ("The rover", "drove", "wheels")
+        slope, along, down = m.get("local_slope_deg"), m.get("slope_along_heading_deg"), m.get("downhill_side")
+        slip, slip_late = m.get("slip_ratio"), m.get("slip_ratio_last_1s_before_fall")
+        goal = ""
+        if "goal_reached" in m:
+            if m["goal_reached"]:
+                goal = f"{who} reached the goal in {m['time_to_goal_s']} s, travelling {m['path_length_m']} m. "
+            else:
+                why = {"fell": "it fell", "stuck": "it got stuck", "out_of_time": "it ran out of time",
+                       "left_terrain": "it went off the edge"}.get(m["outcome"], m["outcome"])
+                goal = f"{who} missed the goal: {why}, {m['final_distance_m']} m short (closest {m['closest_distance_m']} m). "
+        if m["flipped"]:
+            text = f"{who} tipped {m.get('fall_direction') or 'over'} at {m['flipped_at_s']} s"
+            if slope is not None:
+                facing = "uphill" if (along or 0) > 3 else "downhill" if (along or 0) < -3 else "across the slope"
+                text += f", on a {slope}° patch while facing {facing}"
+                if down in ("left", "right"):
+                    text += f" with the ground dropping away to its {down}"
+            text += "."
+            if slip_late is not None:
+                text += f" In the last second before it fell, its {grip} were sliding {slip_late:.0%} of the time."
+        elif m["forward_progress_m"] < 0.5:
+            text = f"{who} barely made progress ({m['forward_progress_m']} m)."
+            if slip is not None:
+                text += f" Its {grip} were sliding {slip:.0%} of the time with friction {f}."
+        else:
+            text = f"{who} {moved} {m['forward_progress_m']} m forward and climbed {m['climbed_m']} m, tilting at most {m['max_tilt_deg']}°."
+            if m.get("max_slope_on_path_deg") is not None:
+                text += f" The steepest ground it crossed was {m['max_slope_on_path_deg']}°."
+        if m.get("left_terrain"):
+            text += " It ended up off the edge of the terrain."
+        if m.get("obstacles_total"):
+            lim, sb = m.get("robot_rough_limits") or {}, m.get("stopped_by")
+            course = f" It got past {m['obstacles_cleared']} of {m['obstacles_total']} obstacles."
+            if sb:
+                if sb["kind"] == "gap":
+                    what, limit = f"the {sb.get('width_m')} m wide gap", (f"wider than the about {lim.get('gap_m')} m it can usually cross"
+                                                                          if lim.get("gap_m") else "and this robot can't cross gaps")
+                else:
+                    what, limit = f"the {sb['height_m']} m {sb['kind']}", f"compared with the about {lim.get('climb_m')} m it can usually climb"
+                course += f" It was stopped by {what}, {limit}."
+            text += course
+        text = goal + text
+        text += f" Gravity here is {g} m/s², so it weighs {g / 9.81:.2f}× what it would on Earth, which changes how much grip its {grip} get."
+        if m["flipped"]:
+            tip = "Try: \"use six legs\"" if walker else "Try: \"give it bigger wheels\" or \"use six wheels\""
+        else:
+            other = "Mars" if spec.environment.body == "moon" else "the Moon"
+            tip = f"Try: \"put it on {other}\" or \"make the terrain rocky\"" if walker else "Try: \"make the slope steeper\" or \"make it walk\""
+        return f"{text} {tip}."
+    ratio = m["shaking_freq_hz"] / m["building_freq_hz"]
+    resonance = " The shaking frequency is close to the building's own frequency, so it resonated and swayed much more." if 0.8 < ratio < 1.25 else ""
+    return (f"The {m['stories']}-story frame swayed up to {m['max_roof_displacement_cm']} cm at the roof, "
+            f"with a worst story drift of {m['max_story_drift_pct']}%, which suggests {m['damage_estimate']}.{resonance} "
+            f"Its natural period is {m['period_s']} s (code estimate {m['code_period_estimate_s']} s). "
+            f"Try: \"make it stiffer\" or \"make the quake harder\".")
+
+
+def explain(spec: SceneSpec, metrics: dict) -> str:
+    if config.MOCK_MODE:
+        return _mock_explain(spec, metrics)
+    return llm.chat(
+        [{"role": "system", "content": EXPLAIN_SYSTEM},
+         {"role": "user", "content": f"Scene: {spec.title}\nAssumptions: {spec.assumptions}\nMetrics: {json.dumps(metrics)}"}],
+        temperature=0.4,
+    ).strip()

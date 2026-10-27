@@ -1,0 +1,169 @@
+"""Runs one session: plan → route → build → check → (checkpoint) → run → explain.
+
+Every step emits events, so the browser can show the agents working live.
+"""
+import asyncio
+from typing import Awaitable, Callable
+
+from . import agents, config
+from .backends.base import BuildResult, Simulator
+from .spec import Mission, SceneSpec
+
+Emit = Callable[[dict], Awaitable[None]]
+
+
+class Session:
+    def __init__(self, emit: Emit) -> None:
+        self.emit = emit
+        self.spec: SceneSpec | None = None
+        self.sim: Simulator | None = None
+        self.build: BuildResult | None = None
+        self.awaiting_approval = False
+
+    async def agent(self, name: str, status: str, message: str) -> None:
+        await self.emit({"type": "agent", "agent": name, "status": status, "message": message})
+
+    async def handle(self, text: str) -> None:
+        try:
+            if self.build is not None and agents.is_rerun(text):
+                self.awaiting_approval = False
+                await self.run()
+            elif self.build is not None and agents.is_approval(text):
+                if self.awaiting_approval:
+                    self.awaiting_approval = False
+                    await self.run()
+                else:   # e.g. a second click on Run: don't silently run the same scene twice
+                    await self.emit({"type": "question",
+                                     "message": "This scene already ran. Say \"run again\" to repeat it, or describe a change.",
+                                     "stress_test_available": bool(self.spec and self.spec.domain == "robot_terrain")})
+            elif (self.spec is not None and self.spec.domain == "robot_terrain"
+                  and agents.is_stress_test(text)):
+                await self.run_stress(text)
+            elif self.spec is not None:
+                await self.make(text, editing=True)
+            else:
+                await self.make(text, editing=False)
+        except Exception as e:  # noqa: BLE001 - show any failure to the user
+            await self.emit({"type": "error", "message": f"{type(e).__name__}: {e}"})
+
+    async def make(self, text: str, editing: bool) -> None:
+        mode = "MOCK planner (no model configured)" if config.MOCK_MODE else config.PLANNER_MODEL
+        await self.agent("Planner", "working", f"{'Updating the plan' if editing else 'Reading your request'} with {mode}…")
+        spec = await asyncio.to_thread(agents.edit if editing else agents.plan, *( (self.spec, text) if editing else (text,) ))
+        await self.agent("Planner", "done", spec.title + (" — " + " ".join(spec.assumptions) if spec.assumptions else ""))
+        await self.build_and_check(spec)
+
+    async def set_point(self, which: str, x: float, y: float) -> None:
+        """Start or goal picked by clicking on the terrain: changes the spec directly, no model call needed."""
+        try:
+            if self.spec is None or self.spec.domain != "robot_terrain":
+                await self.emit({"type": "question", "message": "Describe a robot scene first, then click the terrain to set its start or goal."})
+                return
+            spec = self.spec.model_copy(deep=True)
+            spec.mission = spec.mission or Mission()
+            if which == "start":
+                spec.mission.start_xy, spec.mission.start_place, spec.mission.start_heading_deg = [x, y], None, None
+            else:
+                spec.mission.goal_xy, spec.mission.goal_place = [x, y], None
+            spec.assumptions = []
+            spec.fill_defaults()
+            await self.agent("Planner", "done", f"{which.capitalize()} set to ({x:.1f}, {y:.1f}) m."
+                             + (" " + " ".join(spec.assumptions) if spec.assumptions else ""))
+            await self.build_and_check(spec)
+        except Exception as e:  # noqa: BLE001
+            await self.emit({"type": "error", "message": f"{type(e).__name__}: {e}"})
+
+    async def build_and_check(self, spec: SceneSpec) -> None:
+        self.spec = spec
+        await self.emit({"type": "spec", "spec": spec.model_dump()})
+        sim = agents.route(spec)
+        if self.sim is None or self.sim.name != sim.name:
+            self.sim = sim
+        await self.agent("Router", "done", f"This is a {spec.domain.replace('_', ' ')} question, so I'm using {sim.name}.")
+
+        await self.agent("Builder", "working", f"Writing {sim.language} for {sim.name}…")
+        logs: list[str] = []
+        self.build = await asyncio.to_thread(agents.build, self.sim, spec, logs.append)
+        for line in logs:
+            await self.agent("Builder", "working", line)
+        await self.emit({"type": "scene", "scene": self.build.scene, "code": self.build.code, "language": self.build.language})
+        await self.agent("Builder", "done", f"Scene built ({len(self.build.code.splitlines())} lines of {self.build.language}).")
+
+        await self.agent("Checker", "working", "Verifying physics against reference values…")
+        checks = await asyncio.to_thread(self.sim.validate, spec, self.build)
+        await self.emit({"type": "checks", "checks": [c.__dict__ for c in checks]})
+        failed = [c for c in checks if not c.passed]
+        if failed:
+            await self.agent("Checker", "warning", "Some checks failed: " + "; ".join(f"{c.name} ({c.detail})" for c in failed))
+        else:
+            await self.agent("Checker", "done", f"All {len(checks)} checks passed.")
+
+        self.awaiting_approval = True
+        await self.emit({"type": "question", "message": "Does this look right? Say \"run\" to start, or tell me what to change.",
+                         "stress_test_available": spec.domain == "robot_terrain"})
+
+    async def run_stress(self, text: str) -> None:
+        assert self.spec is not None and self.spec.domain == "robot_terrain"
+        from .batch import run_batch
+
+        spec = self.spec.model_copy(deep=True)
+        await self.agent("Stress planner", "working", "Choosing conditions for this robot scene…")
+        variations = await asyncio.to_thread(agents.plan_stress, spec, text)
+        labels = ["Baseline"] + [
+            f"{variation.get('label', 'Variation')}: "
+            + ", ".join(f"{key}={value}" for key, value in variation.items() if key != "label")
+            for variation in variations
+        ]
+        await self.agent("Stress planner", "done", "Planned " + "; ".join(labels) + ".")
+
+        total = min(len(variations) + 1, 24)
+        await self.emit({"type": "batch_start", "total": total})
+        await self.agent("Batch runner", "working", f"0/{total} done")
+        queue: asyncio.Queue = asyncio.Queue()
+        loop = asyncio.get_running_loop()
+
+        def on_result(result: dict) -> None:
+            loop.call_soon_threadsafe(queue.put_nowait, result)
+
+        def execute() -> list[dict]:
+            try:
+                return run_batch(spec, variations, on_result)
+            finally:
+                loop.call_soon_threadsafe(queue.put_nowait, None)
+
+        task = asyncio.create_task(asyncio.to_thread(execute))
+        done = 0
+        while (result := await queue.get()) is not None:
+            done += 1
+            await self.emit({"type": "batch_result", "result": result})
+            await self.agent("Batch runner", "working", f"{done}/{total} done")
+        results = await task
+        passed = sum(bool(result["passed"]) for result in results)
+        await self.emit({"type": "batch_done", "total": len(results), "passed": passed,
+                         "failed": len(results) - passed})
+        await self.agent("Batch runner", "done", f"{len(results)}/{len(results)} done.")
+
+    async def run(self) -> None:
+        assert self.spec and self.sim and self.build
+        await self.agent("Simulator", "working", f"Running {self.spec.duration_s:.0f} s in {self.sim.name}…")
+        await self.emit({"type": "run_start", "duration_s": self.spec.duration_s})
+        queue: asyncio.Queue = asyncio.Queue()
+        loop = asyncio.get_running_loop()
+
+        def produce() -> None:
+            for chunk in self.sim.run(self.spec, self.build):
+                loop.call_soon_threadsafe(queue.put_nowait, chunk)
+            loop.call_soon_threadsafe(queue.put_nowait, None)
+
+        task = loop.run_in_executor(None, produce)
+        while (chunk := await queue.get()) is not None:
+            await self.emit({"type": "frames", "frames": chunk})
+        await task
+
+        metrics = self.sim.summary()
+        await self.emit({"type": "metrics", "metrics": metrics})
+        await self.agent("Simulator", "done", "Run finished.")
+        await self.agent("Explainer", "working", "Explaining what happened…")
+        text = await asyncio.to_thread(agents.explain, self.spec, metrics)
+        await self.agent("Explainer", "done", "Done.")
+        await self.emit({"type": "explanation", "message": text})
