@@ -1956,6 +1956,28 @@ def test_crashed_runs_are_a_system_problem_not_physics():
     assert "crashed" in tools and "decision" not in tools and "conclusion" not in tools
 
 
+def test_mixed_race_time_limit_uses_the_slowest_robot():
+    from simgate import batch, diagnose
+
+    real, rerun_durations = batch.run_batch, []
+
+    def recording(spec, variations, *args, **kwargs):
+        rerun_durations.append(spec.duration_s)
+        return real(spec, variations, *args, **kwargs)
+
+    try:
+        diagnose.run_batch = recording
+        session, (race, _) = session_turns(MIXED_RACE, "why did it fail?")
+    finally:
+        diagnose.run_batch = real
+    assert session.spec.duration_s == 45.0
+    assert next(e["duration_s"] for e in race if e["type"] == "run_start") == 45.0
+    assert rerun_durations and set(rerun_durations) == {45.0}   # reruns pinned to the original task
+
+    rovers, _ = session_turns("race three rovers to the far side")
+    assert rovers.spec.duration_s == 30.0
+
+
 def test_stress_trigger_requires_robot_scene():
     import asyncio
     from unittest.mock import patch

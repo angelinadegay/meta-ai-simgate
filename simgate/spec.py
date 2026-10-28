@@ -247,8 +247,11 @@ class SceneSpec(BaseModel):
                 self.assumptions.append("Put the goal on the far side of the obstacle course.")
             if self.mission is not None and self.mission.has_goal() and self.duration_s == 8.0:
                 # The 8 s default is too short to get anywhere. Runs end early once the goal is reached.
-                self.duration_s = 45.0 if self.robot.kind == "walker" else 30.0
-                self.assumptions.append(f"Gave the robot up to {self.duration_s:.0f} s to reach the goal.")
+                # The slowest robot sets it: walkers get 45 s, so a race with any walker does too.
+                walker = any(entry.robot.kind == "walker" for entry in self.robots)
+                self.duration_s = 45.0 if walker else 30.0
+                self.assumptions.append(f"Gave the {'robots' if len(self.robots) > 1 else 'robot'} up to "
+                                        f"{self.duration_s:.0f} s to reach the goal.")
         else:
             self.structure = self.structure or Structure()
             self.load = self.load or Load()
