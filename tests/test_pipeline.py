@@ -1385,6 +1385,68 @@ def test_experiment_knobs_and_per_robot_metrics():
     assert robot_metrics(multi, "r1")["passed"]
 
 
+def step_course(height, kind="step"):
+    return SceneSpec(domain="robot_terrain", terrain=Terrain(kind="flat", roughness=0), robot=Robot(kind="rover"),
+                     obstacles=[Obstacle(kind=kind, height_m=height)]).fill_defaults()
+
+
+def test_redesign_finds_the_smallest_passing_design_and_keeps_the_world():
+    from simgate.batch import _validate_variation
+    from simgate.diagnose import pin_task
+    from simgate.redesign import BOUNDS, redesign
+
+    spec = step_course(0.15)
+    summary = failed_run(spec)
+    before = spec.model_dump()
+    report = redesign(spec, summary)
+    assert spec.model_dump() == before   # never applied automatically
+    winner = report["winner"]
+    assert winner is not None and set(winner["changes"]) <= {"wheel_radius", "wheels"}, winner
+    assert winner["robustness"]["total"] == 3 and winner["robustness"]["passed"] >= 2
+    assert report["tried_count"] <= 12 and "passes" in report["message"] and "use this design" in report["message"]
+    world = pin_task(spec, summary)
+    _, designed, _ = _validate_variation(world, {"robot": winner["changes"]})
+    for part in ("environment", "terrain", "obstacles", "duration_s"):
+        assert getattr(designed, part) == getattr(world, part), part
+    assert designed.robots[0].goal_xy == world.robots[0].goal_xy and designed.robots[0].goal_xy is not None
+    passing = [c for r in report["rounds"] for c in r["candidates"] if c["passed"]]
+    assert winner["distance"] == min(c["distance"] for c in passing)
+    for candidate in (c for r in report["rounds"] for c in r["candidates"]):
+        for name, value in candidate["changes"].items():
+            low, high = BOUNDS["rover"][name]
+            assert low <= value <= high, (name, value)
+
+    kept = redesign(spec, summary, "keep 4 wheels")
+    assert set(kept["winner"]["changes"]) == {"wheel_radius"}
+    assert all("wheels" not in c["changes"] for r in kept["rounds"] for c in r["candidates"])
+
+
+def test_redesign_reports_the_limit_when_nothing_passes():
+    from simgate.redesign import redesign
+
+    spec = step_course(1.0, "wall")
+    report = redesign(spec, failed_run(spec))
+    assert report["winner"] is None and report["tried_count"] <= 12 and len(report["rounds"]) <= 3
+    assert report["message"].startswith("No design passed") and report["limit"] == "wheel radius already at the 0.35 m maximum"
+    assert report["best_attempt"]["changes"]
+
+
+def test_design_constraints_narrow_the_design_space():
+    from simgate.redesign import DesignSpace
+
+    rover = Robot(kind="rover")
+    space = DesignSpace(rover, "make it pass, keep it under 15 kg")
+    assert space.bounds["mass_kg"] == (3.0, 15.0)
+    assert space.clean({"mass_kg": 30, "wheel_radius": 0.9, "legs": 6})[0] == {"mass_kg": 15.0, "wheel_radius": 0.35}
+    only = DesignSpace(rover, "only change the wheels")
+    assert set(only.knobs) == {"wheel_radius", "wheels"}
+    assert DesignSpace(rover, "keep 4 wheels and don't change the speed").fixed == {"wheels": 4, "drive_speed": 6.0}
+    walker = DesignSpace(Robot(kind="walker"), "keep six legs")
+    assert walker.fixed == {"legs": 6} and "mass_kg" not in walker.bounds
+    g1 = DesignSpace(Robot(kind="library", robot_id="g1", policy_id="g1_walking"), None)
+    assert g1.knobs == ["command_speed_m_s"]
+
+
 def test_stress_trigger_requires_robot_scene():
     import asyncio
     from unittest.mock import patch

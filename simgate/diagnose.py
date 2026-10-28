@@ -150,9 +150,7 @@ def pin_task(spec: SceneSpec, summary: dict) -> SceneSpec:
     if summary.get("duration_s"):
         pinned.duration_s = float(summary["duration_s"])
     pinned.assumptions = []
-    pinned.fill_defaults()
-    pinned.duration_s = float(summary.get("duration_s") or pinned.duration_s)
-    return pinned
+    return pinned.fill_defaults()   # the batch runner fills defaults again; ending here keeps the scene stable
 
 
 # ── Hypotheses ───────────────────────────────────────────────────────────────
