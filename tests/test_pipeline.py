@@ -188,6 +188,26 @@ def test_director_recovers_from_invalid_replies_and_failed_checks():
         ]))
         assert message == "Recovered."
 
+        replies = iter([
+            '{"thought":"Check registered robots","tool":"list_library","args":{}}',
+            '{"thought":"Add a rover","tool":"spawn_robot","args":{}}',
+            '{"thought":"Add a rover","tool":"spawn_robot","args":{"kind":"rover"}}',
+            '{"thought":"Ready","final":"Added a rover."}',
+        ])
+        prompts = []
+
+        def scripted_chat(messages, *_args, **_kwargs):
+            prompts.append("\n".join(message["content"] for message in messages))
+            return next(replies)
+
+        agents.llm.chat = scripted_chat
+        recovered_world, message = asyncio.run(Director().execute("race three rovers"))
+        assert message == "Added a rover."
+        assert len(recovered_world.spec.robots) == 1
+        assert recovered_world.spec.robots[0].robot.kind == "rover"
+        assert "exactly one" in prompts[0] and "Arguments JSON Schema" in prompts[0]
+        assert "do not omit required choices" in prompts[2]
+
         recovered, message = asyncio.run(execute_script([
             '{"thought":"Try unknown tool","tool":"erase_world","args":{}}',
             '{"thought":"Recovered tool choice","final":"Stopped safely."}',

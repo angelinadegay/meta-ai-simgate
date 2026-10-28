@@ -128,7 +128,15 @@ class Director:
                     await self._finish_root(message)
                     return world, message
                 recovery_used = True
-                messages.append({"role": "user", "content": f"Tool {turn.tool} failed: {message}. Correct the plan once."})
+                schema = tool_catalog()[turn.tool]
+                messages.append({
+                    "role": "user",
+                    "content": (
+                        f"Tool {turn.tool} failed: {message}. The arguments you sent were "
+                        f"{turn.args!r}. Correct the arguments using this tool definition and schema:\n"
+                        f"{schema}\nRetry the action once; do not omit required choices."
+                    ),
+                })
                 continue
             await self._emit_handoffs(turn.tool, result, tool_step)
             await self._emit_step(
