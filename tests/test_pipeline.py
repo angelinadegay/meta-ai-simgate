@@ -1759,7 +1759,7 @@ def test_browser_handles_the_analysis_events():
     root = Path(__file__).resolve().parent.parent
     page = (root / "static" / "vendor" / "index.html").read_text(encoding="utf-8")
     for needed in ('case "diagnosis"', 'case "redesign"', 'id="diagnosisCard"', 'id="redesignCard"',
-                   '"Why did it fail?", "Make it pass"', 'send("use this design")', 'type: "show_design"',
+                   'chips(q, ev.chips, null)', 'send("use this design")', 'type: "show_design"',
                    '"✓ confirmed"', '"~ partly"', '"✕ ruled out"', 'Designer: [55, 190]', '"Batch runner": [175, 190]',
                    'if (ev.chips)'):
         assert needed in page, needed
@@ -1891,6 +1891,19 @@ def test_race_diagnosis_and_redesign_target_one_robot():
     assert tried and all(set(changes) <= set(BOUNDS["walker"]) for changes in tried)
     checks = [e for e in fix if e["type"] == "step" and e["agent"] == "Checker" and e["status"] != "working"]
     assert checks and all(e["status"] == "done" and "World unchanged" in e["result"] for e in checks)
+
+
+def test_failure_chips_name_the_robot_that_failed():
+    _, (race, why, rover) = session_turns(MIXED_RACE, "Why did the Walker fail?", "why did the rover fail?")
+    explained = [e for e in race if e["type"] == "explanation"][-1]
+    assert explained["chips"] == ["Why did the Walker fail?", "Make the Walker pass"]
+    assert next(e["report"] for e in why if e["type"] == "diagnosis")["robot_id"] == "r2"
+    assert why[-1]["chips"] == ["Make the Walker pass"]
+    assert rover[-1]["chips"] == ["Why did the Walker fail?", "Make the Walker pass"]   # the rover won
+
+    _, (_, won) = session_turns("race three rovers to the far side", "run")
+    assert all(robot["goal_reached"] for robot in next(e["metrics"] for e in won if e["type"] == "metrics")["robots"].values())
+    assert "chips" not in [e for e in won if e["type"] == "explanation"][-1]
 
 
 def test_stress_trigger_requires_robot_scene():

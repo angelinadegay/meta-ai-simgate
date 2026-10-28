@@ -115,14 +115,33 @@ class Session:
             "stress_test_available": spec.domain == "robot_terrain",
         })
 
-    @staticmethod
-    def _next_chips(report: dict | None) -> list[str] | None:
+    def _next_chips(self, report: dict | None) -> list[str] | None:
         """After a diagnosis or redesign, offer the next step instead of "Run"."""
         if report is None:
             return None
         if report["type"] == "diagnosis":
-            return ["Make it pass"] if report.get("reproduced") else ["Run again"]
+            if report.get("reproduced") is None:   # the robot asked about didn't fail: offer the one that did
+                return self._failure_chips(self.last_summary)
+            return [self._fix_chip(report.get("robot_id"))] if report.get("reproduced") else ["Run again"]
         return ["Use this design"] if report.get("winner") else ["Run again"]
+
+    def _racer_label(self, robot_id: str | None) -> str | None:
+        """A race robot's label, for chips that name it; None in a single-robot scene."""
+        if self.spec is None or len(self.spec.robots) < 2:
+            return None
+        return next((entry.label for entry in self.spec.robots if entry.id == robot_id), None)
+
+    def _fix_chip(self, robot_id: str | None) -> str:
+        label = self._racer_label(robot_id)
+        return f"Make the {label} pass" if label else "Make it pass"
+
+    def _failure_chips(self, summary: dict | None) -> list[str] | None:
+        """After a run in which a robot failed: find out why, or make it pass (in a race, naming that robot)."""
+        robot_id = SessionState(summary=summary).failed_robot()
+        if robot_id is None:
+            return None
+        label = self._racer_label(robot_id)
+        return [f"Why did the {label} fail?" if label else "Why did it fail?", self._fix_chip(robot_id)]
 
     async def show_design(self) -> None:
         """Replay the last redesign's winning design with streamed frames, without applying it."""
@@ -392,4 +411,5 @@ class Session:
         await self.agent("Explainer", "working", "Explaining what happened…")
         text = await asyncio.to_thread(agents.explain, self.spec, metrics)
         await self.agent("Explainer", "done", "Done.")
-        await self.emit({"type": "explanation", "message": text})
+        chips = self._failure_chips(metrics) if self.spec.domain == "robot_terrain" else None
+        await self.emit({"type": "explanation", "message": text, **({"chips": chips} if chips else {})})

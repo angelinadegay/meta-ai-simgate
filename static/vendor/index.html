@@ -424,7 +424,7 @@ ws.onmessage = (m) => {
     }
     case "run_start": batchIsActive = false; $("reportCard").hidden = true; $("leaderboardCard").hidden = true; disableRunButtons(); startRun(); break;
     case "frames": for (const f of ev.frames) { frames.push(f); addTrailPoint(f); } $("scrub").max = frames.length - 1; break;
-    case "metrics": renderMetrics(ev.metrics); streaming = false; if (!batchIsActive) lastRunFailed = runFailed(ev.metrics); break;
+    case "metrics": renderMetrics(ev.metrics); streaming = false; break;
     case "diagnosis": renderDiagnosis(ev.report); break;
     case "redesign": renderRedesign(ev.report); break;
     case "batch_start":
@@ -441,9 +441,9 @@ ws.onmessage = (m) => {
     case "explanation": {
       const d = addMsg(ev.message);
       if (batchIsActive) $("stressExplanation").textContent = ev.message;
-      if (lastRunFailed) {   // after a failed run, offer to find out why or to make it pass
+      if (ev.chips) {   // after a failed run, offer to find out why or to make it pass (naming the robot in a race)
         const q = document.createElement("div"); q.className = "quick";
-        chips(q, ["Why did it fail?", "Make it pass"], null); d.appendChild(q); lastRunFailed = false;
+        chips(q, ev.chips, null); d.appendChild(q);
       }
       break;
     }
@@ -462,11 +462,6 @@ ws.onmessage = (m) => {
 ws.onclose = () => { $("mode").textContent = "Disconnected · reload the page"; };
 
 // ── Prove why / Make it pass ──
-let lastRunFailed = false;
-function runFailed(m) {
-  if (m.robots) return Object.values(m.robots).some((r) => (r.goal_xy ? !r.goal_reached : r.flipped || (r.forward_progress_m ?? 0) < 1));
-  return "goal_reached" in m ? !m.goal_reached : Boolean(m.flipped) || (m.forward_progress_m ?? 0) < 1;
-}
 const VERDICTS = { confirmed: "✓ confirmed", partly: "~ partly", "ruled out": "✕ ruled out", "not tested": "– not tested" };
 function textEl(tag, text, cls) { const el = document.createElement(tag); el.textContent = text; if (cls) el.className = cls; return el; }
 function renderDiagnosis(r) {
