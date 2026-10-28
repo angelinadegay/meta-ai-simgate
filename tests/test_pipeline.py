@@ -157,6 +157,99 @@ def test_director_planning_uses_one_call_retries_validation_and_falls_back():
         llm.chat = original_chat
 
 
+def test_stress_plan_requires_an_existing_robot_scene():
+    from simgate import config, llm
+    from simgate.director import Director
+
+    original_mock = config.MOCK_MODE
+    original_chat = llm.chat
+    structure = SceneSpec(domain="structure").fill_defaults()
+    calls = []
+
+    try:
+        config.MOCK_MODE = True
+        fallback = Director().plan("stress test", structure)
+        assert fallback.workflow == "answer"
+        assert "Create a robot scene first" in fallback.reply
+
+        config.MOCK_MODE = False
+        llm.chat = lambda *_args, **_kwargs: (calls.append(True) or (
+            '{"workflow":"stress_test","summary":"Test robustness.","question":"How robust?"}'
+        ))
+        fallback = Director().plan("stress test", structure)
+        assert len(calls) == 2
+        assert fallback.workflow == "answer"
+        assert "simple planner" in fallback.summary
+    finally:
+        config.MOCK_MODE = original_mock
+        llm.chat = original_chat
+
+
+def test_plan_workflow_expands_race_and_runs_only_when_requested():
+    import asyncio
+
+    from simgate import config, llm
+    from simgate.director import Director
+
+    original_mock = config.MOCK_MODE
+    original_chat = llm.chat
+    calls = []
+
+    async def execute(run_now, current=None):
+        events = []
+
+        async def emit(event):
+            events.append(event)
+
+        def scripted_chat(messages, *_args, **_kwargs):
+            calls.append(messages)
+            if len(calls) > 1:
+                return "Rover 2 reached the goal first."
+            return (
+                '{"workflow":"race","summary":"Race three rovers east.",'
+                f'"robots":[{{"kind":"rover","count":3}}],"goal":{{"place":"east"}},'
+                f'"run_now":{str(run_now).lower()}' + "}"
+            )
+
+        llm.chat = scripted_chat
+        return await Director(emit).execute_plan("race three rovers east", current), events
+
+    try:
+        config.MOCK_MODE = False
+        (world, message), events = asyncio.run(execute(False))
+        assert len(calls) == 1
+        assert len(world.spec.robots) == 3
+        assert all(robot.goal_place == "east" for robot in world.spec.robots)
+        assert message == "Run it?"
+        assert any(event.get("tool") == "ask_user" for event in events)
+
+        calls.clear()
+        current = SceneSpec(
+            domain="robot_terrain",
+            terrain=Terrain(kind="flat"),
+        ).fill_defaults()
+        (world, _), _ = asyncio.run(execute(False, current))
+        assert len(calls) == 1
+        assert len(world.spec.robots) == 3
+        assert world.spec.environment.body == current.environment.body
+
+        calls.clear()
+        (world, message), events = asyncio.run(execute(True))
+        planning_calls = [
+            messages for messages in calls
+            if any("Plan JSON schema:" in message["content"] for message in messages)
+        ]
+        assert len(planning_calls) == 1
+        assert len(calls) == 2  # one plan and one post-run explanation
+        assert world.results is not None
+        assert len(world.results["leaderboard"]) == 3
+        assert any(event.get("tool") == "run" for event in events)
+        assert "Race complete" in message
+    finally:
+        config.MOCK_MODE = original_mock
+        llm.chat = original_chat
+
+
 def test_director_tools_validate_and_update_world():
     import pytest
     from pydantic import ValidationError

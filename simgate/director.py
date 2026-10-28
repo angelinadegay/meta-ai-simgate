@@ -81,12 +81,53 @@ class Director:
                 })
             reply = llm.chat(messages, config.PLANNER_MODEL)
             try:
-                return Plan.model_validate(llm.extract_json(reply))
+                plan = Plan.model_validate(llm.extract_json(reply))
+                if plan.workflow == "stress_test" and not _has_robot_scene(world_state):
+                    raise ValueError("workflow 'stress_test' requires an existing robot scene.")
+                return plan
             except (ValueError, TypeError) as exc:
                 last_error = str(exc)
         plan = _rule_plan(text, world_state)
         plan.summary = f"I used the simple planner for this one: {plan.summary}"
         return plan
+
+    async def execute_plan(self, text: str, current: SceneSpec | None = None) -> tuple[World, str]:
+        from . import workflows
+
+        self._root_id = self._id()
+        model = "rules" if config.MOCK_MODE else config.PLANNER_MODEL
+        await self._emit_step(
+            id=self._root_id,
+            parent_id=None,
+            agent="Director",
+            model=model,
+            tool=None,
+            args={},
+            thought="Planning the requested world in one step.",
+            result="",
+            status="working",
+            ms=0,
+        )
+        started = time.perf_counter()
+        plan = await asyncio.to_thread(self.plan, text, current)
+        plan_step = self._id()
+        await self._emit_step(
+            id=plan_step,
+            parent_id=self._root_id,
+            agent="Director",
+            model=model,
+            tool="plan",
+            args={"request": text[:300]},
+            thought=plan.summary,
+            result=f"Validated {plan.workflow} plan.",
+            status="done",
+            ms=round((time.perf_counter() - started) * 1000),
+        )
+        world, message = await workflows.execute(plan, current, self)
+        if "I used the simple planner for this one" in plan.summary:
+            message = f"I used the simple planner for this one. {message}"
+        await self._finish_root(message)
+        return world, message
 
     async def execute(self, text: str, current: SceneSpec | None = None) -> tuple[World, str]:
         if config.MOCK_MODE:
@@ -547,6 +588,12 @@ def _rule_plan(text: str, world_state: World | SceneSpec | dict[str, Any] | None
         )
 
     planned = agents._mock_plan(text, current)
+    if is_stress and (current is None or current.domain != "robot_terrain"):
+        return Plan(
+            workflow="answer",
+            summary="A stress test needs an existing robot scene.",
+            reply="Create a robot scene first, then ask me to stress-test it.",
+        )
     if is_stress:
         return Plan(
             workflow="stress_test",
@@ -563,6 +610,13 @@ def _rule_plan(text: str, world_state: World | SceneSpec | dict[str, Any] | None
         "slope_deg": planned.terrain.slope_deg if planned.terrain and planned.terrain.kind == "slope" else None,
         "roughness": planned.terrain.roughness if planned.terrain else None,
     }
+    mission = planned.mission
+    goal = None
+    if mission is not None:
+        if mission.goal_xy is not None:
+            goal = {"xy": mission.goal_xy}
+        elif mission.goal_place is not None:
+            goal = {"place": mission.goal_place}
 
     if is_compare:
         body_names = [name for name in presets.GRAVITY if re.search(rf"\b{name}\b", source)]
@@ -581,22 +635,47 @@ def _rule_plan(text: str, world_state: World | SceneSpec | dict[str, Any] | None
             variants=variations,
         )
 
+    robots = _rule_robot_plans(text, planned.robot)
+    race = bool(re.search(r"\brace\b", source)) and sum(robot["count"] for robot in robots) > 1
+    requested_run = bool(re.search(r"\b(run|simulate|start|go ahead|test now)\b", source))
+    if current is not None and race:
+        return Plan(
+            workflow="race",
+            summary="Race the requested robots on the current course.",
+            world=world,
+            robots=robots,
+            obstacles=[obstacle.model_dump(mode="json") for obstacle in planned.obstacles],
+            goal=goal,
+            run_now=requested_run,
+        )
+
     if current is not None and not has_world_request:
         return Plan(
             workflow="answer",
             summary="Answering a question about the current scene.",
             reply="The current world is ready for a run; ask me to run it or describe a change.",
         )
-    mission = planned.mission
-    goal = None
-    if mission is not None:
-        if mission.goal_xy is not None:
-            goal = {"xy": mission.goal_xy}
-        elif mission.goal_place is not None:
-            goal = {"place": mission.goal_place}
-    robots = _rule_robot_plans(text, planned.robot)
-    race = bool(re.search(r"\brace\b", source)) and sum(robot["count"] for robot in robots) > 1
-    requested_run = bool(re.search(r"\b(run|simulate|start|go ahead|test now)\b", source))
+    if current is not None:
+        changes: dict[str, Any] = {}
+        if (
+            planned.environment.body != current.environment.body
+            or planned.environment.surface != current.environment.surface
+            or planned.terrain != current.terrain
+        ):
+            changes["world"] = world
+        if planned.obstacles != current.obstacles:
+            changes["obstacles"] = [obstacle.model_dump(mode="json") for obstacle in planned.obstacles]
+        if planned.robot != current.robot:
+            changes["robot"] = planned.robot.model_dump(mode="json") if planned.robot else None
+        if planned.mission != current.mission and planned.mission is not None:
+            changes["mission"] = planned.mission.model_dump(mode="json")
+        return Plan(
+            workflow="edit" if changes else "answer",
+            summary="Applying only the requested changes to the current world." if changes
+            else "No scene changes are needed.",
+            changes=changes,
+            reply=None if changes else "I couldn't identify a scene change. Tell me what you'd like to adjust.",
+        )
     return Plan(
         workflow="race" if race else "build",
         summary=planned.title.rstrip(".") + ".",
@@ -608,15 +687,28 @@ def _rule_plan(text: str, world_state: World | SceneSpec | dict[str, Any] | None
     )
 
 
+def _has_robot_scene(world_state: World | SceneSpec | dict[str, Any] | None) -> bool:
+    if isinstance(world_state, World):
+        spec = world_state.spec
+    elif isinstance(world_state, SceneSpec):
+        spec = world_state
+    else:
+        return False
+    return spec.domain == "robot_terrain" and bool(spec.robots or spec.robot)
+
+
 def _rule_robot_plans(text: str, fallback: Robot | None) -> list[dict[str, Any]]:
     requested = _requested_robots(text, fallback)
     grouped: dict[tuple[Any, ...], dict[str, Any]] = {}
     for robot in requested:
-        signature = (robot.get("kind"), robot.get("robot_id"), robot.get("policy_id"))
+        signature = (
+            robot.get("kind"), robot.get("robot_id"), robot.get("policy_id"),
+            robot.get("legs"), robot.get("wheels"),
+        )
         if signature not in grouped:
             grouped[signature] = {
                 key: robot[key]
-                for key in ("kind", "robot_id", "policy_id", "label")
+                for key in ("kind", "robot_id", "policy_id", "label", "legs", "wheels")
                 if key in robot
             }
             grouped[signature]["count"] = 0

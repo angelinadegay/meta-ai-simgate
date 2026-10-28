@@ -56,6 +56,8 @@ class RobotPlan(BaseModel):
     robot_id: str | None = None
     policy_id: str | None = None
     count: int = Field(default=1, ge=1, le=6)
+    legs: Literal[4, 6] | None = None
+    wheels: Literal[4, 6] | None = None
     start_place: Place | None = None
     goal_place: Place | None = None
 

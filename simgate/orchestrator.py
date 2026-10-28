@@ -51,7 +51,7 @@ class Session:
     async def make(self, text: str, editing: bool) -> None:
         await self.agent("Director", "working", "Planning the world operations…")
         director = Director(self.emit)
-        world, message = await director.execute(text, self.spec if editing else None)
+        world, message = await director.execute_plan(text, self.spec if editing else None)
         spec = world.spec
         if self.library_selection and spec.domain == "robot_terrain":
             self._apply_library_selection(spec)
@@ -66,6 +66,8 @@ class Session:
                 "language": world.build.language,
             })
             await self.emit({"type": "checks", "checks": [check.__dict__ for check in world.checks]})
+        if world.results is not None:
+            await self.emit({"type": "metrics", "metrics": world.results})
         self.awaiting_approval = world.question is not None
         await self.agent("Director", "done", spec.title + (" — " + " ".join(spec.assumptions) if spec.assumptions else ""))
         await self.emit({
