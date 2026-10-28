@@ -325,6 +325,32 @@ def test_plan_workflow_preserves_structural_scene_support():
     assert message == "Run it?"
 
 
+def test_edit_plan_changes_only_the_requested_scene_fields():
+    import asyncio
+
+    from simgate.director import Director
+
+    current = SceneSpec(
+        domain="robot_terrain",
+        environment=Environment(body="mars", surface="regolith"),
+        terrain=Terrain(kind="hills", roughness=0.2),
+        robot=Robot(kind="walker", legs=6),
+        mission=Mission(start_place="west", goal_place="east"),
+        obstacles=[Obstacle(kind="rock", count=2)],
+    ).fill_defaults()
+
+    async def scenario():
+        return await Director().execute_plan("make the slope steeper", current)
+
+    world, _ = asyncio.run(scenario())
+    assert world.spec.terrain.kind == "slope" and world.spec.terrain.slope_deg == 20
+    assert world.spec.environment.body == current.environment.body == "mars"
+    assert world.spec.environment.surface == current.environment.surface == "regolith"
+    assert world.spec.robot == current.robot
+    assert world.spec.mission == current.mission
+    assert world.spec.obstacles == current.obstacles
+
+
 def test_template_repair_uses_registered_physics_presets():
     from simgate import presets, workflows
     from simgate.backends.base import Check

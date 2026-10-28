@@ -34,22 +34,20 @@ learn the tools.
 ### 1. Agent pipeline
 
 ```
-prompt ─► Director ─► tools ─► Builder ─► Checker ─► (you approve) ─► Simulator ─► Explainer
-          (plans       (edit,    (builds    (checks       "Run it?"      (streams      (explains
-           actions)    build,     scene)    physics)                      frames)       evidence)
-                       run...)
+prompt ─► Director ─► fixed workflow ─► Builder/Checker ─► (you approve) ─► Simulator ─► Explainer
+          (one plan)    (code runs the     (bounded repair)   "Run it?"      (streams      (measured
+                         planned steps)                                      frames)       evidence)
 ```
 
-- The **Director** interprets new scenarios and follow-up requests, then chooses registered tools to edit the
-  current world, build and check it, run approved work, and explain results. The model returns one JSON tool
-  action at a time; it does not write physical values or place objects directly.
-- For explicitly counted races, the Director verifies the requested robot mix was created and checked. If its
-  plan stalls or ends early, a rules-based recovery completes that race setup and asks for approval.
+- The **Director** makes one planning call for a request. It returns a validated Plan; code expands robot counts
+  and executes the selected workflow in a fixed order. The model never chooses arbitrary physical values or
+  object placements.
 - **Builder** produces the simulation from a verified template by default. In `llm` mode it can write MuJoCo
   XML; invalid output is retried and falls back to the template if needed. The constrained `build_custom` tool
   only appends body/geom fragments and validates them without allowing robot joints or actuators to be changed.
-- **Checker** verifies the scene before anything runs (see [Physics checks](#physics-checks)). Failed checks are
-  returned to the Director so it can repair the scene before a run.
+- **Checker** verifies the scene before anything runs (see [Physics checks](#physics-checks)). Failed checks
+  enter a visible repair loop capped at three attempts. Template mode applies only safe, registered preset
+  corrections; LLM Builder mode receives the exact failed checks. Remaining failures are shown and block a run.
 - **Approval:** the Director asks "Run it?" unless the user explicitly requested a run. One click gives exactly
   one run, and an explicit "run again" repeats it.
 - **Simulator** streams frames live to the browser.
@@ -58,13 +56,24 @@ prompt ─► Director ─► tools ─► Builder ─► Checker ─► (you ap
 - **Mock mode:** with no model configured, simple rules stand in for every agent, so the whole pipeline works
   offline.
 
-### Director and tools
+### How the Director works
 
-The Director can call `set_world`, `spawn_robot`, `remove_robot`, `list_library`, `add_obstacles`,
+The Director's model call produces one complete JSON Plan: workflow, world, robot count and choices, obstacles,
+goals, variants, and whether the user explicitly asked to run. The plan is checked against registered robot,
+policy, world, and terrain IDs. Invalid output gets one correction request; if that is still invalid, the rules
+planner is used and the user is told.
+
+After planning, deterministic code runs the fixed workflow: build/race sets up the world and robots, places
+obstacles and goals, then builds and checks before asking for approval or running. Compare and stress workflows
+use the existing batch runner. Edit changes only named fields; answer plans skip simulation. There is no
+one-tool-per-model-turn loop or 12-call limit.
+
+A typical race uses **one Director planning model call**. If it runs, a separate Explainer call may follow; a
+failed check can add up to three bounded Builder repair attempts. Mock mode uses rules and makes no model calls.
+
+The registered tools include `set_world`, `spawn_robot`, `remove_robot`, `list_library`, `add_obstacles`,
 `clear_obstacles`, `set_start`, `set_goal`, `build_and_check`, `run`, `compare`, `build_custom`, `ask_user` and
-`explain`. `stress_test` is registered only when the stress-test module is available. The tool loop allows up to
-12 actions per request and one correction attempt after invalid model output or a tool error. A model selects
-options and registered IDs; code and presets provide physical values, terrain placement and obstacle placement.
+`explain`; workflows invoke them in code rather than asking the Director to select one at a time.
 
 ### Several robots
 
@@ -77,9 +86,10 @@ individual colored trails and labels, and leaderboard rows move the follow camer
 
 ### Seeing the agents work
 
-The chat timeline shows each Director tool action and each Builder, Checker, Simulator or Explainer hand-off.
-Expand a step to inspect its arguments and result. The **Agents** panel shows which agent is active, its model
-and run count, with an arrow for hand-offs. The same row IDs connect each hand-off to its parent Director step.
+The chat timeline shows the Director's planning thought and each workflow/agent step; expand a row to inspect
+its arguments and result. The **Agents** panel shows Director, Builder, Checker, Simulator and Explainer with
+their model names and run counts. Checker-to-Builder repair hand-offs and the follow-up check appear as separate
+steps in the event tree.
 
 ### 2. MuJoCo backend (robots on terrain)
 
@@ -241,7 +251,7 @@ Without a key, it runs in mock mode.
 
 ### 11. Tests
 
-`python tests/test_pipeline.py` runs 34 offline tests. The optional real-terrain integration test skips when
+`python tests/test_pipeline.py` runs 41 offline tests. The optional real-terrain integration test skips when
 `rasterio` is unavailable.
 
 | Test | Checks that |
@@ -250,11 +260,18 @@ Without a key, it runs in mock mode.
 | `three_rover_race_has_non_overlapping_spawns_and_leaderboard` | Three robots start apart, pass checks and are ranked by arrival |
 | `two_rovers_collide_in_shared_world` | Two robots collide and contacts are recorded by shared physics |
 | `legacy_robot_spec_becomes_single_entry` | The single-robot format remains backward compatible |
+| `director_plan_schema_validates_ids_and_expanded_robot_limit` | Plan IDs are registered and expanded robot counts stay within six |
+| `director_planning_uses_one_call_retries_validation_and_falls_back` | A valid plan uses one call, validation errors get one retry, then rules fallback |
+| `stress_plan_requires_an_existing_robot_scene` | Stress plans without a robot scene fall back to a safe answer |
+| `plan_workflow_expands_race_and_runs_only_when_requested` | A 3-rover race asks before running and produces a 3-row leaderboard when requested |
+| `plan_workflow_bounds_visible_repairs_and_asks_before_running` | Repair events form a visible tree, stop after three attempts and never run failed scenes |
+| `plan_workflow_preserves_structural_scene_support` | Structural scenes still use the OpenSees build/check workflow |
+| `edit_plan_changes_only_the_requested_scene_fields` | A terrain edit preserves the existing robot, mission, world and obstacles |
+| `template_repair_uses_registered_physics_presets` | Safe repairs restore registered gravity, friction and slope values |
 | `director_tools_validate_and_update_world` | Tools validate inputs and update the draft world |
-| `mock_director_turns_race_into_ordered_tool_calls` | Offline Director plans a mixed race and asks before running |
-| `director_recovers_from_invalid_replies_and_failed_checks` | Bad JSON, invalid tool arguments, stalled multi-robot races and failed checks get a bounded recovery |
+| `mock_director_turns_race_into_ordered_tool_calls` | Offline planning creates a mixed race and asks before running |
 | `build_custom_retries_and_emits_attempt_steps` | A rejected custom fragment is corrected and both attempts appear in the step tree |
-| `director_context_compacts_scene_payload_and_bounds_history` | Large geometry payloads are summarized and conversation history stays bounded |
+| `plan_prompt_uses_compact_current_world_state` | Current-world prompts exclude large code and mesh payloads |
 | `icy_slope_physics` | A rover can't climb a 25° ice slope (friction below tan 25°) |
 | `walkers_walk_without_falling` | 4- and 6-legged walkers walk on Mars hills without falling |
 | `building_textbook_and_resonance` | OpenSees matches the textbook cantilever, and a softer building sways more |
