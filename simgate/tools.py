@@ -117,6 +117,7 @@ class World:
     results: dict[str, Any] | None = None
     question: str | None = None
     run_requested: bool = False      # the session should stream a run of this world next
+    report: dict[str, Any] | None = None   # a diagnosis or redesign of the last run, for the browser
     emit: Any = None
 
     def state(self) -> dict[str, Any]:

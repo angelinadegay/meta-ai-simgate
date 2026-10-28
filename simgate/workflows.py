@@ -1,6 +1,7 @@
 """Fixed workflows that execute validated Director plans."""
 
 import asyncio
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from . import agents, config, presets
@@ -16,9 +17,43 @@ if TYPE_CHECKING:
 WorkflowResult = tuple[World, str]
 
 
-async def execute(plan: Plan, current: SceneSpec | None, director: "Director") -> WorkflowResult:
+@dataclass
+class SessionState:
+    """What the session knows about the current scene beyond its spec: its build, the last run's measured
+    results, and the last diagnosis and redesign of that run. Reset whenever the scene changes."""
+
+    simulator: Any = None
+    build: Any = None
+    checks: list = field(default_factory=list)
+    summary: dict | None = None
+    diagnosis: dict | None = None
+    redesign: dict | None = None
+
+    def failed_robot(self) -> str | None:
+        """The first robot that failed the last run, or None when there is no failed run."""
+        from .diagnose import robot_metrics
+
+        if self.summary is None:
+            return None
+        robots = self.summary.get("robots") if isinstance(self.summary.get("robots"), dict) else None
+        for robot_id in (list(robots) if robots else [None]):
+            metrics = robot_metrics(self.summary, robot_id)
+            if not metrics["passed"]:
+                return metrics["robot_id"] or "r1"
+        return None
+
+
+async def execute(plan: Plan, current: SceneSpec | None, director: "Director",
+                  state: SessionState | None = None) -> WorkflowResult:
+    if plan.workflow in ("diagnose", "redesign"):
+        return await _analysis(plan, current, director, state or SessionState())
+
     if plan.workflow == "answer":
-        return World(current.model_copy(deep=True) if current else SceneSpec(domain="robot_terrain")), plan.reply or plan.summary
+        if current is None:
+            return World(SceneSpec(domain="robot_terrain")), plan.reply or plan.summary
+        state = state or SessionState()   # an answer keeps the scene exactly as it was, build included
+        return World(current.model_copy(deep=True), simulator=state.simulator, build=state.build,
+                     checks=list(state.checks)), plan.reply or plan.summary
 
     if plan.workflow == "edit":
         if current is None:
@@ -150,6 +185,68 @@ async def _prepare_robot_world(
                     "Assigning the shared goal.",
                 )
     return world
+
+
+async def _analysis(plan: Plan, current: SceneSpec | None, director: "Director", state: SessionState) -> WorkflowResult:
+    """Prove why the last run failed, or search for a design that passes. The scene itself never changes."""
+    from .diagnose import diagnose
+    from .redesign import redesign
+
+    if current is None or current.domain != "robot_terrain":
+        raise ValueError("Diagnosing and redesigning need a robot scene.")
+    world = World(current.model_copy(deep=True), simulator=state.simulator, build=state.build, checks=list(state.checks))
+    if state.summary is None:
+        return world, "Run the scene first; then I can test why it fails or search for a design that passes."
+    robot_id = plan.robot_id or state.failed_robot()
+
+    if plan.workflow == "diagnose":
+        job = lambda on_step: diagnose(current, state.summary, robot_id, on_step)  # noqa: E731
+    else:
+        job = lambda on_step: redesign(current, state.summary, plan.constraints, state.diagnosis,  # noqa: E731
+                                       robot_id, on_step)
+    report = await _stream_steps(job, director)
+    world.report = report
+    return world, report.get("conclusion") or report.get("message", "")
+
+
+async def _stream_steps(job, director: "Director") -> dict:
+    """Run a blocking analysis in a thread and show its steps as they happen, each following the previous one."""
+    loop = asyncio.get_running_loop()
+    queue: asyncio.Queue = asyncio.Queue()
+    task = asyncio.ensure_future(asyncio.to_thread(job, lambda step: loop.call_soon_threadsafe(queue.put_nowait, step)))
+    open_steps: dict[tuple[str, str], tuple[str, str | None]] = {}
+    parent = director._root_id
+
+    async def show(step: dict) -> None:
+        nonlocal parent
+        key = (step["agent"], step["tool"])
+        model = {"Explainer": "rules" if config.MOCK_MODE else config.PLANNER_MODEL,
+                 "Designer": "rules" if config.MOCK_MODE else config.BUILDER_MODEL,
+                 "Batch runner": "ProcessPoolExecutor", "Checker": "rules"}.get(step["agent"], "rules")
+        if step["status"] == "working":
+            step_id = await _start_step(director, agent=step["agent"], model=model, tool=step["tool"],
+                                        parent_id=parent, thought=step["thought"], args={})
+            open_steps[key] = (step_id, parent)
+            return
+        step_id, started_under = open_steps.pop(key, (None, parent))
+        if step_id is None:
+            step_id = await _start_step(director, agent=step["agent"], model=model, tool=step["tool"],
+                                        parent_id=parent, thought=step["thought"], args={})
+        await _finish_step(director, step_id, agent=step["agent"], model=model, tool=step["tool"],
+                           parent_id=started_under, thought=step["thought"], result=step["result"], status=step["status"])
+        parent = step_id
+
+    while True:
+        getter = asyncio.ensure_future(queue.get())
+        done, _ = await asyncio.wait({getter, task}, return_when=asyncio.FIRST_COMPLETED)
+        if getter in done:
+            await show(getter.result())
+            continue
+        getter.cancel()
+        break
+    while not queue.empty():
+        await show(queue.get_nowait())
+    return task.result()
 
 
 def _spawn_args(robot_plan: RobotPlan) -> list[dict[str, Any]]:
@@ -430,8 +527,12 @@ def apply_edit(current: SceneSpec, changes: EditChanges) -> World:
     spec = world.spec
     if changes.robot is not None:
         given = changes.robot.model_dump(exclude_unset=True)   # {"wheels": 6} changes only the wheels
-        spec.robot = (spec.robot or Robot()).model_copy(update=given, deep=True)
-        for entry in spec.robots:
+        targets = [entry for entry in spec.robots if changes.robot_id in (None, entry.id)]
+        if not targets:
+            raise ValueError(f"Unknown robot id: {changes.robot_id}")
+        if spec.robot is None or not spec.robots or spec.robots[0] in targets:
+            spec.robot = (spec.robot or Robot()).model_copy(update=given, deep=True)
+        for entry in targets:
             entry.robot = entry.robot.model_copy(update=given, deep=True)
     if changes.robots is not None:
         previous = spec.robots[0] if spec.robots else None

@@ -26,10 +26,14 @@ class Director:
         self.used_rule_planner = False            # the model's plan failed twice; the user is told
         self.guard_notes: list[str] = []          # corrections made to the model's plan from the request's words
 
-    def plan(self, text: str, world_state: World | SceneSpec | dict[str, Any] | None = None) -> Plan:
-        """Create a complete validated plan, retry once, then use the deterministic planner."""
+    def plan(self, text: str, world_state: World | SceneSpec | dict[str, Any] | None = None,
+             state: Any = None) -> Plan:
+        """Create a complete validated plan, retry once, then use the deterministic planner.
+        ``state`` is the session's workflows.SessionState (last run, diagnosis, redesign), if any."""
+        if (design := _use_design_plan(text, state)) is not None:
+            return design
         if config.MOCK_MODE:
-            return _rule_plan_with_title(text, world_state)
+            return _analysis_plan(text, world_state, state) or _rule_plan_with_title(text, world_state)
 
         messages = [
             {"role": "system", "content": _plan_system()},
@@ -47,18 +51,25 @@ class Director:
             reply = llm.chat(messages, config.PLANNER_MODEL)
             try:
                 plan = Plan.model_validate(llm.extract_json(reply))
-                if plan.workflow == "stress_test" and not _has_robot_scene(world_state):
-                    raise ValueError("workflow 'stress_test' requires an existing robot scene.")
+                if plan.workflow in ("stress_test", "diagnose", "redesign") and not _has_robot_scene(world_state):
+                    raise ValueError(f"workflow {plan.workflow!r} requires an existing robot scene.")
                 if plan.workflow == "edit":
                     _check_edit(plan, text, world_state)
                 self.guard_notes = _apply_text_guards(plan, text)
+                guarded = _analysis_plan(text, world_state, state, only_after_failure=True)
+                if guarded is not None and guarded.workflow != plan.workflow:
+                    self.guard_notes.append(f"You asked {'how to make it pass' if guarded.workflow == 'redesign' else 'why it failed'} "
+                                            f"after a failed run, so I'm using the {guarded.workflow} workflow.")
+                    plan = guarded
+                if plan.workflow == "redesign":
+                    plan.constraints = text   # limits are read from the user's own words
                 return plan
             except (ValueError, TypeError) as exc:
                 last_error = str(exc)
         self.used_rule_planner = True
-        return _rule_plan_with_title(text, world_state)
+        return _analysis_plan(text, world_state, state) or _rule_plan_with_title(text, world_state)
 
-    async def execute_plan(self, text: str, current: SceneSpec | None = None) -> tuple[World, str]:
+    async def execute_plan(self, text: str, current: SceneSpec | None = None, state: Any = None) -> tuple[World, str]:
         from . import workflows
 
         self._root_id = self._id()
@@ -76,7 +87,7 @@ class Director:
             ms=0,
         )
         started = time.perf_counter()
-        plan = await asyncio.to_thread(self.plan, text, current)
+        plan = await asyncio.to_thread(self.plan, text, current, state)
         plan_step = self._id()
         await self._emit_step(
             id=plan_step,
@@ -93,7 +104,7 @@ class Director:
             status="done",
             ms=round((time.perf_counter() - started) * 1000),
         )
-        world, message = await workflows.execute(plan, current, self)
+        world, message = await workflows.execute(plan, current, self, state)
         world.spec.assumptions.extend(self.guard_notes)
         if self.used_rule_planner:
             message = f"I used the simple planner for this one. {message}"
@@ -232,6 +243,10 @@ Workflows:
 - edit: modify only the requested parts of the existing world.
 - custom: request a custom MJCF fragment.
 - answer: answer a question without simulation.
+- diagnose: after a failed run, find out why ("why did it fail?", "prove it", "what caused it"): code reruns the
+  scene with one change at a time. Optional robot_id.
+- redesign: after a failed run, change only the robot's design until it passes ("fix it", "make it pass", "what
+  would work"). Put the user's limits in constraints, in their words. Optional robot_id.
 - Existing structural scenes use domain "structure" with structure and load fields.
 
 Guidance:
@@ -262,6 +277,8 @@ Steeper edit plan: {{"workflow":"edit","summary":"Rover on a steeper slope","cha
 - For "use six wheels", change only that robot field, never whole robot records:
 Robot edit plan: {{"workflow":"edit","summary":"Six-wheel rover","changes":{{"robot":{{"wheels":6}}}}}}
 - An edit lists only the fields that change; code rebuilds the title.
+Diagnose plan: {{"workflow":"diagnose","summary":"Why the rover got stuck"}}
+Redesign plan: {{"workflow":"redesign","summary":"A rover that passes the course","constraints":"<the user's limits, in their words>"}}
 Answer plan: {{"workflow":"answer","summary":"What SimGate can do","reply":"You can build robot scenes, compare conditions, race robots, or run stress tests."}}
 
 Available library robots and policies:
@@ -456,6 +473,37 @@ def _rule_plan(text: str, world_state: World | SceneSpec | dict[str, Any] | None
         goal=goal,
         run_now=requested_run,
     )
+
+
+_WHY = re.compile(r"\bwhy\b|\bprove (it|why)\b|\bwhat caused\b|\bwhat went wrong\b|\bdiagnos")
+_FIX = re.compile(r"\bfix (it|this|that)\b|\bmake (it|this|that) (pass|work|succeed)\b|\bwhat would work\b|\bredesign\b")
+_USE_DESIGN = re.compile(r"\b(use|apply|take) (this|that|the|your) (new |winning |suggested )?design\b")
+
+
+def _use_design_plan(text: str, state: Any) -> Plan | None:
+    """"use this design" applies the last redesign's winner through the typed edit path (no model call)."""
+    if not _USE_DESIGN.search(text.lower()):
+        return None
+    winner = ((state.redesign or {}).get("winner") if state is not None else None)
+    if not winner:
+        return Plan(workflow="answer", summary="No design to apply",
+                    reply="There's no passing design to apply yet. Ask me to make it pass first.")
+    return Plan(workflow="edit", summary="Apply the passing design",
+                changes={"robot": winner["changes"], "robot_id": state.redesign.get("robot_id")})
+
+
+def _analysis_plan(text: str, world_state: World | SceneSpec | dict[str, Any] | None, state: Any,
+                   only_after_failure: bool = False) -> Plan | None:
+    """Rules cue (and model guard): "why ...?" diagnoses the last run, "make it pass" redesigns the robot."""
+    source = text.lower()
+    fix, why = bool(_FIX.search(source)), bool(_WHY.search(source))
+    if not (fix or why) or not _has_robot_scene(world_state) or state is None or state.summary is None:
+        return None
+    if only_after_failure and state.failed_robot() is None:
+        return None
+    if fix:
+        return Plan(workflow="redesign", summary="A design that passes the same world", constraints=text)
+    return Plan(workflow="diagnose", summary="Why the last run failed")
 
 
 def _current_spec(world_state: World | SceneSpec | dict[str, Any] | None) -> SceneSpec | None:

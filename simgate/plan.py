@@ -20,7 +20,7 @@ def _far_side_to_place(value: Any) -> Any:
 
 PlanPlace = Annotated[Place, BeforeValidator(_far_side_to_place)]
 
-Workflow = Literal["build", "race", "compare", "stress_test", "edit", "custom", "answer"]
+Workflow = Literal["build", "race", "compare", "stress_test", "edit", "custom", "answer", "diagnose", "redesign"]
 TerrainKind = Literal["flat", "hills", "rocky", "slope", "craters", "real"]
 Surface = Literal["rock", "regolith", "gravel", "sand", "mud", "ice"]
 RobotKind = Literal["rover", "walker"]
@@ -123,6 +123,7 @@ class EditChanges(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     title: str | None = Field(default=None, min_length=1, max_length=120)
+    robot_id: str | None = None     # a robot change applies to this robot only (default: every robot)
     world: WorldPlan | None = None
     robot: Robot | None = None
     robots: list[RobotPlan] | None = Field(default=None, min_length=1, max_length=6)
@@ -152,7 +153,7 @@ class EditChanges(BaseModel):
         return data
 
     def given(self) -> dict[str, Any]:
-        return self.model_dump(exclude_none=True)
+        return self.model_dump(exclude_none=True, exclude={"robot_id"})
 
 
 class Plan(BaseModel):
@@ -174,6 +175,8 @@ class Plan(BaseModel):
     question: str | None = Field(default=None, max_length=1000)
     changes: EditChanges = Field(default_factory=EditChanges)
     custom_request: str | None = Field(default=None, max_length=2000)
+    robot_id: str | None = Field(default=None, max_length=40)        # diagnose/redesign: which robot (default: the first that failed)
+    constraints: str | None = Field(default=None, max_length=500)    # redesign: the user's limits, in their words
     run_now: bool = False
     reply: str | None = Field(default=None, max_length=2000)
 
@@ -193,7 +196,7 @@ class Plan(BaseModel):
             raise ValueError("workflow 'custom' requires custom_request.")
         if self.workflow == "answer" and not self.reply:
             raise ValueError("workflow 'answer' requires reply.")
-        if self.domain == "structure" and self.workflow in {"race", "compare", "stress_test", "custom"}:
+        if self.domain == "structure" and self.workflow in {"race", "compare", "stress_test", "custom", "diagnose", "redesign"}:
             raise ValueError(f"workflow {self.workflow!r} is not available for structure scenes.")
         if self.world.slope_deg is not None and self.world.terrain_kind not in (None, "slope"):
             raise ValueError("slope_deg can only be used with terrain_kind 'slope'.")

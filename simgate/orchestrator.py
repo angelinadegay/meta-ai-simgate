@@ -8,6 +8,7 @@ from typing import Awaitable, Callable
 from . import agents
 from .backends.base import BuildResult, Check, Simulator, blocking_failures
 from .director import Director
+from .workflows import SessionState
 from .spec import SceneSpec
 
 Emit = Callable[[dict], Awaitable[None]]
@@ -22,6 +23,10 @@ class Session:
         self.checks: list[Check] = []
         self.awaiting_approval = False
         self.library_selection: tuple[str, str, str] | None = None
+        # The last run of the current scene and what was learned from it; cleared when the scene changes.
+        self.last_summary: dict | None = None
+        self.last_diagnosis: dict | None = None
+        self.last_redesign: dict | None = None
 
     async def agent(self, name: str, status: str, message: str) -> None:
         await self.emit({"type": "agent", "agent": name, "status": status, "message": message})
@@ -61,18 +66,30 @@ class Session:
     async def make(self, text: str, editing: bool) -> None:
         await self.agent("Director", "working", "Planning the world operations…")
         director = Director(self.emit)
-        world, message = await director.execute_plan(text, self.spec if editing else None)
+        state = SessionState(simulator=self.sim, build=self.build, checks=list(self.checks), summary=self.last_summary,
+                             diagnosis=self.last_diagnosis, redesign=self.last_redesign)
+        world, message = await director.execute_plan(text, self.spec if editing else None, state)
         if not editing and world.build is None:   # an answer with no scene yet: don't keep an empty one
             await self.agent("Director", "done", "Answered without building a scene.")
             await self.emit({"type": "question", "message": message, "stress_test_available": False})
             return
         spec = world.spec
-        if self.library_selection and spec.domain == "robot_terrain":
+        unchanged = editing and world.build is not None and world.build is self.build   # answer or analysis
+        if self.library_selection and spec.domain == "robot_terrain" and not unchanged:
             self._apply_library_selection(spec)
             world.spec = spec
         self.spec, self.sim, self.build, self.checks = spec, world.simulator, world.build, list(world.checks)
-        await self.emit({"type": "spec", "spec": spec.model_dump()})
-        if world.build is not None:
+        if not unchanged:
+            self._forget_runs()
+        if world.report is not None:
+            if world.report["type"] == "diagnosis":
+                self.last_diagnosis = world.report
+            else:
+                self.last_redesign = world.report
+            await self.emit({"type": world.report["type"], "report": world.report})
+        else:
+            await self.emit({"type": "spec", "spec": spec.model_dump()})
+        if world.build is not None and not unchanged:
             await self.emit({
                 "type": "scene",
                 "scene": world.build.scene,
@@ -82,7 +99,8 @@ class Session:
             await self.emit({"type": "checks", "checks": [check.__dict__ for check in world.checks]})
         if world.results is not None:
             await self.emit({"type": "metrics", "metrics": world.results})
-        self.awaiting_approval = world.question is not None and not blocking_failures(self.checks)
+        if not unchanged:   # an answer or analysis leaves a pending "Run it?" as it was
+            self.awaiting_approval = world.question is not None and not blocking_failures(self.checks)
         await self.agent("Director", "done", spec.title + (" — " + " ".join(spec.assumptions) if spec.assumptions else ""))
         if world.run_requested and self.build is not None:
             self.awaiting_approval = False
@@ -94,6 +112,9 @@ class Session:
             "message": message,
             "stress_test_available": spec.domain == "robot_terrain",
         })
+
+    def _forget_runs(self) -> None:
+        self.last_summary = self.last_diagnosis = self.last_redesign = None
 
     def _apply_library_selection(self, spec: SceneSpec) -> None:
         from .library import LibraryRegistry
@@ -182,6 +203,7 @@ class Session:
             await director._mock_call(world, "build_and_check", {}, "Rebuilding and checking the clicked position.")
             await director._finish_root(f"{which.capitalize()} set to ({x:.1f}, {y:.1f}) m.")
             self.spec, self.sim, self.build, self.checks = world.spec, world.simulator, world.build, list(world.checks)
+            self._forget_runs()
             await self.emit({"type": "spec", "spec": self.spec.model_dump()})
             if self.build is not None:
                 await self.emit({"type": "scene", "scene": self.build.scene, "code": self.build.code, "language": self.build.language})
@@ -194,6 +216,7 @@ class Session:
 
     async def build_and_check(self, spec: SceneSpec) -> None:
         self.spec = spec
+        self._forget_runs()
         await self.emit({"type": "spec", "spec": spec.model_dump()})
         sim = agents.route(spec)
         if self.sim is None or self.sim.name != sim.name:
@@ -307,6 +330,7 @@ class Session:
         await task
 
         metrics = self.sim.summary()
+        self.last_summary, self.last_diagnosis, self.last_redesign = metrics, None, None
         await self.emit({"type": "metrics", "metrics": metrics})
         await self.agent("Simulator", "done", "Run finished.")
         await self.agent("Explainer", "working", "Explaining what happened…")

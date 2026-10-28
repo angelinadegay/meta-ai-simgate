@@ -953,7 +953,7 @@ def test_plan_summaries_are_scene_names():
     assert '"Three rovers race on Mars hills", not an action' in prompt
     examples = [line for line in prompt.splitlines() if line.endswith("}") and ' plan: {"workflow"' in line]
     summaries = [json.loads(line.split(" plan: ", 1)[1])["summary"] for line in examples]
-    assert len(summaries) == 9
+    assert len(summaries) == 11
     assert not any(summary.split()[0] in {"Race", "Compare", "Test", "Make", "Explain", "Create"} for summary in summaries)
 
     plan = Director().plan("compare a rover on the moon and mars")
@@ -977,7 +977,7 @@ def test_plan_prompt_states_world_course_and_preset_rules():
     assert examples["Named world"].world.body == "moon" and examples["Named world"].world.preset is None
     assert [obstacle.placement for obstacle in examples["Course"].obstacles] == ["path"] * 3
     assert examples["Real place"].world.preset == "real-gale"
-    assert len(examples) == 9  # every example in the prompt validates as a Plan
+    assert len(examples) == 11  # every example in the prompt validates as a Plan
 
     assert "30" not in prompt.split("Short examples:", 1)[1].split("Available library robots", 1)[0]
     steeper = examples["Steeper edit"].changes
@@ -1560,6 +1560,109 @@ def test_model_designer_candidates_are_clamped_and_stop_ends_early():
     for decision in report["decisions"]:
         assert decision["reason"] in reasons, decision
     assert report["winner"] is None and report["message"].startswith("No design passed")
+
+
+def test_director_plans_diagnose_and_redesign_in_one_call():
+    import json
+
+    from simgate import config, llm
+    from simgate.director import Director
+    from simgate.workflows import SessionState
+
+    spec = step_course(0.25)
+    failed = SessionState(summary={"goal_reached": False, "final_distance_m": 8.0, "outcome": "stuck"})
+    passed = SessionState(summary={"goal_reached": True, "final_distance_m": 0.5, "outcome": "reached"})
+    original_mock, original_chat = config.MOCK_MODE, llm.chat
+    calls = []
+
+    def planned(text, reply, state=failed):
+        llm.chat = lambda messages, *_args, **_kwargs: calls.append(messages) or json.dumps(reply)
+        director = Director()
+        return director.plan(text, spec, state), director.guard_notes
+
+    try:
+        config.MOCK_MODE = False
+        plan, _ = planned("why did it fail?", {"workflow": "diagnose", "summary": "Why the rover got stuck"})
+        assert plan.workflow == "diagnose" and len(calls) == 1
+        calls.clear()
+        plan, _ = planned("make it pass, keep it under 15 kg",
+                          {"workflow": "redesign", "summary": "A rover that passes", "constraints": "light"})
+        assert plan.workflow == "redesign" and plan.constraints == "make it pass, keep it under 15 kg" and len(calls) == 1
+        # the guard: the model chose something else, but the text clearly asks why after a failed run
+        calls.clear()
+        plan, notes = planned("why did it fail?", {"workflow": "answer", "summary": "Answer", "reply": "It got stuck."})
+        assert plan.workflow == "diagnose" and len(calls) == 1
+        assert notes[-1] == "You asked why it failed after a failed run, so I'm using the diagnose workflow."
+        plan, notes = planned("why did it fail?", {"workflow": "answer", "summary": "Answer", "reply": "It passed."},
+                              state=passed)
+        assert plan.workflow == "answer" and notes == []   # no failed run: no guard
+        # no robot scene: diagnose fails validation and gets the retry
+        calls.clear()
+        llm.chat = lambda messages, *_args, **_kwargs: calls.append(messages) or json.dumps(
+            {"workflow": "diagnose", "summary": "Why"})
+        Director().plan("why did it fail?", None, failed)
+        assert len(calls) == 2 and "requires an existing robot scene" in calls[1][-1]["content"]
+    finally:
+        config.MOCK_MODE, llm.chat = original_mock, original_chat
+
+    config.MOCK_MODE = True
+    assert Director().plan("why did it fail?", spec, failed).workflow == "diagnose"
+    redesign_plan = Director().plan("make it pass, keep it under 15 kg", spec, failed)
+    assert redesign_plan.workflow == "redesign" and redesign_plan.constraints == "make it pass, keep it under 15 kg"
+    assert Director().plan("what would work?", spec, failed).workflow == "redesign"
+    assert Director().plan("why did it fail?", spec, SessionState()).workflow == "answer"   # nothing ran yet
+
+
+def test_use_this_design_applies_only_the_winner_and_rebuilds_the_title():
+    import asyncio
+
+    from simgate import config, llm
+    from simgate.director import Director
+    from simgate.workflows import SessionState
+
+    spec = step_course(0.25)
+    spec.robots[0].robot.wheel_radius = spec.robot.wheel_radius = 0.18
+    state = SessionState(redesign={"type": "redesign", "robot_id": "r1",
+                                   "winner": {"changes": {"wheels": 6}, "description": "wheels 4 → 6"}})
+    original_mock, original_chat = config.MOCK_MODE, llm.chat
+    try:
+        config.MOCK_MODE = False
+        llm.chat = lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("no model call expected"))
+        world, message = asyncio.run(Director().execute_plan("use this design", spec, state))
+    finally:
+        config.MOCK_MODE, llm.chat = original_mock, original_chat
+    robot = world.spec.robots[0].robot
+    assert robot.wheels == 6 and robot.wheel_radius == 0.18
+    assert robot.model_dump(exclude={"wheels"}) == spec.robots[0].robot.model_dump(exclude={"wheels"})
+    for part in ("environment", "terrain", "obstacles", "duration_s"):
+        assert getattr(world.spec, part) == getattr(spec, part), part
+    assert world.spec.title == "6-wheel rover on flat terrain, Earth with an obstacle course"
+    assert message == "Run it?"
+    nothing = Director().plan("use this design", spec, SessionState())
+    assert nothing.workflow == "answer" and "no passing design" in nothing.reply
+
+
+def test_an_answer_keeps_the_built_scene():
+    import asyncio
+
+    from simgate.orchestrator import Session
+
+    async def flow():
+        events = []
+
+        async def emit(event):
+            events.append(event)
+
+        session = Session(emit)
+        await session.handle("A rover on Mars hills")
+        build = session.build
+        await session.handle("what's the gravity on Mars?")
+        assert session.build is build
+        await session.handle("run")
+        return events
+
+    events = asyncio.run(flow())
+    assert any(event["type"] == "run_start" for event in events)
 
 
 def test_stress_trigger_requires_robot_scene():
