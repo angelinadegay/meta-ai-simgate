@@ -559,6 +559,17 @@ def test_build_custom_retries_and_emits_attempt_steps():
         config.BUILDER_MAX_RETRIES = original_retries
 
 
+def test_plan_prompt_offers_built_in_robots_only_as_kinds():
+    import json
+
+    from simgate.director import _plan_system
+
+    prompt = _plan_system()
+    listed = prompt.split("Available library robots and policies:\n", 1)[1].splitlines()[0]
+    assert [robot["id"] for robot in json.loads(listed)] == ["g1"]
+    assert "Built-in robot kinds: rover, walker" in prompt
+
+
 def test_plan_prompt_uses_compact_current_world_state():
     from simgate.backends.base import BuildResult
     from simgate.director import _plan_world_state

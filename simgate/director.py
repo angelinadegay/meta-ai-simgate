@@ -201,6 +201,7 @@ def _plan_system() -> str:
             "compatible_policies": [policy.id for policy in registry.compatible_policies(robot.id)],
         }
         for robot in registry.robots()
+        if robot.source != "builtin"   # built-ins are chosen by kind, not robot_id
     ]
     terrain_presets = agents.presets_text()
     world_ids = [world.id for world in registry.worlds()]
