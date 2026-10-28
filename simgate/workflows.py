@@ -429,9 +429,10 @@ def apply_edit(current: SceneSpec, changes: EditChanges) -> World:
         tools.set_world(world, args)
     spec = world.spec
     if changes.robot is not None:
-        spec.robot = changes.robot.model_copy(deep=True)
+        given = changes.robot.model_dump(exclude_unset=True)   # {"wheels": 6} changes only the wheels
+        spec.robot = (spec.robot or Robot()).model_copy(update=given, deep=True)
         for entry in spec.robots:
-            entry.robot = changes.robot.model_copy(deep=True)
+            entry.robot = entry.robot.model_copy(update=given, deep=True)
     if changes.robots is not None:
         previous = spec.robots[0] if spec.robots else None
         spec.robots, spec.robot = [], None

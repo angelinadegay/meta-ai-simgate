@@ -935,7 +935,7 @@ def test_plan_summaries_are_scene_names():
     assert '"Three rovers race on Mars hills", not an action' in prompt
     examples = [line for line in prompt.splitlines() if line.endswith("}") and ' plan: {"workflow"' in line]
     summaries = [json.loads(line.split(" plan: ", 1)[1])["summary"] for line in examples]
-    assert len(summaries) == 8
+    assert len(summaries) == 9
     assert not any(summary.split()[0] in {"Race", "Compare", "Test", "Make", "Explain", "Create"} for summary in summaries)
 
     plan = Director().plan("compare a rover on the moon and mars")
@@ -959,6 +959,20 @@ def test_plan_prompt_states_world_course_and_preset_rules():
     assert examples["Named world"].world.body == "moon" and examples["Named world"].world.preset is None
     assert [obstacle.placement for obstacle in examples["Course"].obstacles] == ["path"] * 3
     assert examples["Real place"].world.preset == "real-gale"
+    assert len(examples) == 9  # every example in the prompt validates as a Plan
+
+    assert "30" not in prompt.split("Short examples:", 1)[1].split("Available library robots", 1)[0]
+    steeper = examples["Steeper edit"].changes
+    assert steeper.world.terrain_kind == "slope" and steeper.world.slope_deg is None
+    robot_edit = examples["Robot edit"].changes
+    assert robot_edit.robot.model_dump(exclude_unset=True) == {"wheels": 6} and robot_edit.robots is None
+
+    from simgate.workflows import apply_edit
+
+    rover = agents.plan("A rover on Mars hills")
+    rover.robots[0].robot.wheel_radius = 0.2
+    edited = apply_edit(rover, robot_edit).spec
+    assert edited.robots[0].robot.wheels == 6 and edited.robots[0].robot.wheel_radius == 0.2
 
 
 def test_plan_prompt_uses_compact_current_world_state():

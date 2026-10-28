@@ -257,8 +257,11 @@ Real place plan: {{"workflow":"build","summary":"Rover in Gale Crater","world":{
 Race plan: {{"workflow":"race","summary":"Three rovers race to the east side","robots":[{{"kind":"rover","count":3}}],"goal":{{"place":"east"}},"run_now":false}}
 Compare plan: {{"workflow":"compare","summary":"Rover on Mars and Earth","robots":[{{"kind":"rover"}}],"variants":[{{"label":"Mars","gravity":3.71}},{{"label":"Earth","gravity":9.81}}],"run_now":false}}
 Stress plan: {{"workflow":"stress_test","summary":"Rover robustness test","question":"How robust is it?","run_now":false}}
-Edit plan: {{"workflow":"edit","summary":"Rover on a 30° Mars slope","changes":{{"world":{{"terrain_kind":"slope","slope_deg":30}},"title":"Rover on a 30° Mars slope"}}}}
-- An edit lists only the fields that change. Include a new title when the change makes the old one wrong.
+- For "make it steeper" with no number, ask for a slope and leave the angle out; code sets the steepness:
+Steeper edit plan: {{"workflow":"edit","summary":"Rover on a steeper slope","changes":{{"terrain":{{"kind":"slope"}}}}}}
+- For "use six wheels", change only that robot field, never whole robot records:
+Robot edit plan: {{"workflow":"edit","summary":"Six-wheel rover","changes":{{"robot":{{"wheels":6}}}}}}
+- An edit lists only the fields that change; code rebuilds the title.
 Answer plan: {{"workflow":"answer","summary":"What SimGate can do","reply":"You can build robot scenes, compare conditions, race robots, or run stress tests."}}
 
 Available library robots and policies:

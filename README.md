@@ -294,7 +294,7 @@ Without a key, it runs in mock mode.
 | `mock_director_turns_race_into_ordered_tool_calls` | Offline planning creates a mixed race and asks before running |
 | `build_custom_retries_and_emits_attempt_steps` | A rejected custom fragment is corrected and both attempts appear in the step tree |
 | `plan_summaries_are_scene_names` | The planner is asked for a short scene name as summary (used as the title), and the rules planner's summaries are scene names too |
-| `plan_prompt_states_world_course_and_preset_rules` | The planning prompt states the named-world, course-placement and preset rules, each with an example that validates |
+| `plan_prompt_states_world_course_and_preset_rules` | The planning prompt states the named-world, course-placement and preset rules; every example validates, edit examples carry no angle, and a typed robot edit changes only its given fields |
 | `plan_prompt_offers_built_in_robots_only_as_kinds` | The planning prompt lists only library robots by ID; rover and walker are offered as kinds |
 | `plan_prompt_uses_compact_current_world_state` | Current-world prompts exclude large code and mesh payloads |
 | `icy_slope_physics` | A rover can't climb a 25° ice slope (friction below tan 25°) |
