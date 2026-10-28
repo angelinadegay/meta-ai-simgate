@@ -135,7 +135,7 @@ async def _prepare_robot_world(
         if current is not None
         else SceneSpec(domain="robot_terrain", title=_title(plan))
     )
-    if current is None or plan.world.model_dump(exclude_none=True):
+    if current is None or world.spec.terrain is None or plan.world.model_dump(exclude_none=True):
         await director._mock_call(
             world,
             "set_world",

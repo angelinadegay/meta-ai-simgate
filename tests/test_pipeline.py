@@ -1817,6 +1817,36 @@ def test_full_session_why_then_make_it_pass():
     assert next(e["metrics"] for e in final_run if e["type"] == "metrics")["goal_reached"]
 
 
+def session_turns(*texts):
+    """Run messages through orchestrator.Session (the browser's path); return the session and each turn's events."""
+    import asyncio
+
+    from simgate.orchestrator import Session
+
+    async def flow():
+        events, turns = [], []
+
+        async def emit(event):
+            events.append(event)
+
+        session = Session(emit)
+        for text in texts:
+            start = len(events)
+            await session.handle(text)
+            turns.append(events[start:])
+        return session, turns
+
+    return asyncio.run(flow())
+
+
+def test_race_on_an_existing_course_builds_and_checks():
+    session, (_, race) = session_turns("Rover obstacle course with a big step", "race three rovers to the far side")
+    assert not [e for e in race if e["type"] == "error"], [e["message"] for e in race if e["type"] == "error"]
+    assert len(session.spec.robots) == 3 and session.spec.obstacles
+    checks = next(e["checks"] for e in race if e["type"] == "checks")
+    assert any(check["name"] == "Robot starts and goals clear obstacles" for check in checks)
+
+
 def test_stress_trigger_requires_robot_scene():
     import asyncio
     from unittest.mock import patch

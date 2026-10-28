@@ -1343,7 +1343,7 @@ class MuJoCoSimulator(Simulator):
                 if point is None:
                     continue
                 for placed in build.scene.get("course", []):
-                    if np.linalg.norm(np.asarray(point) - np.asarray(placed["xy"])) < footprint_radius(state["robot"]) + placed["size_m"] / 2:
+                    if np.linalg.norm(np.asarray(point) - np.asarray(placed["xy"])) < footprint_radius(state["robot"]) + placed["length"] / 2:
                         obstacle_clearance.append(f"{state['entry'].label} {label}")
                         break
         checks.append(Check(
