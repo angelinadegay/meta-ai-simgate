@@ -5,56 +5,15 @@ import json
 import re
 import time
 import uuid
-from collections import Counter
 from typing import Any, Awaitable, Callable
-
-from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from . import agents, config, llm, presets
 from .library import LibraryRegistry
 from .plan import Plan
 from .spec import Robot, SceneSpec
-from .tools import ToolResult, World, invoke_tool, tool_catalog
+from .tools import ToolResult, World, invoke_tool
 
 StepCallback = Callable[[dict[str, Any]], Awaitable[None]]
-
-
-class DirectorTurn(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    thought: str = Field(min_length=1, max_length=400)
-    tool: str | None = None
-    args: dict[str, Any] = Field(default_factory=dict)
-    final: str | None = None
-
-    @model_validator(mode="after")
-    def validate_action(self) -> "DirectorTurn":
-        if (self.tool is None) == (self.final is None):
-            raise ValueError("A Director reply must contain exactly one of tool or final.")
-        if self.tool is None and self.args:
-            raise ValueError("A final Director reply cannot include tool arguments.")
-        return self
-
-
-DIRECTOR_SYSTEM = """You are the Director of a physics simulation sandbox.
-Use the available tools to change the current world, build and check it, run requested
-simulations, compare conditions, and explain measured results. Respond with exactly one
-JSON object each turn:
-{"thought":"one short sentence shown to the user","tool":"registered_name","args":{}}
-or {"thought":"one short sentence shown to the user","final":"message"}.
-
-Rules:
-- Use only registered tools and library/preset ids listed in the world context. Never invent ids.
-- Build and check before running. If a check fails, repair it with tools or build_custom, then check again.
-- Run only when the user explicitly asks to run, compare, race, test, or has approved a pending run.
-  Otherwise end by calling ask_user with "Run it?".
-- Physical values and placements must be selected by tools, not guessed in prose.
-- Prefer short, clear actions; maximum 12 tool calls per user message.
-- A tool error is returned once for correction; if the next attempt is invalid, stop with a clear final message.
-
-Registered tools and purpose:
-{tools}
-"""
 
 
 class Director:
@@ -126,258 +85,6 @@ class Director:
         world, message = await workflows.execute(plan, current, self)
         if "I used the simple planner for this one" in plan.summary:
             message = f"I used the simple planner for this one. {message}"
-        await self._finish_root(message)
-        return world, message
-
-    async def execute(self, text: str, current: SceneSpec | None = None) -> tuple[World, str]:
-        if config.MOCK_MODE:
-            return await self._mock_execute(text, current)
-        world = World(current.model_copy(deep=True) if current is not None else SceneSpec(domain="robot_terrain"))
-        prompt = DIRECTOR_SYSTEM.replace(
-            "{tools}",
-            "\n".join(f"- {name}: {detail}" for name, detail in tool_catalog().items()),
-        )
-        messages = [
-            {"role": "system", "content": prompt},
-            {"role": "user", "content": f"Current world state:\n{world.state()}\n\nUser request:\n{text}"},
-        ]
-        recovery_used = False
-        race_requests = _explicit_race_requests(text)
-        root_id = self._id()
-        self._root_id = root_id
-        await self._emit_step(
-            id=root_id, parent_id=None, agent="Director", model=config.PLANNER_MODEL,
-            tool=None, args={}, thought="Planning the next simulation actions.", result="",
-            status="working", ms=0,
-        )
-        for action_count in range(12):
-            reply = await asyncio.to_thread(llm.chat, _bounded_messages(messages), config.PLANNER_MODEL)
-            messages.append({"role": "assistant", "content": reply})
-            try:
-                turn = DirectorTurn.model_validate(llm.extract_json(reply))
-                if turn.tool is not None and turn.tool not in tool_catalog():
-                    raise ValueError(f"Unknown tool: {turn.tool}")
-            except (ValueError, TypeError) as exc:
-                await self._emit_step(
-                    id=self._id(), parent_id=root_id, agent="Director", model=config.PLANNER_MODEL,
-                    tool=None, args={}, thought="Checking the response format.", result=str(exc),
-                    status="warning", ms=0,
-                )
-                if recovery_used:
-                    message = f"I couldn't continue because the Director returned invalid instructions: {exc}"
-                    await self._finish_root(message)
-                    return world, message
-                recovery_used = True
-                messages.append({"role": "user", "content": f"Invalid Director reply: {exc}. Return one corrected JSON object."})
-                continue
-            if turn.final is not None:
-                if race_requests and _race_needs_recovery(world, race_requests):
-                    recovered_world, message = await self._recover_explicit_race(text, race_requests)
-                    await self._finish_root(message)
-                    return recovered_world, message
-                await self._emit_step(
-                    id=self._id(), parent_id=root_id, agent="Director", model=config.PLANNER_MODEL,
-                    tool=None, args={}, thought=turn.thought, result=turn.final, status="done", ms=0,
-                )
-                await self._finish_root(turn.final)
-                return world, turn.final
-            assert turn.tool is not None
-            tool_step = self._id()
-            started = time.perf_counter()
-            await self._emit_step(
-                id=tool_step, parent_id=root_id, agent="Director", model=config.PLANNER_MODEL,
-                tool=turn.tool, args=turn.args, thought=turn.thought, result="",
-                status="working", ms=0,
-            )
-            try:
-                result = await asyncio.to_thread(invoke_tool, world, turn.tool, turn.args)
-            except Exception as exc:
-                message = f"{type(exc).__name__}: {exc}"
-                await self._emit_step(
-                    id=tool_step, parent_id=root_id, agent="Director", model=config.PLANNER_MODEL,
-                    tool=turn.tool, args=turn.args, thought=turn.thought, result=message,
-                    status="warning", ms=0,
-                )
-                if recovery_used:
-                    if race_requests and _race_needs_recovery(world, race_requests):
-                        recovered_world, message = await self._recover_explicit_race(text, race_requests)
-                        await self._finish_root(message)
-                        return recovered_world, message
-                    message = f"I stopped after the tool failed: {message}"
-                    await self._finish_root(message)
-                    return world, message
-                recovery_used = True
-                schema = tool_catalog()[turn.tool]
-                messages.append({
-                    "role": "user",
-                    "content": (
-                        f"Tool {turn.tool} failed: {message}. The arguments you sent were "
-                        f"{turn.args!r}. Correct the arguments using this tool definition and schema:\n"
-                        f"{schema}\nRetry the action once; do not omit required choices."
-                    ),
-                })
-                continue
-            await self._emit_handoffs(turn.tool, result, tool_step)
-            await self._emit_step(
-                id=tool_step, parent_id=root_id, agent="Director", model=config.PLANNER_MODEL,
-                tool=turn.tool, args=turn.args, thought=turn.thought, result=result.text,
-                status="done", ms=round((time.perf_counter() - started) * 1000),
-            )
-            messages.append({
-                "role": "user",
-                "content": (
-                    f"Tool result: {result.text}\n"
-                    f"Relevant data: {_compact_tool_data(turn.tool, result.data)}\n"
-                    f"Updated world: {_compact_world_state(world)}"
-                ),
-            })
-            if turn.tool == "ask_user":
-                if race_requests and _race_needs_recovery(world, race_requests):
-                    recovered_world, message = await self._recover_explicit_race(text, race_requests)
-                    await self._finish_root(message)
-                    return recovered_world, message
-                await self._finish_root(result.text)
-                return world, result.text
-            if (
-                race_requests
-                and _race_needs_recovery(world, race_requests)
-                and action_count + 1 >= 6
-            ):
-                recovered_world, message = await self._recover_explicit_race(text, race_requests)
-                await self._finish_root(message)
-                return recovered_world, message
-        if race_requests and _race_needs_recovery(world, race_requests):
-            recovered_world, message = await self._recover_explicit_race(text, race_requests)
-            await self._finish_root(message)
-            return recovered_world, message
-        message = "The Director reached the 12-tool limit before finishing. Please narrow the request."
-        await self._finish_root(message)
-        return world, message
-
-    async def _recover_explicit_race(
-        self, text: str, requests: list[dict[str, Any]]
-    ) -> tuple[World, str]:
-        planned = agents._mock_plan(text)
-        mission = planned.mission
-        planned.robots = []
-        planned.robot = None
-        planned.mission = None
-        world = World(planned)
-
-        terrain = planned.terrain
-        await self._mock_call(world, "set_world", {
-            "body": planned.environment.body,
-            "surface": planned.environment.surface,
-            "terrain_kind": terrain.kind if terrain else None,
-            "preset": terrain.preset if terrain and terrain.kind == "real" else None,
-            "slope_deg": terrain.slope_deg if terrain and terrain.kind == "slope" else None,
-            "roughness": terrain.roughness if terrain else None,
-        }, "Completing the explicit race setup with the rules-based recovery.")
-        for index, robot_args in enumerate(requests, 1):
-            await self._mock_call(
-                world, "spawn_robot", robot_args,
-                f"Adding requested race robot {index} of {len(requests)}.",
-            )
-        if planned.obstacles:
-            await self._mock_call(
-                world, "add_obstacles",
-                {"obstacles": [obstacle.model_dump(mode="json") for obstacle in planned.obstacles]},
-                "Restoring the requested course obstacles.",
-            )
-        if mission is not None and mission.has_goal():
-            goal = mission.goal_xy if mission.goal_xy is not None else mission.goal_place
-            goal_args = {"robot_id": "all", "xy": goal} if isinstance(goal, list) else {
-                "robot_id": "all", "place": goal,
-            }
-            await self._mock_call(world, "set_goal", goal_args, "Assigning the shared race goal.")
-        checked = await self._mock_call(
-            world, "build_and_check", {}, "Building and checking the recovered race scene.",
-        )
-        if not checked.data.get("passed"):
-            failed = [
-                check["name"] for check in checked.data.get("checks", [])
-                if not check.get("passed")
-            ]
-            message = "I recovered the requested race, but physics checks failed: " + ", ".join(failed)
-            await self._finish_root(message)
-            return world, message
-        message = (
-            f"I reached the model's planning limit, so the rules-based recovery built and checked "
-            f"all {len(world.spec.robots)} requested robots. Run it?"
-        )
-        await self._mock_call(world, "ask_user", {"question": message}, "Asking before running the recovered race.")
-        return world, message
-
-
-    async def _mock_execute(self, text: str, current: SceneSpec | None) -> tuple[World, str]:
-        planned = await asyncio.to_thread(agents.edit, current, text) if current is not None else await asyncio.to_thread(agents.plan, text)
-        self._root_id = self._id()
-        await self._emit_step(
-            id=self._root_id, parent_id=None, agent="Director", model="rules",
-            tool=None, args={}, thought="Turning the request into safe world operations.",
-            result="", status="working", ms=0,
-        )
-        if planned.domain != "robot_terrain":
-            world = World(planned)
-            await self._mock_call(world, "build_and_check", {}, "Building and checking the planned structure.")
-            await self._mock_call(world, "ask_user", {"question": "Run it?"}, "Asking before starting the simulation.")
-            message = world.question or "Run it?"
-            await self._finish_root(message)
-            return world, message
-        if current is not None:
-            world = World(planned)
-            terrain = planned.terrain
-            await self._mock_call(world, "set_world", {
-                "body": planned.environment.body,
-                "surface": planned.environment.surface,
-                "terrain_kind": terrain.kind if terrain else None,
-                "preset": terrain.preset if terrain and terrain.kind == "real" else None,
-                "slope_deg": terrain.slope_deg if terrain and terrain.kind == "slope" else None,
-                "roughness": terrain.roughness if terrain else None,
-            }, "Applying the requested changes to the existing world.")
-            await self._mock_call(world, "build_and_check", {}, "Building and checking the updated scene.")
-            await self._mock_call(world, "ask_user", {"question": "Run it?"}, "Waiting for approval to run.")
-            message = world.question or "Run it?"
-            await self._finish_root(message)
-            return world, message
-
-        requests = _requested_robots(text, planned.robot)
-        world_spec = planned.model_copy(deep=True)
-        world_spec.robots = []
-        world_spec.robot = None
-        world_spec.mission = None
-        world_spec.obstacles = []
-        world = World(world_spec)
-        terrain = planned.terrain
-        world_args = {
-            "body": planned.environment.body,
-            "surface": planned.environment.surface,
-            "terrain_kind": terrain.kind if terrain else None,
-            "preset": terrain.preset if terrain and terrain.kind == "real" else None,
-            "slope_deg": terrain.slope_deg if terrain and terrain.kind == "slope" else None,
-            "roughness": terrain.roughness if terrain else None,
-        }
-        await self._mock_call(world, "set_world", world_args, "Selecting the shared world conditions.")
-        for index, robot_args in enumerate(requests):
-            result = await self._mock_call(world, "spawn_robot", robot_args, f"Adding robot {index + 1}.")
-            if index == 0 and planned.robot is not None:
-                world.spec.robots[-1].robot = planned.robot.model_copy(deep=True)
-                world.spec.robot = planned.robot.model_copy(deep=True)
-                world.spec.fill_defaults()
-        if planned.obstacles:
-            await self._mock_call(
-                world,
-                "add_obstacles",
-                {"obstacles": [obstacle.model_dump(mode="json") for obstacle in planned.obstacles]},
-                "Placing the requested obstacles.",
-            )
-        if planned.mission is not None and planned.mission.has_goal():
-            goal = planned.mission.goal_xy if planned.mission.goal_xy is not None else planned.mission.goal_place
-            goal_args = {"robot_id": "all", "xy": goal} if isinstance(goal, list) else {"robot_id": "all", "place": goal}
-            await self._mock_call(world, "set_goal", goal_args, "Assigning the goal.")
-        await self._mock_call(world, "build_and_check", {}, "Building and checking the robot scene.")
-        await self._mock_call(world, "ask_user", {"question": "Run it?"}, "Waiting for approval to run.")
-        message = world.question or "Run it?"
         await self._finish_root(message)
         return world, message
 
@@ -502,13 +209,14 @@ def _plan_system() -> str:
 Return only one JSON object matching the Plan schema below. Do not return tools or a sequence of actions.
 
 Workflows:
-- build: create or edit a world and ask before running unless run_now is true.
+- build: create a robot_terrain or structure scene and ask before running unless run_now is true.
 - race: create multiple robots sharing a course; ask before running unless run_now is true.
 - compare: build one scene and compare its variants.
 - stress_test: choose controlled variations for the user's robustness question.
 - edit: modify only the requested parts of the existing world.
 - custom: request a custom MJCF fragment.
 - answer: answer a question without simulation.
+- Existing structural scenes use domain "structure" with structure and load fields.
 
 Guidance:
 - Use only robot, policy, and terrain-preset IDs listed below. Built-in kinds are rover and walker.
@@ -552,6 +260,8 @@ def _plan_world_state(world_state: World | SceneSpec | dict[str, Any] | None) ->
             "title": spec.title,
             "environment": spec.environment.model_dump(mode="json"),
             "terrain": spec.terrain.model_dump(mode="json") if spec.terrain else None,
+            "structure": spec.structure.model_dump(mode="json") if spec.structure else None,
+            "load": spec.load.model_dump(mode="json") if spec.load else None,
             "robots": [
                 {
                     "id": robot.id,
@@ -599,6 +309,34 @@ def _rule_plan(text: str, world_state: World | SceneSpec | dict[str, Any] | None
             workflow="stress_test",
             summary="Test the current robot under varied conditions.",
             question=text,
+        )
+    if planned.domain == "structure":
+        if current is not None and current.domain == "structure":
+            changes: dict[str, Any] = {}
+            if planned.structure != current.structure and planned.structure is not None:
+                changes["structure"] = planned.structure.model_dump(mode="json")
+            if planned.load != current.load and planned.load is not None:
+                changes["load"] = planned.load.model_dump(mode="json")
+            if not changes:
+                return Plan(
+                    workflow="answer",
+                    domain="structure",
+                    summary="The structural scene needs no changes.",
+                    reply="The current structural scene is ready. Describe a change or ask to run it.",
+                )
+            return Plan(
+                workflow="edit",
+                domain="structure",
+                summary="Applying the requested structural changes.",
+                changes=changes,
+            )
+        return Plan(
+            workflow="build",
+            domain="structure",
+            summary=planned.title.rstrip(".") + ".",
+            structure=planned.structure,
+            load=planned.load,
+            run_now=bool(re.search(r"\b(run|simulate|start|go ahead|test now)\b", source)),
         )
     if is_custom:
         return Plan(workflow="custom", summary="Build the requested custom world element.", custom_request=text)
@@ -716,18 +454,6 @@ def _rule_robot_plans(text: str, fallback: Robot | None) -> list[dict[str, Any]]
     return list(grouped.values())
 
 
-def _bounded_messages(messages: list[dict[str, str]], max_chars: int = 48000) -> list[dict[str, str]]:
-    if len(messages) <= 2:
-        return messages
-    kept = messages[2:]
-    total = sum(len(message["content"]) for message in messages[:2])
-    start = len(kept)
-    while start > 0 and total + len(kept[start - 1]["content"]) <= max_chars:
-        start -= 1
-        total += len(kept[start]["content"])
-    return [*messages[:2], *kept[start:]]
-
-
 def _compact_world_state(world: World) -> str:
     spec = world.spec
     state = {
@@ -743,6 +469,8 @@ def _compact_world_state(world: World) -> str:
             "preset": spec.terrain.preset if spec.terrain else None,
             "slope_deg": spec.terrain.slope_deg if spec.terrain else None,
         },
+        "structure": spec.structure.model_dump(mode="json") if spec.structure else None,
+        "load": spec.load.model_dump(mode="json") if spec.load else None,
         "robots": [
             {
                 "id": entry.id,
@@ -764,117 +492,6 @@ def _compact_world_state(world: World) -> str:
         "has_results": world.results is not None,
     }
     return json.dumps(state, separators=(",", ":"), default=str)
-
-
-def _compact_tool_data(tool: str, data: dict[str, Any]) -> str:
-    if tool == "build_and_check":
-        scene = data.get("scene") or {}
-        compact = {
-            "passed": data.get("passed"),
-            "checks": [
-                {"name": check.get("name"), "passed": check.get("passed"), "detail": str(check.get("detail", ""))[:200]}
-                for check in data.get("checks", [])
-            ],
-            "scene": {
-                "kind": scene.get("kind"),
-                "geom_count": len(scene.get("geoms", [])),
-                "robot_ids": list(scene.get("robots", {})),
-                "mesh_asset_count": len(scene.get("mesh_assets", {})),
-            },
-        }
-    elif tool == "list_library":
-        compact = {
-            key: [
-                {field: card.get(field) for field in ("id", "name", "kind", "robot_id")}
-                for card in data.get(key, [])
-            ]
-            for key in ("robots", "policies", "worlds")
-        }
-    elif tool == "run":
-        summary = data.get("results", {})
-        compact = {
-            "leaderboard": summary.get("leaderboard", []),
-            "robots": {
-                robot_id: {
-                    key: metrics.get(key)
-                    for key in (
-                        "goal_reached", "outcome", "time_to_goal_s", "final_distance_m",
-                        "forward_progress_m", "max_tilt_deg", "slip_ratio", "stopped_by",
-                    )
-                }
-                for robot_id, metrics in summary.get("robots", {}).items()
-            },
-        }
-    elif tool in {"compare", "stress_test"}:
-        rows = data.get("rows", data.get("results", []))
-        compact = [
-            {
-                key: row.get(key)
-                for key in ("label", "passed", "reason", "error", "changes")
-                if key in row
-            } | {"summary": _compact_metrics(row.get("summary", {}))}
-            for row in rows
-        ]
-    elif tool == "spawn_robot":
-        robot = data.get("robot", {})
-        compact = {
-            "id": robot.get("id"),
-            "label": robot.get("label"),
-            "kind": robot.get("robot", {}).get("kind"),
-            "robot_id": robot.get("robot", {}).get("robot_id"),
-            "policy_id": robot.get("robot", {}).get("policy_id"),
-        }
-    else:
-        compact = {key: value for key, value in data.items() if key not in {"code", "scene", "logs"}}
-    encoded = json.dumps(compact, separators=(",", ":"), default=str)
-    return encoded[:12000] + ("...[truncated]" if len(encoded) > 12000 else "")
-
-
-def _compact_metrics(summary: dict[str, Any]) -> dict[str, Any]:
-    keys = (
-        "goal_reached", "outcome", "time_to_goal_s", "final_distance_m",
-        "forward_progress_m", "max_tilt_deg", "slip_ratio", "gravity", "friction",
-    )
-    compact = {key: summary[key] for key in keys if key in summary}
-    if "leaderboard" in summary:
-        compact["leaderboard"] = summary["leaderboard"]
-    if "robots" in summary:
-        compact["robots"] = {
-            robot_id: {key: metrics[key] for key in keys if key in metrics}
-            for robot_id, metrics in summary["robots"].items()
-        }
-    return compact
-
-
-def _explicit_race_requests(text: str) -> list[dict[str, Any]]:
-    if not re.search(r"\brace\b", text, re.IGNORECASE):
-        return []
-    try:
-        requests = _requested_robots(text, None)
-    except ValueError:
-        return []
-    return requests if len(requests) > 1 else []
-
-
-def _race_needs_recovery(world: World, requests: list[dict[str, Any]]) -> bool:
-    def signature(robot: dict[str, Any]) -> tuple[Any, ...]:
-        if robot.get("robot_id"):
-            return "library", robot["robot_id"], robot.get("policy_id")
-        kind = robot.get("kind")
-        return kind, robot.get("wheels", 4), robot.get("legs", 4)
-
-    desired = Counter(signature(robot) for robot in requests)
-    actual = Counter(
-        (
-            entry.robot.kind if entry.robot.kind != "library" else "library",
-            entry.robot.robot_id if entry.robot.kind == "library" else entry.robot.wheels,
-            entry.robot.policy_id if entry.robot.kind == "library" else entry.robot.legs,
-        )
-        for entry in world.spec.robots
-    )
-    checks_passed = world.build is not None and all(check.passed for check in world.checks)
-    needs_confirmation = world.results is None and world.question is None
-    return desired != actual or not checks_passed or needs_confirmation
 
 
 _NUMBER_WORDS = {

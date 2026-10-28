@@ -7,13 +7,14 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from . import presets
 from .batch import Variation
 from .library import LibraryRegistry
-from .spec import Obstacle, Place
+from .spec import Load, Obstacle, Place, Structure
 from .terrain_data import list_presets
 
 Workflow = Literal["build", "race", "compare", "stress_test", "edit", "custom", "answer"]
 TerrainKind = Literal["flat", "hills", "rocky", "slope", "craters", "real"]
 Surface = Literal["rock", "regolith", "gravel", "sand", "mud", "ice"]
 RobotKind = Literal["rover", "walker"]
+SceneDomain = Literal["robot_terrain", "structure"]
 
 
 class WorldPlan(BaseModel):
@@ -111,8 +112,11 @@ class Plan(BaseModel):
 
     workflow: Workflow
     summary: str = Field(min_length=1, max_length=400)
+    domain: SceneDomain = "robot_terrain"
     world: WorldPlan = Field(default_factory=WorldPlan)
     robots: list[RobotPlan] = Field(default_factory=list, max_length=6)
+    structure: Structure | None = None
+    load: Load | None = None
     obstacles: list[Obstacle] = Field(default_factory=list, max_length=30)
     goal: GoalPlan | None = None
     variants: list[Variation] = Field(default_factory=list, max_length=23)
@@ -138,6 +142,8 @@ class Plan(BaseModel):
             raise ValueError("workflow 'custom' requires custom_request.")
         if self.workflow == "answer" and not self.reply:
             raise ValueError("workflow 'answer' requires reply.")
+        if self.domain == "structure" and self.workflow in {"race", "compare", "stress_test", "custom"}:
+            raise ValueError(f"workflow {self.workflow!r} is not available for structure scenes.")
         if self.world.slope_deg is not None and self.world.terrain_kind not in (None, "slope"):
             raise ValueError("slope_deg can only be used with terrain_kind 'slope'.")
         return self

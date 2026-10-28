@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING, Any
 
 from . import agents, config, presets
 from .plan import Plan
-from .spec import Mission, Robot, RobotEntry, SceneSpec, Terrain
+from .spec import Load, Mission, Robot, RobotEntry, SceneSpec, Structure, Terrain
 from .tools import World
 
 if TYPE_CHECKING:
@@ -24,6 +24,17 @@ async def execute(plan: Plan, current: SceneSpec | None, director: "Director") -
         world = World(current.model_copy(deep=True))
         await _apply_changes(world, plan.changes, director)
         return await _build_and_finish(world, plan, director)
+
+    if plan.domain == "structure":
+        world = World(SceneSpec(
+            domain="structure",
+            structure=plan.structure.model_copy(deep=True) if plan.structure else Structure(),
+            load=plan.load.model_copy(deep=True) if plan.load else Load(),
+        ))
+        ready, message = await _check_and_repair(world, director, "Building and checking the structural scene.")
+        if not ready:
+            return world, message
+        return await _approval_or_run(world, plan, director, "The structural scene is built and checked.")
 
     if plan.workflow == "custom":
         world = await _prepare_robot_world(plan, current, director)
@@ -123,8 +134,16 @@ async def _prepare_robot_world(
             if plan.goal.xy is not None
             else {"place": plan.goal.place}
         )
-        for robot_id, has_override in spawned:
-            if not has_override:
+        targets = [robot_id for robot_id, has_override in spawned if not has_override]
+        if targets and len(targets) == len(spawned):
+            await director._mock_call(
+                world,
+                "set_goal",
+                {"robot_id": "all", **target},
+                "Assigning the shared goal.",
+            )
+        else:
+            for robot_id in targets:
                 await director._mock_call(
                     world,
                     "set_goal",
@@ -384,7 +403,10 @@ async def _emit_completed_step(
 
 async def _apply_changes(world: World, changes: dict[str, Any], director: "Director") -> None:
     spec = world.spec
-    supported = {"world", "environment", "terrain", "robot", "robots", "obstacles", "goal", "mission"}
+    supported = {
+        "world", "environment", "terrain", "robot", "robots", "obstacles", "goal", "mission",
+        "structure", "load",
+    }
     unknown = set(changes) - supported
     if unknown:
         raise ValueError(f"Unsupported edit fields: {', '.join(sorted(unknown))}")
@@ -417,6 +439,10 @@ async def _apply_changes(world: World, changes: dict[str, Any], director: "Direc
             entry.start_xy, entry.start_place = mission.start_xy, mission.start_place
             for robot in spec.robots:
                 robot.goal_xy, robot.goal_place = mission.goal_xy, mission.goal_place
+    if "structure" in changes:
+        spec.structure = Structure.model_validate(changes["structure"])
+    if "load" in changes:
+        spec.load = Load.model_validate(changes["load"])
     if "goal" in changes:
         goal = changes["goal"]
         args = {"robot_id": "all", **goal}

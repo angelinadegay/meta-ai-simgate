@@ -310,6 +310,21 @@ def test_plan_workflow_bounds_visible_repairs_and_asks_before_running():
             )
 
 
+def test_plan_workflow_preserves_structural_scene_support():
+    import asyncio
+
+    from simgate.director import Director
+
+    async def scenario():
+        return await Director().execute_plan("a 3-story building in an earthquake")
+
+    world, message = asyncio.run(scenario())
+    assert world.spec.domain == "structure"
+    assert world.spec.structure.stories == 3
+    assert world.build is not None and all(check.passed for check in world.checks)
+    assert message == "Run it?"
+
+
 def test_template_repair_uses_registered_physics_presets():
     from simgate import presets, workflows
     from simgate.backends.base import Check
@@ -373,7 +388,7 @@ def test_mock_director_turns_race_into_ordered_tool_calls():
             events.append(event)
 
         config.MOCK_MODE = True
-        world, message = await Director(emit).execute(text)
+        world, message = await Director(emit).execute_plan(text)
         done_tools = [
             event["tool"] for event in events
             if event.get("type") == "step" and event.get("status") == "done"
@@ -382,7 +397,10 @@ def test_mock_director_turns_race_into_ordered_tool_calls():
         return world, message, done_tools, events
 
     world, message, tools, events = asyncio.run(scenario("race three rovers to the far side"))
-    assert tools == ["set_world", "spawn_robot", "spawn_robot", "spawn_robot", "set_goal", "build_and_check", "ask_user"]
+    assert tools == [
+        "plan", "set_world", "spawn_robot", "spawn_robot", "spawn_robot",
+        "set_goal", "build_and_check", "ask_user",
+    ]
     assert len(world.spec.robots) == 3 and all(entry.goal_place == "east" for entry in world.spec.robots)
     assert message == "Run it?" and all(check.passed for check in world.checks)
     assert {"Builder", "Checker"} <= {event["agent"] for event in events if event["type"] == "step"}
@@ -412,108 +430,6 @@ def test_mock_director_turns_race_into_ordered_tool_calls():
     assert mixed_tools[-1] == "ask_user"
 
 
-def test_director_recovers_from_invalid_replies_and_failed_checks():
-    import asyncio
-
-    from simgate import config
-    from simgate.director import Director
-    from simgate.tools import ToolResult
-
-    original_chat = agents.llm.chat
-    original_invoke = __import__("simgate.director", fromlist=["invoke_tool"]).invoke_tool
-
-    async def execute_script(replies, invoke=None):
-        iterator = iter(replies)
-        agents.llm.chat = lambda *_args, **_kwargs: next(iterator)
-        if invoke is not None:
-            import simgate.director as director_module
-            director_module.invoke_tool = invoke
-        config.MOCK_MODE = False
-        return await Director().execute("prepare a robot")
-
-    try:
-        recovered, message = asyncio.run(execute_script([
-            "not JSON",
-            '{"thought":"Recovered format","final":"Recovered."}',
-        ]))
-        assert message == "Recovered."
-
-        replies = iter([
-            '{"thought":"Check registered robots","tool":"list_library","args":{}}',
-            '{"thought":"Add a rover","tool":"spawn_robot","args":{}}',
-            '{"thought":"Add a rover","tool":"spawn_robot","args":{"kind":"rover"}}',
-            '{"thought":"Ready","final":"Added a rover."}',
-        ])
-        prompts = []
-
-        def scripted_chat(messages, *_args, **_kwargs):
-            prompts.append("\n".join(message["content"] for message in messages))
-            return next(replies)
-
-        agents.llm.chat = scripted_chat
-        recovered_world, message = asyncio.run(Director().execute("prepare a robot"))
-        assert message == "Added a rover."
-        assert len(recovered_world.spec.robots) == 1
-        assert recovered_world.spec.robots[0].robot.kind == "rover"
-        assert "exactly one" in prompts[0] and "Arguments JSON Schema" in prompts[0]
-        assert "do not omit required choices" in prompts[2]
-
-        stalled_replies = iter([
-            '{"thought":"Adjusting the world","tool":"set_world","args":{"body":"earth"}}'
-            for _ in range(12)
-        ])
-        recovery_events = []
-
-        async def recovery_emit(event):
-            recovery_events.append(event)
-
-        agents.llm.chat = lambda *_args, **_kwargs: next(stalled_replies)
-        recovered_world, message = asyncio.run(
-            Director(recovery_emit).execute("race three rovers to the far side")
-        )
-        assert len(recovered_world.spec.robots) == 3
-        assert all(entry.goal_place == "east" for entry in recovered_world.spec.robots)
-        assert recovered_world.build is not None
-        assert all(check.passed for check in recovered_world.checks)
-        assert "rules-based recovery" in message and "Run it?" in message
-        assert sum(
-            event.get("tool") == "spawn_robot" and event.get("status") == "done"
-            for event in recovery_events
-        ) == 3
-
-        recovered, message = asyncio.run(execute_script([
-            '{"thought":"Try unknown tool","tool":"erase_world","args":{}}',
-            '{"thought":"Recovered tool choice","final":"Stopped safely."}',
-        ]))
-        assert message == "Stopped safely."
-
-        calls = []
-
-        def fake_invoke(_world, name, args):
-            calls.append(name)
-            if name == "build_and_check" and calls.count(name) == 1:
-                return ToolResult("A gravity check failed.", {"passed": False})
-            if name == "build_and_check":
-                return ToolResult("All checks pass.", {"passed": True})
-            if name == "ask_user":
-                return ToolResult("Run it?", {"question": "Run it?"})
-            return ToolResult("Updated.", {})
-
-        recovered, message = asyncio.run(execute_script([
-            '{"thought":"Check the draft","tool":"build_and_check","args":{}}',
-            '{"thought":"Repair the world","tool":"set_world","args":{"body":"mars"}}',
-            '{"thought":"Check the repair","tool":"build_and_check","args":{}}',
-            '{"thought":"Ask before running","tool":"ask_user","args":{"question":"Run it?"}}',
-        ], fake_invoke))
-        assert message == "Run it?"
-        assert calls == ["build_and_check", "set_world", "build_and_check", "ask_user"]
-    finally:
-        agents.llm.chat = original_chat
-        import simgate.director as director_module
-        director_module.invoke_tool = original_invoke
-        config.MOCK_MODE = True
-
-
 def test_build_custom_retries_and_emits_attempt_steps():
     import asyncio
 
@@ -524,10 +440,10 @@ def test_build_custom_retries_and_emits_attempt_steps():
     original_chat = agents.llm.chat
     original_retries = config.BUILDER_MAX_RETRIES
     replies = iter([
-        '{"thought":"Add a custom marker","tool":"build_custom","args":{"request":"Add a marker above the scene."}}',
+        '{"workflow":"custom","summary":"Add a marker above the scene.",'
+        '"custom_request":"Add a marker above the scene.","run_now":false}',
         '<geom name="bad_marker" type="cube" size="0.1 0.1 0.1" pos="0 0 20"/>',
         '<geom name="marker" type="sphere" size="0.05" pos="0 0 20"/>',
-        '{"thought":"The marker is ready","final":"Custom scene detail added."}',
     ])
     events = []
 
@@ -538,8 +454,8 @@ def test_build_custom_retries_and_emits_attempt_steps():
     config.MOCK_MODE = False
     config.BUILDER_MAX_RETRIES = 2
     try:
-        world, message = asyncio.run(Director(emit).execute("add a marker", current=spec))
-        assert message == "Custom scene detail added."
+        world, message = asyncio.run(Director(emit).execute_plan("add a marker", current=spec))
+        assert message == "Run it?"
         assert world.build is not None and "marker" in world.build.code
         builder_steps = [
             event for event in events
@@ -558,38 +474,24 @@ def test_build_custom_retries_and_emits_attempt_steps():
         config.BUILDER_MAX_RETRIES = original_retries
 
 
-def test_director_context_compacts_scene_payload_and_bounds_history():
-    from simgate.director import _bounded_messages, _compact_tool_data
+def test_plan_prompt_uses_compact_current_world_state():
+    from simgate.backends.base import BuildResult
+    from simgate.director import _plan_world_state
+    from simgate.tools import World
 
-    compact = _compact_tool_data(
-        "build_and_check",
+    world = World(SceneSpec(domain="robot_terrain").fill_defaults())
+    world.build = BuildResult(
+        "CODE_BULK" * 10000,
+        "mjcf-xml",
         {
-            "passed": True,
-            "checks": [{"name": "Model compiles", "passed": True, "detail": "ok"}],
-            "code": "CODE_BULK" * 10000,
-            "scene": {
-                "kind": "mujoco",
-                "geoms": [{} for _ in range(30000)],
-                "mesh_assets": {"mesh": {"vertices": "VERTEX_BULK" * 10000}},
-            },
+            "geoms": [{} for _ in range(30000)],
+            "mesh_assets": {"mesh": {"vertices": "VERTEX_BULK" * 10000}},
         },
     )
-    assert "geom_count" in compact and "30000" in compact
+    compact = _plan_world_state(world)
+    assert len(compact) < 2000
     assert "CODE_BULK" not in compact and "VERTEX_BULK" not in compact
-    assert len(compact) < 1000
-
-    messages = [
-        {"role": "system", "content": "system"},
-        {"role": "user", "content": "original request"},
-        *[
-            {"role": "user", "content": f"tool result {i}" + ("x" * 30)}
-            for i in range(20)
-        ],
-    ]
-    bounded = _bounded_messages(messages, max_chars=100)
-    assert bounded[:2] == messages[:2]
-    assert bounded[-1] == messages[-1]
-    assert sum(len(message["content"]) for message in bounded) <= 100
+    assert "mesh_assets" not in compact and '"built":true' in compact
 
 
 def test_icy_slope_physics():
