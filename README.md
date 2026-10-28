@@ -154,7 +154,32 @@ prompt ─► Planner ─► SceneSpec ─► Router ─► Builder ─► Check
 - Cards show the physics checks and the results, with plain-language labels.
 - **Show code** shows the simulation code the Builder wrote.
 
-### 8. Stress test (robots)
+### 8. Robot and policy library
+
+- Open **Library** to browse the shipped robot, policy and world cards. Choose a robot, one of its
+  compatible policies, and a world, then apply the selection before describing or rebuilding a robot
+  scene. The panel displays each card's license and credit. Upload controls are placeholders.
+- The library includes the G1 humanoid and its trained walking policy, alongside the built-in rover and
+  walkers. Prompts such as *"G1 humanoid on flat ground"* select the registered G1 robot and
+  `g1_walking` policy; the planner is given the installed IDs and must not invent library entries.
+- The G1 model and policy are sourced from Unitree Robotics' `unitree_rl_gym` repository under
+  BSD-3-Clause. The SimGate copy, source file list and modifications are recorded in
+  [`third_party/unitree_rl_gym/NOTICE.md`](third_party/unitree_rl_gym/NOTICE.md). The policy was
+  trained for flat ground and Earth gravity; results on other surfaces, gravity levels and obstacle
+  courses are transfers to validate, not guaranteed behavior.
+- To add a policy, put its model under a project-relative asset directory and add a JSON
+  `PolicyCard` in `simgate/library/presets/policies/` (or `simgate/library/uploads/policies/`).
+  Set `robot_id`, format, model file, control interval, ordered joint names, observation blocks and
+  scales, action scale, default angles, gains, command axes and ranges, training notes, license and
+  credit. For a robot with a different ID, compatibility is checked by matching all policy joints
+  against the robot card's joint names and count. The current G1 card records the exact 12-joint
+  deployment order. Robot cards and any MJCF/mesh assets belong in the corresponding robots folder;
+  asset paths must remain inside the project.
+- G1 inference uses the shipped ONNX model and named MuJoCo joints/actuators, not fixed qpos offsets.
+  A 0.5 s default-angle settle precedes policy control; the Navigator supplies walking commands. The
+  browser sends shared mesh assets once and draws the G1 meshes as BufferGeometry.
+
+### 9. Stress test (robots)
 
 - With a robot scene open, click **Stress test** or ask *"stress test"*, *"how robust?"*,
   *"test it under different conditions"*, or *"will it work on Mars?"*. The unchanged scene runs first
@@ -174,7 +199,7 @@ prompt ─► Planner ─► SceneSpec ─► Router ─► Builder ─► Check
   about 5 MB). Slope, obstacle-scale and seed variations change geometry, so they remain in the report
   but are marked **not in ghost view**. The follow camera tracks the baseline.
 
-### 9. Model support
+### 10. Model support
 
 The prototype works with any OpenAI-compatible endpoint, configured in `.env`:
 
@@ -186,9 +211,9 @@ The prototype works with any OpenAI-compatible endpoint, configured in `.env`:
 
 Without a key, it runs in mock mode.
 
-### 10. Tests
+### 11. Tests
 
-`python tests/test_pipeline.py` runs 21 offline tests:
+`python tests/test_pipeline.py` runs 26 offline tests:
 
 | Test | Checks that |
 | --- | --- |
@@ -213,6 +238,11 @@ Without a key, it runs in mock mode.
 | `batch_stress_conditions_and_ghosts` | Baseline ordering, gravity/surface changes, icy-slope failure, push effect, invalid-knob errors, ghost eligibility and payload budget |
 | `stress_trigger_requires_robot_scene` | Stress-test phrases start a batch only when a robot scene is already active |
 | `stress_planner_falls_back_when_conditions_do_not_apply` | A repeated model suggestion for an inapplicable slope variation falls back to compatible conditions |
+| `g1_stands_for_two_seconds_at_zero_command` | G1 stays upright with pelvis height within 10% of its standing height |
+| `g1_walks_two_metres_in_ten_seconds` | G1 makes at least 2 m of forward progress on flat Earth terrain without falling |
+| `g1_reaches_diagonal_five_metre_goal` | G1's Navigator reaches a 5 m goal at 45° to its starting heading |
+| `g1_named_mapping_policy_validation_and_mesh_budget` | Checker validates the policy and 1 s stand, joint-name mapping survives obstacles/goal markers, bad observation sizes are rejected, and the mesh scene stays under 5 MiB |
+| `g1_planner_and_library_selection_use_registered_cards` | G1 prompts and UI selections resolve to registered robot, policy and world cards |
 
 ---
 
@@ -265,6 +295,8 @@ Things to try:
 | `simgate/presets.py` | Reference gravity and friction values |
 | `simgate/agents.py` | Planner, Router, Builder and Explainer, each with a model or mock rules |
 | `simgate/batch.py` | Parallel robot-condition runs and compressed ghost tracks |
+| `simgate/library/` | Validated robot, policy and world cards and filesystem registry |
+| `simgate/policy_runtime.py` | Named-joint policy inference and PD control |
 | `simgate/orchestrator.py` | Runs a session and streams events to the browser |
 | `simgate/backends/` | One file per simulator (`mujoco_backend.py`, `opensees_backend.py`) |
 | `simgate/terrain_data.py` | Loads real-terrain presets |
@@ -279,7 +311,8 @@ To add a simulator: add a domain to `SceneSpec`, subclass `Simulator` in `backen
 
 - Robots steer straight at the goal and go over obstacles; there's no route planning around them yet.
 - Gap widths snap to the terrain grid (about 0.13 m steps on a 20 m terrain); the measured width is reported.
-- The walkers use a fixed rhythmic gait, not a trained policy. The 4-legged walker falls on side slopes
+- The built-in walkers use a fixed rhythmic gait. The G1 humanoid uses a trained policy but was trained
+  for flat Earth conditions; the 4-legged built-in walker falls on side slopes
   of about 10° or more.
 - Orbital terrain can't show rocks smaller than about 1 m. Small random bumps stand in for them.
 - The OpenSees model is linear-elastic (no yielding, no P-delta), so damage levels are rough estimates.
@@ -289,11 +322,13 @@ To add a simulator: add a domain to `SceneSpec`, subclass `Simulator` in `backen
 
 - Steering around obstacles (route planning)
 - Upload your own robot (MJCF, URDF) and a trained ONNX policy, wired up by inspector and adapter agents
-- A robot gallery from MuJoCo Menagerie, with mesh rendering
+- Additional robot and policy library entries
 - Quick-tune swarm, and voice editing if time allows
 
 ## Credits and licenses
 
 - Mars elevation data: NASA/JPL/University of Arizona HiRISE; DTMs via USGS on AWS Open Data (CC0 1.0).
+- G1 model, meshes and walking policy: Unitree Robotics, `unitree_rl_gym` (BSD-3-Clause); see
+  `third_party/unitree_rl_gym/LICENSE` and `NOTICE.md`.
 - three.js is vendored in `static/vendor/` (MIT license, see `three-LICENSE`).
 - MuJoCo (Apache-2.0) and OpenSeesPy are installed from PyPI.

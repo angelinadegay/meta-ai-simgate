@@ -409,6 +409,161 @@ def test_stress_planner_falls_back_when_conditions_do_not_apply():
     assert all("slope_deg" not in variation for variation in variations)
 
 
+_G1_BASE_BUILD = None
+
+
+def g1_spec(*, duration_s=8.0, mission=None, obstacles=None):
+    return SceneSpec(
+        domain="robot_terrain",
+        terrain=Terrain(kind="flat", roughness=0),
+        robot=Robot(kind="library", robot_id="g1", policy_id="g1_walking"),
+        mission=mission,
+        obstacles=obstacles or [],
+        duration_s=duration_s,
+    ).fill_defaults()
+
+
+def g1_base_build():
+    global _G1_BASE_BUILD
+    if _G1_BASE_BUILD is None:
+        _G1_BASE_BUILD = MuJoCoSimulator().build(g1_spec(duration_s=2.0))
+    return _G1_BASE_BUILD
+
+
+def test_g1_stands_for_two_seconds_at_zero_command():
+    import mujoco
+
+    from simgate.library import LibraryRegistry
+
+    spec = g1_spec(duration_s=2.0)
+    sim = MuJoCoSimulator()
+    build = g1_base_build()
+    model, data = sim._make(build)
+    mujoco.mj_forward(model, data)
+    runner = sim._policy_runner(spec, model, data)
+    command = runner.card.command
+    runner.set_command({name: 0.0 for name in command.names})
+    root = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "rover")
+    settle_steps = round(0.5 / model.opt.timestep)
+    for step in range(round(2.0 / model.opt.timestep)):
+        if step < settle_steps:
+            runner.hold_default()
+        else:
+            runner.step(step * model.opt.timestep - 0.5)
+        mujoco.mj_step(model, data)
+
+    height = float(data.xpos[root][2])
+    up_z = float(data.xmat[root].reshape(3, 3)[2, 2])
+    tilt = math.degrees(math.acos(max(-1.0, min(1.0, up_z))))
+    standing_height = LibraryRegistry().robot("g1").standing_height_m
+    assert abs(height - standing_height) <= 0.1 * standing_height, height
+    assert tilt < 45, tilt
+
+
+def test_g1_walks_two_metres_in_ten_seconds():
+    spec = g1_spec(duration_s=10.0)
+    sim = MuJoCoSimulator()
+    build = g1_base_build()
+    list(sim.run(spec, build))
+    summary = sim.summary()
+    assert not summary["flipped"] and summary["forward_progress_m"] >= 2.0, summary
+
+
+def test_g1_reaches_diagonal_five_metre_goal():
+    mission = Mission(
+        start_xy=[-3.0, 0.0],
+        start_heading_deg=0.0,
+        goal_xy=[-3.0 + 5.0 / math.sqrt(2), 5.0 / math.sqrt(2)],
+    )
+    spec = g1_spec(duration_s=10.0, mission=mission)
+    sim = MuJoCoSimulator()
+    build = sim.build(spec)
+    start, goal = build.scene["mission"]["start"], build.scene["mission"]["goal"]
+    assert abs(math.dist(start, goal) - 5.0) <= 0.02
+    list(sim.run(spec, build))
+    summary = sim.summary()
+    assert summary["goal_reached"] and summary["outcome"] == "reached", summary
+
+
+def test_g1_named_mapping_policy_validation_and_mesh_budget():
+    import json
+    import mujoco
+
+    from simgate.library import LibraryRegistry, PolicyCard
+    from simgate.policy_runtime import PolicyRunner
+
+    spec = g1_spec(
+        duration_s=8.0,
+        mission=Mission(start_xy=[-6.0, 0.0], goal_xy=[6.0, 0.0]),
+        obstacles=[Obstacle(kind="rock", size="small", count=2)],
+    )
+    sim = MuJoCoSimulator()
+    build = sim.build(spec)
+    model, data = sim._make(build)
+    runner = sim._policy_runner(spec, model, data)
+    card = LibraryRegistry().policy("g1_walking")
+    addresses = [
+        int(model.jnt_qposadr[mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, name)])
+        for name in card.joint_order
+    ]
+    assert runner.qpos_addresses.tolist() == addresses
+    assert mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, "goal_zone") >= 0
+    assert mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, "goal_flag") >= 0
+    assert build.scene["course"]
+    checks = {check.name: check for check in sim.validate(spec, build)}
+    for name in ("Library policy loads and validates", "Library robot stands for 1 s at zero command"):
+        assert checks[name].passed, checks[name]
+    event = {"type": "scene", "scene": build.scene, "code": build.code, "language": build.language}
+    assert len(json.dumps(event, separators=(",", ":")).encode("utf-8")) < 5 * 1024 * 1024
+
+    payload = card.model_dump()
+    payload["obs_layout"][0]["size"] = 2
+    bad_card = PolicyCard.model_validate(payload)
+
+    class WrongObservationSize:
+        input_size = card.observation_size
+        output_size = len(card.joint_order)
+
+        def run(self, observation):
+            raise AssertionError("dimension validation should happen before inference")
+
+        def reset(self):
+            pass
+
+    try:
+        PolicyRunner(bad_card, model, data, inference_model=WrongObservationSize())
+    except ValueError as exc:
+        assert "expects 47 observations" in str(exc)
+    else:
+        raise AssertionError("a policy/card observation-size mismatch must be rejected")
+
+
+def test_g1_planner_and_library_selection_use_registered_cards():
+    import asyncio
+
+    from simgate.orchestrator import Session
+
+    spec = agents.plan("A G1 humanoid")
+    assert (spec.robot.kind, spec.robot.robot_id, spec.robot.policy_id) == (
+        "library", "g1", "g1_walking"
+    )
+
+    async def select():
+        events = []
+
+        async def emit(event):
+            events.append(event)
+
+        session = Session(emit)
+        await session.select_library("g1", "g1_walking", "mars-regolith")
+        selected = agents.plan("a robot on flat terrain")
+        session._apply_library_selection(selected)
+        assert selected.robot.robot_id == "g1" and selected.environment.body == "mars"
+        assert events[0]["type"] == "library_selected"
+
+    asyncio.run(select())
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):
