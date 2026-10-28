@@ -117,6 +117,7 @@ class World:
     checks: list[Check] = field(default_factory=list)
     results: dict[str, Any] | None = None
     question: str | None = None
+    run_requested: bool = False      # the session should stream a run of this world next
     emit: Any = None
 
     def state(self) -> dict[str, Any]:

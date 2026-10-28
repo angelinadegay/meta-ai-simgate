@@ -235,19 +235,60 @@ def test_plan_workflow_expands_race_and_runs_only_when_requested():
 
         calls.clear()
         (world, message), events = asyncio.run(execute(True))
-        planning_calls = [
-            messages for messages in calls
-            if any("Plan JSON schema:" in message["content"] for message in messages)
-        ]
-        assert len(planning_calls) == 1
-        assert len(calls) == 2  # one plan and one post-run explanation
-        assert world.results is not None
-        assert len(world.results["leaderboard"]) == 3
+        assert world.run_requested and world.results is None  # the session streams the run
         assert any(event.get("tool") == "run" for event in events)
-        assert "Race complete" in message
+        assert len(calls) == 1
     finally:
         config.MOCK_MODE = original_mock
         llm.chat = original_chat
+
+
+def test_run_now_race_streams_frames_before_metrics():
+    import asyncio
+
+    from simgate import config, llm
+    from simgate.orchestrator import Session
+
+    original_mock = config.MOCK_MODE
+    original_chat = llm.chat
+    calls = []
+
+    def scripted_chat(messages, *_args, **_kwargs):
+        calls.append(messages)
+        if len(calls) > 1:
+            return "Rover 2 reached the goal first."
+        return (
+            '{"workflow":"race","summary":"Three rovers race east.",'
+            '"robots":[{"kind":"rover","count":3}],"goal":{"place":"east"},"run_now":true}'
+        )
+
+    async def scenario():
+        events = []
+
+        async def emit(event):
+            events.append(event)
+
+        session = Session(emit)
+        await session.handle("race three rovers east, go")
+        return session, events
+
+    try:
+        config.MOCK_MODE = False
+        llm.chat = scripted_chat
+        session, events = asyncio.run(scenario())
+    finally:
+        config.MOCK_MODE = original_mock
+        llm.chat = original_chat
+
+    types = [event["type"] for event in events]
+    assert "run_start" in types and "frames" in types and "metrics" in types
+    assert types.index("run_start") < types.index("frames") < types.index("metrics")
+    assert "question" not in types[types.index("run_start"):]
+    metrics = next(event["metrics"] for event in events if event["type"] == "metrics")
+    assert len(metrics["leaderboard"]) == 3
+    assert types[-1] == "explanation" and events[-1]["message"] == "Rover 2 reached the goal first."
+    assert len(calls) == 2  # one plan and one post-run explanation
+    assert not session.awaiting_approval
 
 
 def test_plan_workflow_bounds_visible_repairs_and_asks_before_running():
@@ -333,7 +374,7 @@ def test_advisory_course_warning_does_not_block_or_repair():
 
     world, message, events = asyncio.run(scenario(prompt + ", run it"))
     assert any(event.get("tool") == "run" and event.get("status") == "done" for event in events)
-    assert world.results is not None
+    assert world.run_requested
 
 
 def test_answer_first_does_not_leave_an_empty_scene():

@@ -253,7 +253,7 @@ Without a key, it runs in mock mode.
 
 ### 11. Tests
 
-`python tests/test_pipeline.py` runs 45 offline tests. The optional real-terrain integration test skips when
+`python tests/test_pipeline.py` runs 46 offline tests. The optional real-terrain integration test skips when
 `rasterio` is unavailable.
 
 | Test | Checks that |
@@ -265,7 +265,8 @@ Without a key, it runs in mock mode.
 | `director_plan_schema_validates_ids_and_expanded_robot_limit` | Plan IDs are registered and expanded robot counts stay within six |
 | `director_planning_uses_one_call_retries_validation_and_falls_back` | A valid plan uses one call, validation errors get one retry, then rules fallback |
 | `stress_plan_requires_an_existing_robot_scene` | Stress plans without a robot scene fall back to a safe answer |
-| `plan_workflow_expands_race_and_runs_only_when_requested` | A 3-rover race asks before running and produces a 3-row leaderboard when requested |
+| `plan_workflow_expands_race_and_runs_only_when_requested` | A 3-rover race asks before running, and a requested run is handed to the session to stream |
+| `run_now_race_streams_frames_before_metrics` | A race the user asked to run streams run_start and frames before metrics, then the leaderboard and explanation, like an approved run |
 | `plan_workflow_bounds_visible_repairs_and_asks_before_running` | Repair events form a visible tree, stop after three attempts and never run failed scenes |
 | `advisory_course_warning_does_not_block_or_repair` | An obstacle course beyond the robot's limits is a warning: it asks "Run it?" or runs, with no repair loop |
 | `answer_first_does_not_leave_an_empty_scene` | A question asked before any scene leaves no empty scene, so the next prompt builds one |

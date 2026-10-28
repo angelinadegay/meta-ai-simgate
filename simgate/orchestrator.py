@@ -74,6 +74,11 @@ class Session:
             await self.emit({"type": "metrics", "metrics": world.results})
         self.awaiting_approval = world.question is not None
         await self.agent("Director", "done", spec.title + (" — " + " ".join(spec.assumptions) if spec.assumptions else ""))
+        if world.run_requested and self.build is not None:
+            self.awaiting_approval = False
+            await self.emit({"type": "explanation", "message": message})   # a chat line without a Run chip
+            await self.run()
+            return
         await self.emit({
             "type": "question",
             "message": message,

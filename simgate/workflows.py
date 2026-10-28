@@ -63,6 +63,7 @@ async def execute(plan: Plan, current: SceneSpec | None, director: "Director") -
             "Comparing the requested conditions.",
         )
         explanation = await _explain(world, director)
+        await _request_run(world, director, "Streaming the baseline run for playback.")
         return world, f"{compared.text} {explanation}".strip()
     if plan.workflow == "stress_test":
         tested = await director._mock_call(
@@ -72,6 +73,7 @@ async def execute(plan: Plan, current: SceneSpec | None, director: "Director") -
             "Running the requested stress test.",
         )
         explanation = await _explain(world, director)
+        await _request_run(world, director, "Streaming the baseline run for playback.")
         return world, f"{tested.text} {explanation}".strip()
     return await _approval_or_run(world, plan, director, "The world is built and all checks passed.")
 
@@ -470,16 +472,23 @@ async def _approval_or_run(
             "Waiting for approval before running the simulation.",
         )
         return world, asked.text
-    result = await director._mock_call(world, "run", {}, "Running the checked simulation.")
-    explanation = await _explain(world, director)
-    if plan.workflow == "race":
-        leaderboard = result.data.get("results", {}).get("leaderboard", [])
-        if leaderboard:
-            placements = ", ".join(
-                f"{index}. {row.get('label', row.get('id'))}" for index, row in enumerate(leaderboard, 1)
-            )
-            ready_message = f"Race complete. Leaderboard: {placements}."
-    return world, f"{ready_message} {explanation}".strip()
+    await _request_run(world, director, "Running the checked simulation.")
+    return world, f"{ready_message} Running it now."
+
+
+async def _request_run(world: World, director: "Director", thought: str) -> None:
+    """The session streams the run (frames, metrics, explanation) exactly like a user-approved run."""
+    world.run_requested = True
+    await _emit_completed_step(
+        director,
+        agent="Director",
+        model="rules",
+        tool="run",
+        parent_id=director._root_id,
+        thought=thought,
+        result="Run requested; the simulator streams it to the browser.",
+        status="done",
+    )
 
 
 async def _explain(world: World, director: "Director") -> str:
