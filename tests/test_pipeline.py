@@ -111,6 +111,52 @@ def test_director_plan_schema_validates_ids_and_expanded_robot_limit():
         })
 
 
+def test_director_planning_uses_one_call_retries_validation_and_falls_back():
+    from simgate import config, llm
+    from simgate.director import Director
+
+    original_mock = config.MOCK_MODE
+    original_chat = llm.chat
+    calls = []
+
+    def scripted_chat(messages, *args, **kwargs):
+        calls.append(messages)
+        return (
+            '{"workflow":"race","summary":"Race three rovers east.","robots":'
+            '[{"kind":"rover","count":3}],"goal":{"place":"east"},"run_now":false}'
+        )
+
+    try:
+        config.MOCK_MODE = False
+        llm.chat = scripted_chat
+        race = Director().plan("race three rovers to the east")
+        assert len(calls) == 1
+        assert race.workflow == "race" and race.robots[0].count == 3
+
+        calls.clear()
+        replies = iter([
+            '{"workflow":"build","summary":"Use an unknown robot.","robots":[{"robot_id":"go3"}]}',
+            '{"workflow":"build","summary":"Build a rover.","robots":[{"kind":"rover"}]}',
+        ])
+        llm.chat = lambda messages, *args, **kwargs: (
+            calls.append(messages) or next(replies)
+        )
+        corrected = Director().plan("build a rover")
+        assert len(calls) == 2
+        assert "robot_id 'go3' doesn't exist" in calls[1][-1]["content"]
+        assert corrected.robots[0].kind == "rover"
+
+        calls.clear()
+        llm.chat = lambda *_args, **_kwargs: (calls.append([]) or "not JSON")
+        fallback = Director().plan("race three rovers to the far side")
+        assert len(calls) == 2
+        assert fallback.workflow == "race" and fallback.robots[0].count == 3
+        assert "I used the simple planner for this one" in fallback.summary
+    finally:
+        config.MOCK_MODE = original_mock
+        llm.chat = original_chat
+
+
 def test_director_tools_validate_and_update_world():
     import pytest
     from pydantic import ValidationError

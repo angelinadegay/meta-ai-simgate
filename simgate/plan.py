@@ -124,8 +124,6 @@ class Plan(BaseModel):
     def validate_workflow_payload(self) -> "Plan":
         if sum(robot.count for robot in self.robots) > 6:
             raise ValueError("A plan can expand to at most six robots.")
-        if self.workflow in {"build", "race"} and not self.robots:
-            raise ValueError(f"workflow {self.workflow!r} requires at least one robot.")
         if self.workflow == "race" and sum(robot.count for robot in self.robots) < 2:
             raise ValueError("workflow 'race' requires at least two robots after count expansion.")
         if self.workflow == "compare" and not self.variants:

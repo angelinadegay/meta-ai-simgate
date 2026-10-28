@@ -10,7 +10,9 @@ from typing import Any, Awaitable, Callable
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from . import agents, config, llm
+from . import agents, config, llm, presets
+from .library import LibraryRegistry
+from .plan import Plan
 from .spec import Robot, SceneSpec
 from .tools import ToolResult, World, invoke_tool, tool_catalog
 
@@ -60,6 +62,31 @@ class Director:
         self.step_callback = step_callback
         self._counter = 0
         self._root_id: str | None = None
+
+    def plan(self, text: str, world_state: World | SceneSpec | dict[str, Any] | None = None) -> Plan:
+        """Create a complete validated plan, retry once, then use the deterministic planner."""
+        if config.MOCK_MODE:
+            return _rule_plan(text, world_state)
+
+        messages = [
+            {"role": "system", "content": _plan_system()},
+            {"role": "user", "content": f"Current world state:\n{_plan_world_state(world_state)}\n\nRequest:\n{text}"},
+        ]
+        last_error = ""
+        for attempt in range(2):
+            if attempt:
+                messages.append({
+                    "role": "user",
+                    "content": f"The previous response failed validation with this exact error:\n{last_error}\nReturn a corrected Plan JSON only.",
+                })
+            reply = llm.chat(messages, config.PLANNER_MODEL)
+            try:
+                return Plan.model_validate(llm.extract_json(reply))
+            except (ValueError, TypeError) as exc:
+                last_error = str(exc)
+        plan = _rule_plan(text, world_state)
+        plan.summary = f"I used the simple planner for this one: {plan.summary}"
+        return plan
 
     async def execute(self, text: str, current: SceneSpec | None = None) -> tuple[World, str]:
         if config.MOCK_MODE:
@@ -414,6 +441,187 @@ class Director:
     def _id(self) -> str:
         self._counter += 1
         return f"step-{self._counter}-{uuid.uuid4().hex[:8]}"
+
+
+def _plan_system() -> str:
+    registry = LibraryRegistry()
+    robots = [
+        {
+            "id": robot.id,
+            "name": robot.name,
+            "kind": robot.kind,
+            "compatible_policies": [policy.id for policy in registry.compatible_policies(robot.id)],
+        }
+        for robot in registry.robots()
+    ]
+    terrain_presets = agents.presets_text()
+    world_ids = [world.id for world in registry.worlds()]
+    schema = json.dumps(Plan.model_json_schema(), separators=(",", ":"))
+    return f"""You are the Director for a physics simulation sandbox. Make a complete plan in ONE response.
+Return only one JSON object matching the Plan schema below. Do not return tools or a sequence of actions.
+
+Workflows:
+- build: create or edit a world and ask before running unless run_now is true.
+- race: create multiple robots sharing a course; ask before running unless run_now is true.
+- compare: build one scene and compare its variants.
+- stress_test: choose controlled variations for the user's robustness question.
+- edit: modify only the requested parts of the existing world.
+- custom: request a custom MJCF fragment.
+- answer: answer a question without simulation.
+
+Guidance:
+- Use only robot, policy, and terrain-preset IDs listed below. Built-in kinds are rover and walker.
+- Use robot_id with its compatible policy_id for library robots such as the humanoid.
+- Put repeated identical robots in one robots entry with count (1–6); code expands the count.
+- Use named places rather than guessing coordinates. A shared goal can be set with goal.
+- Never invent physical values. Select known body/surface/terrain options and let code apply defaults.
+- run_now is true only when the user explicitly asks to run, race, start, or test now. Otherwise ask before running.
+- A question about capabilities or facts with no requested world change uses workflow answer.
+- Compare variants must each change a small number of valid conditions. Stress tests state the question.
+
+Short examples:
+Race plan: {{"workflow":"race","summary":"Race three rovers to the east side.","robots":[{{"kind":"rover","count":3}}],"goal":{{"place":"east"}},"run_now":false}}
+Compare plan: {{"workflow":"compare","summary":"Compare rover performance on Mars and Earth.","robots":[{{"kind":"rover"}}],"variants":[{{"label":"Mars","gravity":3.71}},{{"label":"Earth","gravity":9.81}}],"run_now":false}}
+Stress plan: {{"workflow":"stress_test","summary":"Test the rover under varied conditions.","question":"How robust is it?","run_now":false}}
+Edit plan: {{"workflow":"edit","summary":"Make the slope steeper.","changes":{{"terrain":{{"kind":"slope","slope_deg":30}}}}}}
+Answer plan: {{"workflow":"answer","summary":"Explain the available options.","reply":"You can build robot scenes, compare conditions, race robots, or run stress tests."}}
+
+Available library robots and policies:
+{json.dumps(robots, separators=(",", ":"))}
+Built-in robot kinds: rover, walker
+
+Available real-terrain presets:
+{terrain_presets}
+Available world preset IDs:
+{json.dumps(world_ids, separators=(",", ":"))}
+
+Plan JSON schema:
+{schema}"""
+
+
+def _plan_world_state(world_state: World | SceneSpec | dict[str, Any] | None) -> str:
+    if world_state is None:
+        return "{}"
+    if isinstance(world_state, World):
+        return _compact_world_state(world_state)
+    if isinstance(world_state, SceneSpec):
+        spec = world_state
+        compact = {
+            "domain": spec.domain,
+            "title": spec.title,
+            "environment": spec.environment.model_dump(mode="json"),
+            "terrain": spec.terrain.model_dump(mode="json") if spec.terrain else None,
+            "robots": [
+                {
+                    "id": robot.id,
+                    "label": robot.label,
+                    "robot": robot.robot.model_dump(mode="json"),
+                    "start": robot.start_xy or robot.start_place,
+                    "goal": robot.goal_xy or robot.goal_place,
+                }
+                for robot in spec.robots
+            ],
+            "obstacles": [obstacle.model_dump(mode="json") for obstacle in spec.obstacles],
+        }
+        return json.dumps(compact, separators=(",", ":"))
+    return json.dumps(world_state, separators=(",", ":"), default=str)[:12000]
+
+
+def _rule_plan(text: str, world_state: World | SceneSpec | dict[str, Any] | None) -> Plan:
+    current = world_state.spec if isinstance(world_state, World) else (
+        world_state if isinstance(world_state, SceneSpec) else None
+    )
+    source = text.lower()
+    is_stress = bool(re.search(r"\bstress[- ]test\b|\bhow robust\b|\bunder different conditions\b", source))
+    is_compare = bool(re.search(r"\bcompare\b|\bversus\b|\bvs\.?\b", source))
+    is_custom = bool(re.search(r"\bcustom\b", source))
+    has_world_request = bool(re.search(
+        r"\b(build|create|make|put|race|compare|stress|run|simulate|test|spawn|add|remove)\b",
+        source,
+    ))
+    if current is None and not has_world_request and re.search(r"\b(what|how|why|can you|tell me)\b", source):
+        return Plan(
+            workflow="answer",
+            summary="Answering without starting a simulation.",
+            reply="I can create robot worlds, set goals and obstacles, compare conditions, and run races or stress tests.",
+        )
+
+    planned = agents._mock_plan(text, current)
+    if is_stress:
+        return Plan(
+            workflow="stress_test",
+            summary="Test the current robot under varied conditions.",
+            question=text,
+        )
+    if is_custom:
+        return Plan(workflow="custom", summary="Build the requested custom world element.", custom_request=text)
+    world = {
+        "body": planned.environment.body,
+        "surface": planned.environment.surface,
+        "terrain_kind": planned.terrain.kind if planned.terrain else None,
+        "preset": planned.terrain.preset if planned.terrain and planned.terrain.kind == "real" else None,
+        "slope_deg": planned.terrain.slope_deg if planned.terrain and planned.terrain.kind == "slope" else None,
+        "roughness": planned.terrain.roughness if planned.terrain else None,
+    }
+
+    if is_compare:
+        body_names = [name for name in presets.GRAVITY if re.search(rf"\b{name}\b", source)]
+        if len(body_names) < 2:
+            body_names = ["earth", "mars"]
+        variations = [
+            {"label": body.title(), "gravity": presets.GRAVITY[body]}
+            for body in body_names[:2]
+        ]
+        robots = _rule_robot_plans(text, planned.robot)
+        return Plan(
+            workflow="compare",
+            summary="Compare the same robot scene across two conditions.",
+            world=world,
+            robots=robots,
+            variants=variations,
+        )
+
+    if current is not None and not has_world_request:
+        return Plan(
+            workflow="answer",
+            summary="Answering a question about the current scene.",
+            reply="The current world is ready for a run; ask me to run it or describe a change.",
+        )
+    mission = planned.mission
+    goal = None
+    if mission is not None:
+        if mission.goal_xy is not None:
+            goal = {"xy": mission.goal_xy}
+        elif mission.goal_place is not None:
+            goal = {"place": mission.goal_place}
+    robots = _rule_robot_plans(text, planned.robot)
+    race = bool(re.search(r"\brace\b", source)) and sum(robot["count"] for robot in robots) > 1
+    requested_run = bool(re.search(r"\b(run|simulate|start|go ahead|test now)\b", source))
+    return Plan(
+        workflow="race" if race else "build",
+        summary=planned.title.rstrip(".") + ".",
+        world=world,
+        robots=robots,
+        obstacles=[obstacle.model_dump(mode="json") for obstacle in planned.obstacles],
+        goal=goal,
+        run_now=requested_run,
+    )
+
+
+def _rule_robot_plans(text: str, fallback: Robot | None) -> list[dict[str, Any]]:
+    requested = _requested_robots(text, fallback)
+    grouped: dict[tuple[Any, ...], dict[str, Any]] = {}
+    for robot in requested:
+        signature = (robot.get("kind"), robot.get("robot_id"), robot.get("policy_id"))
+        if signature not in grouped:
+            grouped[signature] = {
+                key: robot[key]
+                for key in ("kind", "robot_id", "policy_id", "label")
+                if key in robot
+            }
+            grouped[signature]["count"] = 0
+        grouped[signature]["count"] += 1
+    return list(grouped.values())
 
 
 def _bounded_messages(messages: list[dict[str, str]], max_chars: int = 48000) -> list[dict[str, str]]:
