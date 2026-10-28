@@ -239,7 +239,7 @@ Without a key, it runs in mock mode.
 
 ### 11. Tests
 
-`python tests/test_pipeline.py` runs 33 offline tests. The optional real-terrain integration test skips when
+`python tests/test_pipeline.py` runs 34 offline tests. The optional real-terrain integration test skips when
 `rasterio` is unavailable.
 
 | Test | Checks that |
@@ -252,6 +252,7 @@ Without a key, it runs in mock mode.
 | `mock_director_turns_race_into_ordered_tool_calls` | Offline Director plans a mixed race and asks before running |
 | `director_recovers_from_invalid_replies_and_failed_checks` | Bad JSON, unknown tools and failed checks get a bounded recovery |
 | `build_custom_retries_and_emits_attempt_steps` | A rejected custom fragment is corrected and both attempts appear in the step tree |
+| `director_context_compacts_scene_payload_and_bounds_history` | Large geometry payloads are summarized and conversation history stays bounded |
 | `icy_slope_physics` | A rover can't climb a 25° ice slope (friction below tan 25°) |
 | `walkers_walk_without_falling` | 4- and 6-legged walkers walk on Mars hills without falling |
 | `building_textbook_and_resonance` | OpenSees matches the textbook cantilever, and a softer building sways more |

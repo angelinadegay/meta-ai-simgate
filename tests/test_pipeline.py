@@ -285,6 +285,40 @@ def test_build_custom_retries_and_emits_attempt_steps():
         config.BUILDER_MAX_RETRIES = original_retries
 
 
+def test_director_context_compacts_scene_payload_and_bounds_history():
+    from simgate.director import _bounded_messages, _compact_tool_data
+
+    compact = _compact_tool_data(
+        "build_and_check",
+        {
+            "passed": True,
+            "checks": [{"name": "Model compiles", "passed": True, "detail": "ok"}],
+            "code": "CODE_BULK" * 10000,
+            "scene": {
+                "kind": "mujoco",
+                "geoms": [{} for _ in range(30000)],
+                "mesh_assets": {"mesh": {"vertices": "VERTEX_BULK" * 10000}},
+            },
+        },
+    )
+    assert "geom_count" in compact and "30000" in compact
+    assert "CODE_BULK" not in compact and "VERTEX_BULK" not in compact
+    assert len(compact) < 1000
+
+    messages = [
+        {"role": "system", "content": "system"},
+        {"role": "user", "content": "original request"},
+        *[
+            {"role": "user", "content": f"tool result {i}" + ("x" * 30)}
+            for i in range(20)
+        ],
+    ]
+    bounded = _bounded_messages(messages, max_chars=100)
+    assert bounded[:2] == messages[:2]
+    assert bounded[-1] == messages[-1]
+    assert sum(len(message["content"]) for message in bounded) <= 100
+
+
 def test_icy_slope_physics():
     # Friction 0.1 is below tan(25°) ≈ 0.47, so the rover cannot hold position and should not climb.
     spec = SceneSpec(domain="robot_terrain", environment=Environment(surface="ice"), terrain=Terrain(kind="slope", slope_deg=25, roughness=0.1)).fill_defaults()

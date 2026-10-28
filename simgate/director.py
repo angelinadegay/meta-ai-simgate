@@ -1,6 +1,7 @@
 """Tool-using Director loop for constructing and operating simulation worlds."""
 
 import asyncio
+import json
 import re
 import time
 import uuid
@@ -80,7 +81,7 @@ class Director:
             status="working", ms=0,
         )
         for _ in range(12):
-            reply = await asyncio.to_thread(llm.chat, messages, config.PLANNER_MODEL)
+            reply = await asyncio.to_thread(llm.chat, _bounded_messages(messages), config.PLANNER_MODEL)
             messages.append({"role": "assistant", "content": reply})
             try:
                 turn = DirectorTurn.model_validate(llm.extract_json(reply))
@@ -146,7 +147,11 @@ class Director:
             )
             messages.append({
                 "role": "user",
-                "content": f"Tool result: {result.text}\nStructured data: {result.data}\nUpdated world: {world.state()}",
+                "content": (
+                    f"Tool result: {result.text}\n"
+                    f"Relevant data: {_compact_tool_data(turn.tool, result.data)}\n"
+                    f"Updated world: {_compact_world_state(world)}"
+                ),
             })
             if turn.tool == "ask_user":
                 await self._finish_root(result.text)
@@ -154,6 +159,7 @@ class Director:
         message = "The Director reached the 12-tool limit before finishing. Please narrow the request."
         await self._finish_root(message)
         return world, message
+
 
     async def _mock_execute(self, text: str, current: SceneSpec | None) -> tuple[World, str]:
         planned = await asyncio.to_thread(agents.edit, current, text) if current is not None else await asyncio.to_thread(agents.plan, text)
@@ -328,6 +334,136 @@ class Director:
     def _id(self) -> str:
         self._counter += 1
         return f"step-{self._counter}-{uuid.uuid4().hex[:8]}"
+
+
+def _bounded_messages(messages: list[dict[str, str]], max_chars: int = 48000) -> list[dict[str, str]]:
+    if len(messages) <= 2:
+        return messages
+    kept = messages[2:]
+    total = sum(len(message["content"]) for message in messages[:2])
+    start = len(kept)
+    while start > 0 and total + len(kept[start - 1]["content"]) <= max_chars:
+        start -= 1
+        total += len(kept[start]["content"])
+    return [*messages[:2], *kept[start:]]
+
+
+def _compact_world_state(world: World) -> str:
+    spec = world.spec
+    state = {
+        "domain": spec.domain,
+        "environment": {
+            "body": spec.environment.body,
+            "gravity": spec.environment.gravity,
+            "surface": spec.environment.surface,
+            "friction": spec.environment.friction,
+        },
+        "terrain": {
+            "kind": spec.terrain.kind if spec.terrain else None,
+            "preset": spec.terrain.preset if spec.terrain else None,
+            "slope_deg": spec.terrain.slope_deg if spec.terrain else None,
+        },
+        "robots": [
+            {
+                "id": entry.id,
+                "label": entry.label,
+                "kind": entry.robot.kind,
+                "robot_id": entry.robot.robot_id,
+                "policy_id": entry.robot.policy_id,
+                "start": entry.start_xy or entry.start_place,
+                "goal": entry.goal_xy or entry.goal_place,
+            }
+            for entry in spec.robots
+        ],
+        "obstacle_count": len(spec.obstacles),
+        "built": world.build is not None,
+        "checks": [
+            {"name": check.name, "passed": check.passed, "detail": check.detail[:200]}
+            for check in world.checks
+        ],
+        "has_results": world.results is not None,
+    }
+    return json.dumps(state, separators=(",", ":"), default=str)
+
+
+def _compact_tool_data(tool: str, data: dict[str, Any]) -> str:
+    if tool == "build_and_check":
+        scene = data.get("scene") or {}
+        compact = {
+            "passed": data.get("passed"),
+            "checks": [
+                {"name": check.get("name"), "passed": check.get("passed"), "detail": str(check.get("detail", ""))[:200]}
+                for check in data.get("checks", [])
+            ],
+            "scene": {
+                "kind": scene.get("kind"),
+                "geom_count": len(scene.get("geoms", [])),
+                "robot_ids": list(scene.get("robots", {})),
+                "mesh_asset_count": len(scene.get("mesh_assets", {})),
+            },
+        }
+    elif tool == "list_library":
+        compact = {
+            key: [
+                {field: card.get(field) for field in ("id", "name", "kind", "robot_id")}
+                for card in data.get(key, [])
+            ]
+            for key in ("robots", "policies", "worlds")
+        }
+    elif tool == "run":
+        summary = data.get("results", {})
+        compact = {
+            "leaderboard": summary.get("leaderboard", []),
+            "robots": {
+                robot_id: {
+                    key: metrics.get(key)
+                    for key in (
+                        "goal_reached", "outcome", "time_to_goal_s", "final_distance_m",
+                        "forward_progress_m", "max_tilt_deg", "slip_ratio", "stopped_by",
+                    )
+                }
+                for robot_id, metrics in summary.get("robots", {}).items()
+            },
+        }
+    elif tool in {"compare", "stress_test"}:
+        rows = data.get("rows", data.get("results", []))
+        compact = [
+            {
+                key: row.get(key)
+                for key in ("label", "passed", "reason", "error", "changes")
+                if key in row
+            } | {"summary": _compact_metrics(row.get("summary", {}))}
+            for row in rows
+        ]
+    elif tool == "spawn_robot":
+        robot = data.get("robot", {})
+        compact = {
+            "id": robot.get("id"),
+            "label": robot.get("label"),
+            "kind": robot.get("robot", {}).get("kind"),
+            "robot_id": robot.get("robot", {}).get("robot_id"),
+            "policy_id": robot.get("robot", {}).get("policy_id"),
+        }
+    else:
+        compact = {key: value for key, value in data.items() if key not in {"code", "scene", "logs"}}
+    encoded = json.dumps(compact, separators=(",", ":"), default=str)
+    return encoded[:12000] + ("...[truncated]" if len(encoded) > 12000 else "")
+
+
+def _compact_metrics(summary: dict[str, Any]) -> dict[str, Any]:
+    keys = (
+        "goal_reached", "outcome", "time_to_goal_s", "final_distance_m",
+        "forward_progress_m", "max_tilt_deg", "slip_ratio", "gravity", "friction",
+    )
+    compact = {key: summary[key] for key in keys if key in summary}
+    if "leaderboard" in summary:
+        compact["leaderboard"] = summary["leaderboard"]
+    if "robots" in summary:
+        compact["robots"] = {
+            robot_id: {key: metrics[key] for key in keys if key in metrics}
+            for robot_id, metrics in summary["robots"].items()
+        }
+    return compact
 
 
 _NUMBER_WORDS = {
