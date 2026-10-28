@@ -79,6 +79,11 @@ the path in the order given unless the request says to scatter them or names a p
 "go", "start", "run it" or "race them" runs. There is no
 one-tool-per-model-turn loop or 12-call limit.
 
+After a failed run, "why did it fail?" (or "prove it", "what caused it") plans the **diagnose** workflow and
+"fix it", "make it pass" or "what would work" plans **redesign** (sections 10 and 11). If the model picks another
+workflow for such a request after a failed run, a code guard switches to the right one and says so. "use this
+design" applies the last redesign's winner through the typed edit path without a model call.
+
 A typical race uses **one Director planning model call**. If it runs, a separate Explainer call may follow; a
 failed check can add up to three bounded Builder repair attempts. Mock mode uses rules and makes no model calls.
 
@@ -248,7 +253,76 @@ steps in the event tree.
   about 5 MB). Slope, obstacle-scale and seed variations change geometry, so they remain in the report
   but are marked **not in ghost view**. The follow camera tracks the baseline.
 
-### 10. Model support
+### 10. Prove why it failed
+
+After a failed run, ask *"Why did it fail?"* (or click the chip). The agents test their own explanation instead
+of guessing:
+
+1. **Reproduce:** the unchanged scene runs again. If it now passes, the answer is "the failure didn't reproduce"
+   and nothing else runs.
+2. **Hypotheses:** the Explainer proposes 2–4 causes, each tested by changing exactly **one** thing. Only these
+   experiments are allowed: slipping → a rock surface (or friction +50%); low gravity → 9.81 m/s²; steep ground →
+   10° less slope (slope terrain) or the same scene on flat ground (generated hills, rocks or craters); an obstacle
+   → remove that obstacle, or halve every obstacle; a push → no push; too fast → speed × 0.6; tipping on a side
+   slope → face straight uphill. The model's reply is checked against this list; anything else is dropped with a
+   visible reason, and a bad reply gets one retry that shows the model its own reply and the exact errors. In
+   mock mode, rules read the evidence (slip above 40%, the obstacle that stopped it, a fall on ground steeper than
+   12°, gravity below 5 m/s², a large sideways slope). There is always at least one **control**: a cause the
+   evidence says is *not* responsible, so the results can rule something out.
+3. **Experiments:** all of them run in parallel through the batch runner, on the same seed and terrain, with the
+   original run's goal and time limit written in (so removing a course's only obstacle doesn't also remove its
+   finish line).
+4. **Verdicts:** *confirmed* ✓ = passes with only this change; *partly* ~ = still fails but clearly better
+   (30% less distance left, a fall avoided, or half the slip); *ruled out* ✕ = no clear improvement.
+5. **Decisions:** after each batch the Explainer decides to *conclude*, *test more* (up to 2 follow-ups, e.g. the
+   top two causes together or a stronger version of one) or say it *can't tell* (results contradict). At most two
+   decision rounds; mock mode tests more only when the best result is "partly".
+6. **Conclusion:** 3–5 plain sentences from the verdicts only. If nothing is confirmed it says "none of the tested
+   causes explains it on its own" and never invents a cause; unless a combination was tested, it notes that causes
+   which only matter together could be missed.
+
+**Budget:** at most 5 reruns in total, including the reproduction. In a multi-robot scene one robot is diagnosed
+(the first that failed, or the one named), with the others unchanged.
+
+### 11. Make it pass
+
+Ask *"Make it pass"* (or *"fix it"*, *"what would work?"*), optionally with limits such as *"keep it under
+15 kg"*, *"keep 4 wheels"*, *"only change the wheels"* or *"don't change the speed"*. The agents change the
+**robot's design, never the world**: environment, terrain, obstacles, start, goal and conditions stay fixed.
+
+| Robot | Knobs and hard bounds |
+| --- | --- |
+| Rover | wheel radius 0.08–0.35 m, 4 or 6 wheels, wheel speed 2–12 rad/s, chassis length 0.4–1.2 m, chassis width 0.3–0.9 m, mass 3–40 kg |
+| Walker | 4 or 6 legs, leg length 0.15–0.35 m, gait 1.2–2.5 Hz, stride 8–22° (outside the tuned 2.0 Hz / 15° the result is labelled "untested gait") |
+| Library robot with a trained policy | walking command speed 0.2–1.0 m/s and the choice of compatible policy only; the body is never edited because the policy expects that exact body |
+
+The user's limits narrow these bounds and are never violated; out-of-range proposals are clamped and the
+adjustment is shown.
+
+- **Rounds:** up to 3 rounds × 4 candidates in parallel (at most 12 runs plus robustness checks). If there is no
+  diagnosis yet, one runs first, and round 1 is aimed by it. Before each round the Designer (`BUILDER_MODEL`)
+  chooses a strategy and says why: *bigger change* (nothing is close; numeric knobs are also tried at their
+  limits), *refine* (something nearly passed), *try a different knob* (a knob is at its bound or isn't helping)
+  or *stop*. Mock rules decide from how close the best run got. After each round the Checker confirms the world is
+  unchanged and every change is in bounds.
+- **Winner:** the smallest change that passes (each numeric knob counted as a share of its range, a choice such
+  as 6 wheels as 0.5; fewer changed knobs win ties).
+- **Robustness:** the winner reruns on 3 nearby conditions inside the same world (terrain/obstacle seed +1 and +2,
+  friction −10%) and is reported as "passes 3/3" or which failed. If it fails 2 or more, the next-best passing
+  design gets one try.
+- **No pass:** the result says so, shows the best attempt and how close it got, and names the limit that blocked
+  it (e.g. "wheel radius already at the 0.35 m maximum").
+- **Nothing is applied automatically.** *"Use this design"* (button or chip) applies only the winner's changes
+  through the typed edit path, and the title is rebuilt as for any edit. **Show runs** replays the winning design
+  with streamed frames without applying it (the ghost view can't draw a different robot body).
+
+The browser shows a **Diagnosis** card (each cause, the single change tested, a verdict badge and its key number,
+the decisions and the conclusion) and a **Redesign** card (changed knobs before and after, result, robustness,
+runs tried and each round's strategy). Every decision appears in the timeline with its reason; the agent graph
+shows Explainer → Batch runner → Explainer for a diagnosis and Designer → Batch runner → Checker → Designer for a
+redesign.
+
+### 12. Model support
 
 The prototype works with any OpenAI-compatible endpoint, configured in `.env`:
 
@@ -260,9 +334,9 @@ The prototype works with any OpenAI-compatible endpoint, configured in `.env`:
 
 Without a key, it runs in mock mode.
 
-### 11. Tests
+### 13. Tests
 
-`python tests/test_pipeline.py` runs 58 offline tests. The optional real-terrain integration test skips when
+`python tests/test_pipeline.py` runs 74 offline tests. The optional real-terrain integration test skips when
 `rasterio` is unavailable.
 
 | Test | Checks that |
@@ -279,6 +353,22 @@ Without a key, it runs in mock mode.
 | `plan_workflow_expands_race_and_runs_only_when_requested` | A 3-rover race asks before running, and a requested run is handed to the session to stream |
 | `run_now_race_streams_frames_before_metrics` | A race the user asked to run streams run_start and frames before metrics, then the leaderboard and explanation, like an approved run |
 | `plan_workflow_bounds_visible_repairs_and_asks_before_running` | Repair events form a visible Checker → Builder → Checker chain with each failure reported once, stop after three attempts and never run failed scenes |
+| `diagnose_confirms_the_step_and_rules_out_low_gravity` | On Mars a 0.2 m step stops the rover: diagnose reproduces it, confirms the obstacle and rules out low gravity, within 5 reruns |
+| `diagnose_confirms_slipping_on_an_icy_slope` | On a 25° ice slope, a rock surface alone makes it pass, so slipping is confirmed |
+| `diagnose_does_not_diagnose_a_passing_run` | A passing run gets a clear "nothing to explain" and no reruns |
+| `experiment_knobs_and_per_robot_metrics` | The experiment and design knobs change only what they name; one robot's numbers are read from a multi-robot run |
+| `redesign_finds_the_smallest_passing_design_and_keeps_the_world` | For a 0.15 m step the smallest passing design wins (bigger wheels or 6 wheels), the world is identical, robustness is reported; "keep 4 wheels" uses wheel radius |
+| `redesign_reports_the_limit_when_nothing_passes` | A 1.0 m wall: no design passes within 12 runs, and the limit is named |
+| `design_constraints_narrow_the_design_space` | "under 15 kg", "only change the wheels", "keep 4 wheels" and library robots narrow the knobs |
+| `mock_explainer_tests_more_only_when_the_best_is_partly` | The mock Explainer tests more (combined or stronger) only when the best verdict is "partly" and reruns are left |
+| `model_explainer_decisions_are_validated_bounded_and_visible` | Fake model: a disallowed knob is dropped, "test more" runs exactly one follow-up within budget, every decision is a step |
+| `model_designer_candidates_are_clamped_and_stop_ends_early` | Fake Designer: out-of-range and unknown knobs are clamped or dropped visibly; "stop" ends the search |
+| `director_plans_diagnose_and_redesign_in_one_call` | "why did it fail?" and "make it pass, keep it under 15 kg" plan diagnose/redesign in one call; the guard and the rules cues |
+| `use_this_design_applies_only_the_winner_and_rebuilds_the_title` | "use this design" changes only the winner's knobs, with no model call, and rebuilds the title |
+| `an_answer_keeps_the_built_scene` | A question about an open scene keeps its build, so "run" still runs |
+| `show_runs_replays_the_winner_without_applying_it` | Show runs streams the winning design without applying it; the next run restores the scene first |
+| `browser_handles_the_analysis_events` | The page renders the diagnosis and redesign events, chips and buttons |
+| `full_session_why_then_make_it_pass` | Course with a big step → run → why → make it pass → use this design → run passes with frames streamed |
 | `advisory_course_warning_does_not_block_or_repair` | An obstacle course beyond the robot's limits is a warning: it asks "Run it?" or runs, with no repair loop |
 | `answer_first_does_not_leave_an_empty_scene` | A question asked before any scene leaves no empty scene, so the next prompt builds one |
 | `new_plan_scenes_keep_the_planned_title` | New robot and structure scenes are titled from the plan, not "Untitled scene" |
@@ -377,6 +467,8 @@ Things to try:
 | `simgate/presets.py` | Reference gravity and friction values |
 | `simgate/agents.py` | Planner, Router, Builder and Explainer, each with a model or mock rules |
 | `simgate/batch.py` | Parallel robot-condition runs and compressed ghost tracks |
+| `simgate/diagnose.py` | Prove why: reproduce a failed run, test single-change hypotheses, verdicts and conclusion |
+| `simgate/redesign.py` | Make it pass: bounded design search, constraints, robustness checks |
 | `simgate/library/` | Validated robot, policy and world cards and filesystem registry |
 | `simgate/policy_runtime.py` | Named-joint policy inference and PD control |
 | `simgate/orchestrator.py` | Runs a session and streams events to the browser |
@@ -399,6 +491,10 @@ To add a simulator: add a domain to `SceneSpec`, subclass `Simulator` in `backen
 - Orbital terrain can't show rocks smaller than about 1 m. Small random bumps stand in for them.
 - The OpenSees model is linear-elastic (no yielding, no P-delta), so damage levels are rough estimates.
 - The mock planner understands only simple keywords; a real model handles open-ended prompts.
+- Diagnose tests single changes (plus at most two follow-ups), so causes that only matter in combination can be
+  missed. Payload is not a hypothesis because scenes have no payload to remove.
+- Redesign searches at most 12 designs with simple strategies; it can miss a passing design that needs several
+  knobs changed at once.
 
 ## Planned next
 

@@ -1714,6 +1714,57 @@ def test_browser_handles_the_analysis_events():
     assert 'msg.get("type") == "show_design"' in (root / "server.py").read_text(encoding="utf-8")
 
 
+def test_full_session_why_then_make_it_pass():
+    import asyncio
+
+    from simgate.orchestrator import Session
+
+    async def flow():
+        events = []
+
+        async def emit(event):
+            events.append(event)
+
+        session = Session(emit)
+        turns = {}
+        for text in ("Rover obstacle course with a big step", "run", "why did it fail?", "make it pass",
+                     "use this design", "run"):
+            start = len(events)
+            await session.handle(text)
+            turns.setdefault(text, []).append(events[start:])
+        return session, turns
+
+    session, turns = asyncio.run(flow())
+    first_run, final_run = turns["run"]
+    assert not next(e["metrics"] for e in first_run if e["type"] == "metrics")["goal_reached"]
+    assert first_run[-1]["type"] == "explanation"
+
+    why = turns["why did it fail?"][0]
+    diagnosis = next(e["report"] for e in why if e["type"] == "diagnosis")
+    assert diagnosis["reproduced"] and any(h["verdict"] == "confirmed" and h["cause"] == "obstacle"
+                                           for h in diagnosis["hypotheses"])
+    assert why[-1]["type"] == "question" and why[-1]["chips"] == ["Make it pass"]
+    assert not any(e["type"] in ("scene", "spec") for e in why)   # the scene itself didn't change
+
+    fix = turns["make it pass"][0]
+    redesign = next(e["report"] for e in fix if e["type"] == "redesign")
+    assert redesign["winner"] and redesign["winner"]["robustness"]["total"] == 3
+    assert fix[-1]["chips"] == ["Use this design"]
+    for turn, agents_seen in ((why, {"Explainer", "Batch runner"}), (fix, {"Designer", "Batch runner", "Checker"})):
+        steps = [e for e in turn if e["type"] == "step"]
+        ids = {e["id"] for e in steps}
+        assert all(e["parent_id"] in ids for e in steps if e["parent_id"] is not None)
+        assert agents_seen <= {e["agent"] for e in steps}
+
+    applied = session.spec.robots[0].robot
+    for name, value in redesign["winner"]["changes"].items():
+        assert getattr(applied, name) == value
+    assert session.spec.title.startswith(("6-wheel rover", "4-wheel rover")) and "obstacle course" in session.spec.title
+    types = [e["type"] for e in final_run]
+    assert types.index("run_start") < types.index("frames") < types.index("metrics")
+    assert next(e["metrics"] for e in final_run if e["type"] == "metrics")["goal_reached"]
+
+
 def test_stress_trigger_requires_robot_scene():
     import asyncio
     from unittest.mock import patch
