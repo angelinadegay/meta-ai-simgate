@@ -215,11 +215,14 @@ def _mock_plan(text: str, current: SceneSpec | None = None) -> SceneSpec:
             rb.kind = "rover"
         if re.search(r"\bg1\b", t) or "humanoid" in t or "unitree" in t:
             rb.kind, rb.robot_id, rb.policy_id = "library", "g1", "g1_walking"
-        six = "six" in t or re.search(r"\b6[\s-]*(?:leg|wheel)", t) or any(w in t for w in ("hexapod", "insect", "spider"))
-        if six:
-            rb.legs, rb.wheels = 6, 6
-        if re.search(r"\b(?:four|4)[\s-]*(?:leg|wheel)", t):
-            rb.legs, rb.wheels = 4, 4
+        # A count applies only to the part it names: "six-legged" never sets wheels, "six wheels" never sets legs.
+        for number, count in (("six|6", 6), ("four|4", 4)):
+            if re.search(rf"\b(?:{number})[\s-]*leg", t):
+                rb.legs = count
+            if re.search(rf"\b(?:{number})[\s-]*wheel", t):
+                rb.wheels = count
+        if any(w in t for w in ("hexapod", "insect", "spider")):
+            rb.legs = 6
         _mock_obstacles(spec, t)
         _mock_mission(spec, t)
         if "bigger wheel" in t or "larger wheel" in t:

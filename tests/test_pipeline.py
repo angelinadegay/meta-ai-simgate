@@ -163,7 +163,7 @@ def test_director_planning_uses_one_call_retries_validation_and_falls_back():
 
         world, message = asyncio.run(Director().execute_plan("race three rovers to the far side"))
         assert message.startswith("I used the simple planner for this one.")
-        assert world.spec.title == agents._mock_plan("race three rovers to the far side").title
+        assert world.spec.title == "Three 4-wheel rovers on hills terrain, Earth"
     finally:
         config.MOCK_MODE = original_mock
         llm.chat = original_chat
@@ -641,6 +641,20 @@ def test_rules_planner_treats_short_change_requests_as_edits():
 
     events = asyncio.run(readme_flow())
     assert not any(event["type"] == "error" for event in events)
+
+
+def test_leg_and_wheel_counts_apply_only_to_their_part():
+    from simgate.director import Director
+
+    assert (agents.plan("a rover and a six-legged walker").robot.wheels, agents.plan("a six-legged walker").robot.legs) == (4, 6)
+    assert agents.plan("a six-wheeled rover").robot.legs == 4
+    assert agents.plan("a robot dog, six wheels on the next one").robot.legs == 4
+    assert agents.plan("add six rocks").robot.wheels == 4
+
+    plan = Director().plan("race a rover and a six-legged walker to the summit on Mars hills, go")
+    assert [(robot.kind, robot.wheels, robot.legs) for robot in plan.robots] == [("rover", 4, None), ("walker", None, 6)]
+    assert plan.summary == "4-wheel rover and 6-legged walker on hills terrain, Mars."
+    assert Director().plan("race three rovers to the far side").summary == "Three 4-wheel rovers on hills terrain, Earth."
 
 
 def test_template_repair_uses_registered_physics_presets():

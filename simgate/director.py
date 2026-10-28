@@ -435,7 +435,7 @@ def _rule_plan(text: str, world_state: World | SceneSpec | dict[str, Any] | None
         )
     return Plan(
         workflow="race" if race else "build",
-        summary=planned.title.rstrip(".") + ".",
+        summary=_rule_title(planned, robots),
         world=world,
         robots=robots,
         obstacles=[obstacle.model_dump(mode="json") for obstacle in planned.obstacles],
@@ -577,6 +577,24 @@ def _compact_world_state(world: World) -> str:
 _NUMBER_WORDS = {
     "one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6,
 }
+
+
+def _rule_title(planned: SceneSpec, robots: list[dict[str, Any]]) -> str:
+    """The rules planner's scene title; with several robots it names each one ("4-wheel rover and 6-legged walker")."""
+    if sum(robot["count"] for robot in robots) <= 1 or " on " not in planned.title:
+        return planned.title.rstrip(".") + "."
+    count_words = {count: word for word, count in _NUMBER_WORDS.items()}
+    names = []
+    for robot in robots:
+        if robot.get("robot_id"):
+            what = "G1 humanoid"
+        elif robot.get("kind") == "walker":
+            what = f"{robot.get('legs') or 4}-legged walker"
+        else:
+            what = f"{robot.get('wheels') or 4}-wheel rover"
+        names.append(what if robot["count"] == 1 else f"{count_words[robot['count']]} {what}s")
+    listed = names[0] if len(names) == 1 else ", ".join(names[:-1]) + " and " + names[-1]
+    return f"{listed[0].upper()}{listed[1:]} on {planned.title.split(' on ', 1)[1].rstrip('.')}."
 
 
 def _requested_robots(text: str, fallback: Robot | None) -> list[dict[str, Any]]:

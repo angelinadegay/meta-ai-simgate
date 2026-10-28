@@ -256,7 +256,7 @@ Without a key, it runs in mock mode.
 
 ### 11. Tests
 
-`python tests/test_pipeline.py` runs 53 offline tests. The optional real-terrain integration test skips when
+`python tests/test_pipeline.py` runs 54 offline tests. The optional real-terrain integration test skips when
 `rasterio` is unavailable.
 
 | Test | Checks that |
@@ -278,6 +278,7 @@ Without a key, it runs in mock mode.
 | `plan_workflow_preserves_structural_scene_support` | Structural scenes still use the OpenSees build/check workflow |
 | `edit_plan_changes_only_the_requested_scene_fields` | A terrain edit preserves the existing robot, mission, world and obstacles |
 | `rules_planner_treats_short_change_requests_as_edits` | With a scene open, short change requests ("use six wheels", "ice", "add a wall", "make it stiffer") are edits; questions stay answers |
+| `leg_and_wheel_counts_apply_only_to_their_part` | "six-legged" never sets a rover's wheels and "six-wheeled" never sets legs; multi-robot titles name each robot |
 | `model_edit_plans_are_typed_and_checked_against_the_scene` | Model edits are typed and dry-run against the scene: a slope angle on hills becomes a slope, a no-op edit gets the one retry, "steeper" adds 10° |
 | `template_repair_uses_registered_physics_presets` | Safe repairs restore registered gravity, friction and slope values |
 | `director_tools_validate_and_update_world` | Tools validate inputs and update the draft world |
