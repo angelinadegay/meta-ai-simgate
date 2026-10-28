@@ -491,13 +491,25 @@ function hfieldMesh(h, base) {
   m.receiveShadow = true; return m;
 }
 
-function geomMesh(g) {
+function geomMesh(g, meshAssets, meshGeometries) {
   const [a, b, c] = g.size; let geo;
   switch (g.type) {
     case "box": geo = new THREE.BoxGeometry(2 * a, 2 * b, 2 * c); break;
     case "sphere": geo = new THREE.SphereGeometry(a, 24, 16); break;
     case "cylinder": geo = new THREE.CylinderGeometry(a, a, 2 * b, 28); geo.rotateX(Math.PI / 2); break;
     case "capsule": geo = new THREE.CapsuleGeometry(a, 2 * b, 8, 16); geo.rotateX(Math.PI / 2); break;
+    case "mesh": {
+      const asset = meshAssets?.[g.mesh_id]; if (!asset) return null;
+      geo = meshGeometries.get(g.mesh_id);
+      if (!geo) {
+        geo = new THREE.BufferGeometry();
+        geo.setAttribute("position", new THREE.Float32BufferAttribute(asset.vertices, 3));
+        geo.setIndex(asset.faces);
+        geo.computeVertexNormals();
+        meshGeometries.set(g.mesh_id, geo);
+      }
+      break;
+    }
     default: return null;
   }
   const [r, gg, bb, al] = g.rgba;
@@ -510,8 +522,9 @@ function loadScene(s) {
   clearWorld(); current = s; frames = []; idx = 0; $("empty").hidden = true; $("player").hidden = true; $("metricsCard").hidden = true;
   terrainMesh = null; resetTrail();
   if (s.kind === "mujoco") {
+    const meshGeometries = new Map();
     for (const g of s.geoms) {
-      const m = g.type === "hfield" ? hfieldMesh(g.hfield, g.rgba) : geomMesh(g);
+      const m = g.type === "hfield" ? hfieldMesh(g.hfield, g.rgba) : geomMesh(g, s.mesh_assets, meshGeometries);
       if (g.type === "hfield") terrainMesh = m;
       meshes[g.id] = m; if (m) world.add(m);
     }
@@ -583,6 +596,13 @@ function applyFrame(f) {
     current.geoms.forEach((g, k) => {
       const m = meshes[g.id]; if (!m || g.type === "hfield") return;
       const p = f.poses[k]; m.position.set(p[0], p[1], p[2]); m.quaternion.set(p[4], p[5], p[6], p[3]);
+      if (g.type === "mesh") {
+        const asset = current.mesh_assets?.[g.mesh_id];
+        if (asset) {
+          m.position.add(new THREE.Vector3(...asset.pos).applyQuaternion(m.quaternion));
+          m.quaternion.multiply(new THREE.Quaternion(asset.quat[1], asset.quat[2], asset.quat[3], asset.quat[0]));
+        }
+      }
     });
     trail.geometry.setDrawRange(0, Math.min(idx + 1, trailCount));
     // Follow cam: move the camera with the robot so it stays the same size on screen.

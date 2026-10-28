@@ -1,4 +1,5 @@
 """MuJoCo backend: robots on generated terrain."""
+import json
 import math
 import xml.etree.ElementTree as ET
 from functools import lru_cache
@@ -17,6 +18,7 @@ from . import obstacles as course
 from .base import BuildResult, Check, Simulator
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
+SCENE_EVENT_BUDGET_BYTES = 5 * 1024 * 1024
 GRID = 160         # heightfield resolution (GRID x GRID): 0.13 m cells on the default 20 m terrain
 FPS = 30           # recorded frames per simulated second
 
@@ -471,6 +473,55 @@ def sliding_contacts(model, data, parts: set[int], ground: set[int], speeds: lis
     return touching, sliding
 
 
+def _decimate_mesh(
+    vertices: np.ndarray,
+    faces: np.ndarray,
+    target_vertices: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    if len(vertices) <= target_vertices:
+        return vertices, faces
+
+    minimum = vertices.min(axis=0)
+    cell_low, cell_high = 0.0, float(np.ptp(vertices, axis=0).max())
+    clustered_ids = None
+    cluster_count = 0
+    for _ in range(20):
+        cell = (cell_low + cell_high) / 2
+        keys = np.floor((vertices - minimum) / max(cell, 1e-9)).astype(np.int32)
+        _, inverse = np.unique(keys, axis=0, return_inverse=True)
+        candidate_count = int(inverse.max()) + 1
+        if candidate_count > target_vertices:
+            cell_low = cell
+        else:
+            cell_high = cell
+            clustered_ids = inverse
+            cluster_count = candidate_count
+    if clustered_ids is None:
+        raise ValueError("Could not simplify MuJoCo mesh to the requested scene size.")
+
+    counts = np.bincount(clustered_ids, minlength=cluster_count)
+    simplified_vertices = np.column_stack(
+        [
+            np.bincount(clustered_ids, weights=vertices[:, axis], minlength=cluster_count) / counts
+            for axis in range(3)
+        ]
+    )
+    simplified_faces = clustered_ids[faces]
+    distinct = (
+        (simplified_faces[:, 0] != simplified_faces[:, 1])
+        & (simplified_faces[:, 1] != simplified_faces[:, 2])
+        & (simplified_faces[:, 0] != simplified_faces[:, 2])
+    )
+    simplified_faces = simplified_faces[distinct]
+    if len(simplified_faces):
+        _, unique = np.unique(np.sort(simplified_faces, axis=1), axis=0, return_index=True)
+        simplified_faces = simplified_faces[np.sort(unique)]
+        used, remapped = np.unique(simplified_faces, return_inverse=True)
+        simplified_vertices = simplified_vertices[used]
+        simplified_faces = remapped.reshape(-1, 3)
+    return simplified_vertices, simplified_faces
+
+
 class CourseTracker:
     """Follows the robot through an obstacle course: what it touched, what it got past, what stopped it."""
 
@@ -651,14 +702,30 @@ class MuJoCoSimulator(Simulator):
         template_xml, _, _ = self.template(spec)      # also resolves the start and goal
         xml = template_xml if code is None else code
         model = _model_from_xml(xml)                  # raises with a readable error if invalid
-        scene = self._scene(model, spec)
+        fixed_event = {"type": "scene", "code": xml, "language": self.language}
+        scene_budget = SCENE_EVENT_BUDGET_BYTES - len(json.dumps(fixed_event).encode("utf-8")) - 1024
+        if scene_budget <= 0:
+            raise ValueError("MuJoCo scene code exceeds the 5 MB event payload budget.")
+        scene = self._scene(model, spec, scene_budget)
         scene["mission"] = self.mission
         scene["terrain_size_m"] = spec.terrain.size_m
         scene["course"] = [vars(p) for p in self.course]
         scene["course_notes"] = self.course_notes
+        event_size = len(
+            json.dumps(
+                {"type": "scene", "scene": scene, "code": xml, "language": self.language}
+            ).encode("utf-8")
+        )
+        if event_size > SCENE_EVENT_BUDGET_BYTES:
+            raise ValueError(f"MuJoCo scene event exceeds the 5 MB budget ({event_size} bytes).")
         return BuildResult(code=xml, language=self.language, scene=scene)
 
-    def _scene(self, model: mujoco.MjModel, spec: SceneSpec) -> dict:
+    def _scene(
+        self,
+        model: mujoco.MjModel,
+        spec: SceneSpec,
+        payload_budget: int = SCENE_EVENT_BUDGET_BYTES,
+    ) -> dict:
         geoms = []
         for g in range(model.ngeom):
             gtype = int(model.geom_type[g])
@@ -669,7 +736,9 @@ class MuJoCoSimulator(Simulator):
                 "size": model.geom_size[g].tolist(),
                 "rgba": model.geom_rgba[g].tolist(),
             }
-            if gtype == mujoco.mjtGeom.mjGEOM_HFIELD:
+            if gtype == mujoco.mjtGeom.mjGEOM_MESH:
+                item["mesh_id"] = int(model.geom_dataid[g])
+            elif gtype == mujoco.mjtGeom.mjGEOM_HFIELD:
                 h = int(model.geom_dataid[g])
                 item["hfield"] = {
                     "nrow": int(model.hfield_nrow[h]),
@@ -681,6 +750,27 @@ class MuJoCoSimulator(Simulator):
             geoms.append(item)
         data = mujoco.MjData(model)
         mujoco.mj_forward(model, data)
+        scene = {
+            "backend": self.name,
+            "kind": "mujoco",
+            "geoms": geoms,
+            "poses": self._poses(model, data),
+        }
+        mesh_ids = sorted(
+            {
+                int(model.geom_dataid[g])
+                for g in range(model.ngeom)
+                if int(model.geom_type[g]) == int(mujoco.mjtGeom.mjGEOM_MESH)
+            }
+        )
+        for ratio in (0.4, 0.3, 0.2, 0.125, 0.08, 0.05):
+            scene["mesh_assets"] = self._mesh_payload(model, mesh_ids, ratio)
+            if len(json.dumps(scene).encode("utf-8")) <= payload_budget:
+                break
+        else:
+            raise ValueError(
+                f"MuJoCo mesh geometry cannot fit the {payload_budget}-byte scene budget."
+            )
         follow = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, "chassis")
         root_body = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "rover")
         if follow < 0 and root_body >= 0:
@@ -691,14 +781,33 @@ class MuJoCoSimulator(Simulator):
             if not root_geoms:
                 root_geoms = [g for g in range(model.ngeom) if int(model.geom_bodyid[g]) == root_body]
             follow = root_geoms[0] if root_geoms else -1
-        return {
-            "backend": self.name,
-            "kind": "mujoco",
-            "geoms": geoms,
-            "follow_geom": int(follow),
-            "robot_root_body": int(root_body),
-            "poses": self._poses(model, data),
-        }
+        scene["follow_geom"] = int(follow)
+        scene["robot_root_body"] = int(root_body)
+        return scene
+
+    @staticmethod
+    def _mesh_payload(model: mujoco.MjModel, mesh_ids: list[int], ratio: float) -> dict:
+        meshes = {}
+        for mesh_id in mesh_ids:
+            vert_start = int(model.mesh_vertadr[mesh_id])
+            face_start = int(model.mesh_faceadr[mesh_id])
+            vertex_count = int(model.mesh_vertnum[mesh_id])
+            face_count = int(model.mesh_facenum[mesh_id])
+            vertices = model.mesh_vert[vert_start : vert_start + vertex_count].astype(np.float64)
+            faces = model.mesh_face[face_start : face_start + face_count].astype(np.int32)
+            vertices, faces = _decimate_mesh(
+                vertices,
+                faces,
+                max(4, int(vertex_count * ratio)),
+            )
+            meshes[str(mesh_id)] = {
+                "name": mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_MESH, mesh_id) or "",
+                "vertices": np.round(vertices, 3).reshape(-1).tolist(),
+                "faces": faces.reshape(-1).tolist(),
+                "pos": np.round(model.mesh_pos[mesh_id], 4).tolist(),
+                "quat": np.round(model.mesh_quat[mesh_id], 5).tolist(),
+            }
+        return meshes
 
     @staticmethod
     def _poses(model: mujoco.MjModel, data: mujoco.MjData) -> list[list[float]]:
