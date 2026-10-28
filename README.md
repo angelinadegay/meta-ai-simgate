@@ -256,7 +256,7 @@ Without a key, it runs in mock mode.
 
 ### 11. Tests
 
-`python tests/test_pipeline.py` runs 50 offline tests. The optional real-terrain integration test skips when
+`python tests/test_pipeline.py` runs 51 offline tests. The optional real-terrain integration test skips when
 `rasterio` is unavailable.
 
 | Test | Checks that |
@@ -289,6 +289,7 @@ Without a key, it runs in mock mode.
 | `walkers_walk_without_falling` | 4- and 6-legged walkers walk on Mars hills without falling |
 | `building_textbook_and_resonance` | OpenSees matches the textbook cantilever, and a softer building sways more |
 | `real_terrain_pipeline` | Fake HiRISE file → converter → preset → simulation, with orientation preserved |
+| `script_runner_reports_skips` | The plain-script runner prints "skip" with the reason for a skipped test instead of "ok" |
 | `fall_diagnostics_on_steep_slope` | A walker falling on a 25° slope gets correct fall direction, slope and slip evidence |
 | `slope_geometry_and_no_fall_fields` | Slope ahead and sideways are measured correctly, with no false steep edges |
 | `run_once_per_approval` | A double click on Run doesn't run twice; "run again" does |

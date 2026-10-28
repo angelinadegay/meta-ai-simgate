@@ -4,6 +4,7 @@ They run offline in MOCK mode unless you've configured a model.
 """
 import math
 import sys
+import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -839,8 +840,7 @@ def test_real_terrain_pipeline(tmp_dir=None):
     try:
         import rasterio  # noqa: F401
     except ImportError:
-        print("skip test_real_terrain_pipeline (pip install rasterio to run it)")
-        return
+        raise unittest.SkipTest("pip install rasterio to run it") from None
     root = Path(__file__).resolve().parent.parent
     with tempfile.TemporaryDirectory() as tmp:
         tif, out = Path(tmp) / "fake.tif", Path(tmp) / "terrains"
@@ -1345,8 +1345,24 @@ def test_g1_planner_and_library_selection_use_registered_cards():
     asyncio.run(select())
 
 
+def _run_one(name, fn) -> str:
+    """Run one test for the plain-script runner and return its report line."""
+    try:
+        fn()
+    except unittest.SkipTest as reason:
+        return f"skip {name} ({reason})"
+    return f"ok  {name}"
+
+
+def test_script_runner_reports_skips():
+    def skipped():
+        raise unittest.SkipTest("needs a library")
+
+    assert _run_one("test_x", skipped) == "skip test_x (needs a library)"
+    assert _run_one("test_y", lambda: None) == "ok  test_y"
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):
-            fn()
-            print("ok ", name)
+            print(_run_one(name, fn))
