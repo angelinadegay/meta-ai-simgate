@@ -51,7 +51,8 @@ prompt ─► Director ─► fixed workflow ─► Builder/Checker ─► (you 
   The two advisory warnings (a steep straight path, a course beyond the robot's measured limits) are shown but
   never trigger a repair or block a run.
 - **Approval:** the Director asks "Run it?" unless the user explicitly requested a run. One click gives exactly
-  one run, and an explicit "run again" repeats it.
+  one run, and an explicit "run again" repeats it. A scene whose checks still fail is never run by "run" or "run again"; the reply
+  names the failing checks, and "run anyway" is the explicit override.
 - **Simulator** streams frames live to the browser.
 - **Explainer** describes what happened in plain language, using only measured evidence. It marks anything it
   infers with "likely" and suggests one thing to try next.
@@ -255,7 +256,7 @@ Without a key, it runs in mock mode.
 
 ### 11. Tests
 
-`python tests/test_pipeline.py` runs 47 offline tests. The optional real-terrain integration test skips when
+`python tests/test_pipeline.py` runs 48 offline tests. The optional real-terrain integration test skips when
 `rasterio` is unavailable.
 
 | Test | Checks that |
@@ -289,6 +290,7 @@ Without a key, it runs in mock mode.
 | `fall_diagnostics_on_steep_slope` | A walker falling on a 25° slope gets correct fall direction, slope and slip evidence |
 | `slope_geometry_and_no_fall_fields` | Slope ahead and sideways are measured correctly, with no false steep edges |
 | `run_once_per_approval` | A double click on Run doesn't run twice; "run again" does |
+| `failing_scene_runs_only_with_run_anyway` | A scene whose checks still fail isn't run by "run" or "run again"; it says which checks fail, and only "run anyway" runs it |
 | `rover_steers_to_goal_off_its_heading` | A rover turns 45°, reaches the goal and ends the run early |
 | `walker_reaches_goal_on_hills` | A 6-legged walker reaches a goal on Mars hills |
 | `goal_up_an_icy_slope_is_missed` | An impossible goal is reported as missed, with the reason |

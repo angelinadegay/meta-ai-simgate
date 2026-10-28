@@ -410,6 +410,58 @@ def test_new_plan_scenes_keep_the_planned_title():
         assert world.spec.title == agents.plan(prompt).title
 
 
+def test_failing_scene_runs_only_with_run_anyway():
+    import asyncio
+    from unittest.mock import patch
+
+    from simgate.backends.base import BuildResult, Check
+    from simgate.orchestrator import Session
+
+    class FailingSimulator:
+        name = "test simulator"
+        language = "test"
+        runs = 0
+
+        def build(self, _spec, code=None):
+            return BuildResult(code or "template", self.language, {})
+
+        def validate(self, _spec, _build):
+            return [Check("Deliberately failing check", False, "forced")]
+
+        def run(self, _spec, _build):
+            FailingSimulator.runs += 1
+            yield [{"t": 0.0}]
+
+        def summary(self):
+            return {}
+
+    async def scenario():
+        events = []
+
+        async def emit(event):
+            events.append(event)
+
+        session = Session(emit)
+        with patch("simgate.agents.route", return_value=FailingSimulator()), \
+                patch("simgate.agents.explain", return_value="explained"):
+            await session.handle("build a rover")
+            assert not session.awaiting_approval
+            for text in ("run", "run again"):
+                await session.handle(text)
+                assert events[-1]["type"] == "question"
+                assert events[-1]["message"] == (
+                    "This scene still fails: Deliberately failing check (forced). "
+                    "Describe a change, or say 'run anyway' to run it."
+                )
+            assert FailingSimulator.runs == 0
+            await session.handle("Run anyway")
+        return events
+
+    events = asyncio.run(scenario())
+    assert FailingSimulator.runs == 1
+    assert [event["type"] for event in events][-1] == "explanation"
+
+
 def test_plan_workflow_preserves_structural_scene_support():
     import asyncio
 

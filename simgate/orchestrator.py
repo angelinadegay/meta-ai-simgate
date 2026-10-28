@@ -6,7 +6,7 @@ import asyncio
 from typing import Awaitable, Callable
 
 from . import agents
-from .backends.base import BuildResult, Simulator
+from .backends.base import BuildResult, Check, Simulator, blocking_failures
 from .director import Director
 from .spec import SceneSpec
 
@@ -19,6 +19,7 @@ class Session:
         self.spec: SceneSpec | None = None
         self.sim: Simulator | None = None
         self.build: BuildResult | None = None
+        self.checks: list[Check] = []
         self.awaiting_approval = False
         self.library_selection: tuple[str, str, str] | None = None
 
@@ -27,7 +28,16 @@ class Session:
 
     async def handle(self, text: str) -> None:
         try:
-            if self.build is not None and agents.is_rerun(text):
+            if self.build is not None and agents.is_run_anyway(text):
+                self.awaiting_approval = False
+                await self.run()
+            elif self.build is not None and blocking_failures(self.checks) and (
+                    agents.is_rerun(text) or agents.is_approval(text)):
+                failing = "; ".join(f"{c.name} ({c.detail})" for c in blocking_failures(self.checks))
+                await self.emit({"type": "question",
+                                 "message": f"This scene still fails: {failing}. Describe a change, or say 'run anyway' to run it.",
+                                 "stress_test_available": False})
+            elif self.build is not None and agents.is_rerun(text):
                 self.awaiting_approval = False
                 await self.run()
             elif self.build is not None and agents.is_approval(text):
@@ -60,7 +70,7 @@ class Session:
         if self.library_selection and spec.domain == "robot_terrain":
             self._apply_library_selection(spec)
             world.spec = spec
-        self.spec, self.sim, self.build = spec, world.simulator, world.build
+        self.spec, self.sim, self.build, self.checks = spec, world.simulator, world.build, list(world.checks)
         await self.emit({"type": "spec", "spec": spec.model_dump()})
         if world.build is not None:
             await self.emit({
@@ -72,7 +82,7 @@ class Session:
             await self.emit({"type": "checks", "checks": [check.__dict__ for check in world.checks]})
         if world.results is not None:
             await self.emit({"type": "metrics", "metrics": world.results})
-        self.awaiting_approval = world.question is not None
+        self.awaiting_approval = world.question is not None and not blocking_failures(self.checks)
         await self.agent("Director", "done", spec.title + (" — " + " ".join(spec.assumptions) if spec.assumptions else ""))
         if world.run_requested and self.build is not None:
             self.awaiting_approval = False
@@ -171,12 +181,12 @@ class Session:
             await director._mock_call(world, name, args, f"Setting the {which} from the map.")
             await director._mock_call(world, "build_and_check", {}, "Rebuilding and checking the clicked position.")
             await director._finish_root(f"{which.capitalize()} set to ({x:.1f}, {y:.1f}) m.")
-            self.spec, self.sim, self.build = world.spec, world.simulator, world.build
+            self.spec, self.sim, self.build, self.checks = world.spec, world.simulator, world.build, list(world.checks)
             await self.emit({"type": "spec", "spec": self.spec.model_dump()})
             if self.build is not None:
                 await self.emit({"type": "scene", "scene": self.build.scene, "code": self.build.code, "language": self.build.language})
                 await self.emit({"type": "checks", "checks": [check.__dict__ for check in world.checks]})
-            self.awaiting_approval = True
+            self.awaiting_approval = not blocking_failures(self.checks)
             await self.emit({"type": "question", "message": "Does this look right? Say \"run\" to start, or tell me what to change.",
                              "stress_test_available": True})
         except Exception as e:  # noqa: BLE001
@@ -207,7 +217,8 @@ class Session:
         else:
             await self.agent("Checker", "done", f"All {len(checks)} checks passed.")
 
-        self.awaiting_approval = True
+        self.checks = checks
+        self.awaiting_approval = not blocking_failures(checks)
         await self.emit({"type": "question", "message": "Does this look right? Say \"run\" to start, or tell me what to change.",
                          "stress_test_available": spec.domain == "robot_terrain"})
 

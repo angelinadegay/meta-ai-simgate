@@ -380,7 +380,8 @@ ws.onmessage = (m) => {
     case "checks": renderChecks(ev.checks); break;
     case "question": {
       const d = addMsg(ev.message); const q = document.createElement("div"); q.className = "quick";
-      const label = ev.message.startsWith("This scene already ran") ? "Run again" : "Run";
+      const label = ev.message.startsWith("This scene already ran") ? "Run again"
+        : ev.message.startsWith("This scene still fails") ? "Run anyway" : "Run";
       chips(q, ev.stress_test_available ? [label, "Stress test"] : [label], label); d.appendChild(q); break;
     }
     case "run_start": batchIsActive = false; $("reportCard").hidden = true; $("leaderboardCard").hidden = true; disableRunButtons(); startRun(); break;

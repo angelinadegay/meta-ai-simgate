@@ -446,6 +446,14 @@ def is_rerun(text: str) -> bool:
     return bool(RERUN.match(text))
 
 
+RUN_ANYWAY = re.compile(r"^\s*run (it )?anyway\b", re.I)
+
+
+def is_run_anyway(text: str) -> bool:
+    """The explicit override for running a scene whose checks still fail."""
+    return bool(RUN_ANYWAY.match(text))
+
+
 # ── Router ─────────────────────────────────────────────────────────────────
 
 def route(spec: SceneSpec) -> Simulator:
