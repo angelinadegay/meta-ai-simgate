@@ -1562,6 +1562,52 @@ def test_model_designer_candidates_are_clamped_and_stop_ends_early():
     assert report["winner"] is None and report["message"].startswith("No design passed")
 
 
+def test_model_loops_have_code_backstops():
+    import json
+
+    from simgate import config, llm
+    from simgate.diagnose import model_decision, robot_metrics
+    from simgate.redesign import redesign
+
+    spec = step_course(0.2)
+    confirmed = {"cause": "obstacle", "intervention": {"remove_obstacle": "obs0_step"}, "verdict": "confirmed",
+                 "key_numbers": {"passed": [False, True]}}
+    partly = {"cause": "friction", "intervention": {"friction": 1.35}, "verdict": "partly",
+              "key_numbers": {"passed": [False, False]}}
+    decisions = []
+    original_mock, original_chat = config.MOCK_MODE, llm.chat
+    try:
+        config.MOCK_MODE = False
+        llm.chat = lambda *_args, **_kwargs: json.dumps({"decision": "test more", "reason": "Check friction.", "next": [
+            {"cause": "obstacle + friction", "intervention": {"remove_obstacle": "obs0_step", "friction": 1.35}},
+            {"cause": "friction (stronger)", "intervention": {"friction": 2.0}}]})
+        decided = model_decision(spec, [confirmed, partly], 2, decisions, [])
+        assert [item["cause"] for item in decided["next"]] == ["friction (stronger)"]
+        assert decisions[-1]["reason"] == "obstacle + friction: it adds to obstacle, which already passes on its own."
+
+        step = step_course(0.15)
+        summary = failed_run(step)
+        diagnosis = {"reproduced": True, "hypotheses": [], "reproduced_metrics": robot_metrics(summary)}
+        chat, calls = scripted_models({"You are the Designer": [
+            json.dumps({"strategy": "bigger change", "reason": "Try slower wheels.",
+                        "candidates": [{"changes": {"drive_speed": 5.0}}]}),
+            json.dumps({"strategy": "refine", "reason": "Again.", "candidates": [{"changes": {"drive_speed": 5.0}}]}),
+            json.dumps({"strategy": "stop", "reason": "Done.", "candidates": []}),
+        ]})
+        llm.chat = chat
+        steps = []
+        report = redesign(step, summary, diagnosis=diagnosis, on_step=steps.append)
+    finally:
+        config.MOCK_MODE, llm.chat = original_mock, original_chat
+    assert len(report["rounds"]) >= 2 and report["rounds"][1]["candidates"]
+    fallback = next(d for d in report["decisions"] if d["decision"] == "fallback")
+    assert "all tried already or not allowed" in fallback["reason"]
+    assert any(fallback["reason"] in step["result"] for step in steps)
+    system = calls[0][2][0]["content"]
+    assert "6 wheels let the rear wheels push the front ones up a step" in system
+    assert '"robot_limits": {"climb_m": 0.09' in calls[0][2][1]["content"]
+
+
 def test_director_plans_diagnose_and_redesign_in_one_call():
     import json
 

@@ -314,18 +314,40 @@ course, start and goal never change). Before each round choose a strategy and sa
 - "refine": something nearly passed
 - "try a different knob": the current knob is at its bound or isn't helping
 - "stop": a robust winner exists or more rounds can't help (no candidates then)
-Propose up to {count} candidates; each changes one or a few knobs. Allowed knobs and ranges (never outside them;
-fixed knobs must not appear): {bounds}
-Prefer the smallest change that could work. Reply with JSON only, in this shape (the values are placeholders
+"refine" moves further in a direction that helped; it doesn't undo a change that helped. Propose up to {count}
+candidates; each changes one or a few knobs. Allowed knobs and ranges (never outside them; fixed knobs must not
+appear): {bounds}
+What the knobs do (measured on this simulator): {effects}
+The user message gives the robot's measured rough limits ("robot_limits"); compare them with what stopped it.
+Prefer the smallest change that could work, and don't repeat a design already tried. Reply with JSON only, in this shape (the values are placeholders
 showing the format, not suggestions):
 {{"strategy":"<one of the four>","reason":"<why>","candidates":[{{"changes":{{"<knob>":<value>}},"why":"<reason>"}}]}}"""
+
+
+KNOB_EFFECTS = {
+    "wheel_radius": "bigger wheels climb taller steps and cross wider gaps (a rover climbs about 0.6 x wheel radius "
+                    "with 4 wheels, 0.9 x with 6) and cross gaps up to about 1.6 x wheel radius",
+    "wheels": "6 wheels let the rear wheels push the front ones up a step, and spread the load for grip",
+    "drive_speed": "slower wheels slip and tip less on steep or loose ground; faster ones reach the goal sooner",
+    "chassis_length": "a longer chassis bridges dips but can catch on a step's edge",
+    "chassis_width": "a wider chassis resists tipping on side slopes",
+    "mass_kg": "a lighter robot needs less grip to climb; a heavier one presses wheels down harder",
+    "legs": "6 legs (tripod gait) are steadier and step a little higher than 4",
+    "leg_length": "longer legs step over taller obstacles",
+    "gait_freq_hz": "a slower gait slips and tips less (tuned at 2.0 Hz)",
+    "stride_deg": "a shorter stride is steadier, a longer one covers more ground (tuned at 15°)",
+    "command_speed_m_s": "the walking speed asked of the trained policy; slower is usually steadier",
+    "policy_id": "another trained policy that fits this exact robot",
+}
 
 
 def model_round(space: DesignSpace, context: dict, decisions: list[dict], calls: list[dict]) -> DesignReply | None:
     bounds = {name: (list(space.bounds[name]) if name not in space.fixed else f"fixed at {space.fixed[name]}")
               for name in space.bounds}
+    effects = json.dumps({name: KNOB_EFFECTS[name] for name in space.bounds if name in KNOB_EFFECTS})
     messages = [
-        {"role": "system", "content": DESIGNER_SYSTEM.format(count=CANDIDATES_PER_ROUND, bounds=json.dumps(bounds))},
+        {"role": "system", "content": DESIGNER_SYSTEM.format(count=CANDIDATES_PER_ROUND, bounds=json.dumps(bounds),
+                                                             effects=effects)},
         {"role": "user", "content": json.dumps(context, default=str)},
     ]
     reply, attempts = llm.chat_json(messages, config.BUILDER_MODEL, DesignReply.model_validate)
@@ -424,10 +446,18 @@ def redesign(spec: SceneSpec, summary: dict, constraints: str | None = None, dia
     problem = _problem(base, diagnosis)
     tried: set[str] = set()
     passing: list[dict] = []
+    limits = None
+    if space.kind != "library":
+        from .backends.obstacles import capability
+
+        probe = world.model_copy(deep=True)
+        probe.robot = robot.model_copy(deep=True)
+        limits = capability(probe)
 
     for number in range(1, MAX_ROUNDS + 1):
         context = {
             "round": number, "original_design": space.original(), "fixed_by_user": space.fixed,
+            "robot_limits": limits,
             "failure": {k: base.get(k) for k in ("outcome", "final_distance_m", "forward_progress_m", "flipped",
                                                    "slip_ratio", "stopped_by")},
             "diagnosis": [{"cause": h["cause"], "verdict": h.get("verdict")} for h in diagnosis.get("hypotheses", [])],
@@ -435,28 +465,41 @@ def redesign(spec: SceneSpec, summary: dict, constraints: str | None = None, dia
                 {"changes": c["changes"], "passed": c["passed"], "result": c["result"]} for c in r["candidates"]]}
                 for r in report["rounds"]],
         }
+        def rules_round() -> tuple[str, str, list]:
+            if number == 1:
+                return ("aim at the diagnosis", f"The failure points to {problem if problem != 'general' else 'no single cause'}.",
+                        [(c, "") for c in rule_candidates(space, problem)])
+            strategy, reason, proposals = rule_strategy(space, report["rounds"], tried)
+            return strategy, reason, [(c, "") for c in proposals]
+
+        def take(raw: list) -> list[dict]:
+            fresh = []
+            for changes, why in raw:
+                cleaned, _ = space.clean(changes, report["decisions"])
+                key = json.dumps(cleaned, sort_keys=True)
+                if cleaned and key not in tried:
+                    tried.add(key)
+                    fresh.append({"changes": cleaned, "why": why})
+                if len(fresh) == CANDIDATES_PER_ROUND:
+                    break
+            return fresh
+
+        recorded = len(report["decisions"])
         reply = None if config.MOCK_MODE else model_round(space, context, report["decisions"], report["model_calls"])
         if reply is not None:
             strategy, reason, raw = reply.strategy, reply.reason, [(c.changes, c.why) for c in reply.candidates]
-        elif number == 1:
-            strategy, reason = "aim at the diagnosis", f"The failure points to {problem if problem != 'general' else 'no single cause'}."
-            raw = [(c, "") for c in rule_candidates(space, problem)]
         else:
-            strategy, reason, proposals = rule_strategy(space, report["rounds"], tried)
-            raw = [(c, "") for c in proposals]
-        recorded = len(report["decisions"])
-        if reply is None and not config.MOCK_MODE:
+            strategy, reason, raw = rules_round()
+            if not config.MOCK_MODE:
+                report["decisions"].append({"agent": "Designer", "decision": "fallback",
+                                            "reason": "The Designer's reply didn't validate twice; using the design rules."})
+        candidates = take(raw)
+        if reply is not None and strategy != "stop" and not candidates:   # all repeats or out of bounds
+            strategy, reason, raw = rules_round()
             report["decisions"].append({"agent": "Designer", "decision": "fallback",
-                                        "reason": "The Designer's reply didn't validate twice; using the design rules."})
-        candidates = []
-        for changes, why in raw:
-            cleaned, _ = space.clean(changes, report["decisions"])
-            key = json.dumps(cleaned, sort_keys=True)
-            if cleaned and key not in tried:
-                tried.add(key)
-                candidates.append({"changes": cleaned, "why": why})
-            if len(candidates) == CANDIDATES_PER_ROUND:
-                break
+                                        "reason": "The Designer's candidates were all tried already or not allowed; "
+                                                  "using the design rules for this round."})
+            candidates = take(raw)
         for note in report["decisions"][recorded:]:
             _emit(on_step, "Designer", "candidates", "Checking the proposed designs against the bounds.",
                   f"{note['decision'].capitalize()}: {note['reason']}", "warning")

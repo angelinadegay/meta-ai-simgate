@@ -422,6 +422,10 @@ def model_decision(spec: SceneSpec, hypotheses: list[dict], remaining: int, deci
         allowed = {k: v for k, v in item.intervention.items() if k in ALLOWED_KNOBS}
         problem = None if allowed and len(allowed) <= 2 else "needs one or two allowed changes"
         problem = problem or _applicable(spec, allowed)
+        passes_alone = next((h["cause"] for h in hypotheses if h["verdict"] == "confirmed"
+                             and h["intervention"].items() <= allowed.items()), None)
+        if passes_alone and not problem:   # it would only repeat a change that already passed on its own
+            problem = f"it adds to {passes_alone}, which already passes on its own"
         if problem or allowed in [h["intervention"] for h in hypotheses]:
             decisions.append({"agent": "Explainer", "decision": "dropped",
                               "reason": f"{item.cause}: {problem or 'already tested'}."})

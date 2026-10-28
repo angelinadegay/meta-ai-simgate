@@ -276,7 +276,8 @@ of guessing:
    (30% less distance left, a fall avoided, or half the slip); *ruled out* ✕ = no clear improvement.
 5. **Decisions:** after each batch the Explainer decides to *conclude*, *test more* (up to 2 follow-ups, e.g. the
    top two causes together or a stronger version of one) or say it *can't tell* (results contradict). At most two
-   decision rounds; mock mode tests more only when the best result is "partly".
+   decision rounds; mock mode tests more only when the best result is "partly". A follow-up that only adds to a
+   change that already passed on its own is dropped, with the reason shown.
 6. **Conclusion:** 3–5 plain sentences from the verdicts only. If nothing is confirmed it says "none of the tested
    causes explains it on its own" and never invents a cause; unless a combination was tested, it notes that causes
    which only matter together could be missed.
@@ -303,8 +304,10 @@ adjustment is shown.
   diagnosis yet, one runs first, and round 1 is aimed by it. Before each round the Designer (`BUILDER_MODEL`)
   chooses a strategy and says why: *bigger change* (nothing is close; numeric knobs are also tried at their
   limits), *refine* (something nearly passed), *try a different knob* (a knob is at its bound or isn't helping)
-  or *stop*. Mock rules decide from how close the best run got. After each round the Checker confirms the world is
-  unchanged and every change is in bounds.
+  or *stop*. Mock rules decide from how close the best run got. The Designer is told what each knob does and the
+  robot's measured climb and gap limits; if its round has no new valid candidate (all repeats or out of bounds),
+  the design rules fill that round and say so. After each round the Checker confirms the world is unchanged and
+  every change is in bounds.
 - **Winner:** the smallest change that passes (each numeric knob counted as a share of its range, a choice such
   as 6 wheels as 0.5; fewer changed knobs win ties).
 - **Robustness:** the winner reruns on 3 nearby conditions inside the same world (terrain/obstacle seed +1 and +2,
@@ -336,7 +339,7 @@ Without a key, it runs in mock mode.
 
 ### 13. Tests
 
-`python tests/test_pipeline.py` runs 74 offline tests. The optional real-terrain integration test skips when
+`python tests/test_pipeline.py` runs 75 offline tests. The optional real-terrain integration test skips when
 `rasterio` is unavailable.
 
 | Test | Checks that |
@@ -363,6 +366,7 @@ Without a key, it runs in mock mode.
 | `mock_explainer_tests_more_only_when_the_best_is_partly` | The mock Explainer tests more (combined or stronger) only when the best verdict is "partly" and reruns are left |
 | `model_explainer_decisions_are_validated_bounded_and_visible` | Fake model: a disallowed knob is dropped, "test more" runs exactly one follow-up within budget, every decision is a step |
 | `model_designer_candidates_are_clamped_and_stop_ends_early` | Fake Designer: out-of-range and unknown knobs are clamped or dropped visibly; "stop" ends the search |
+| `model_loops_have_code_backstops` | A follow-up that only adds to a confirmed change is dropped; a Designer round of repeats is filled by the design rules; the Designer sees knob effects and the robot's limits |
 | `director_plans_diagnose_and_redesign_in_one_call` | "why did it fail?" and "make it pass, keep it under 15 kg" plan diagnose/redesign in one call; the guard and the rules cues |
 | `use_this_design_applies_only_the_winner_and_rebuilds_the_title` | "use this design" changes only the winner's knobs, with no model call, and rebuilds the title |
 | `an_answer_keeps_the_built_scene` | A question about an open scene keeps its build, so "run" still runs |
