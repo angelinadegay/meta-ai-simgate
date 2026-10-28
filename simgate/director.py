@@ -22,6 +22,7 @@ class Director:
         self._counter = 0
         self._root_id: str | None = None
         self.last_checker_id: str | None = None   # latest Checker hand-off step, parent of any repair
+        self.used_rule_planner = False            # the model's plan failed twice; the user is told
 
     def plan(self, text: str, world_state: World | SceneSpec | dict[str, Any] | None = None) -> Plan:
         """Create a complete validated plan, retry once, then use the deterministic planner."""
@@ -51,9 +52,8 @@ class Director:
                 return plan
             except (ValueError, TypeError) as exc:
                 last_error = str(exc)
-        plan = _rule_plan(text, world_state)
-        plan.summary = f"I used the simple planner for this one: {plan.summary}"
-        return plan
+        self.used_rule_planner = True
+        return _rule_plan(text, world_state)
 
     async def execute_plan(self, text: str, current: SceneSpec | None = None) -> tuple[World, str]:
         from . import workflows
@@ -83,12 +83,15 @@ class Director:
             tool="plan",
             args={"request": text[:300]},
             thought=plan.summary,
-            result=f"Validated {plan.workflow} plan.",
+            result=(
+                f"The model's plan failed validation twice; used the rules planner's {plan.workflow} plan."
+                if self.used_rule_planner else f"Validated {plan.workflow} plan."
+            ),
             status="done",
             ms=round((time.perf_counter() - started) * 1000),
         )
         world, message = await workflows.execute(plan, current, self)
-        if "I used the simple planner for this one" in plan.summary:
+        if self.used_rule_planner:
             message = f"I used the simple planner for this one. {message}"
         await self._finish_root(message)
         return world, message
@@ -231,6 +234,8 @@ Guidance:
 - Use only robot, policy, and terrain-preset IDs listed below. Built-in kinds are rover and walker.
 - Use robot_id with its compatible policy_id for library robots such as the humanoid.
 - Put repeated identical robots in one robots entry with count (1–6); code expands the count.
+- summary is a short name for the scene, used as its title: "Three rovers race on Mars hills", not an action
+  such as "Create a rover scene on Mars hills".
 - Use named places rather than guessing coordinates. A shared goal can be set with goal.
 - Never invent physical values. Select known body/surface/terrain options and let code apply defaults.
 - run_now is true only when the user explicitly asks to run, race, start, or test now. Otherwise ask before running.
@@ -238,12 +243,12 @@ Guidance:
 - Compare variants must each change a small number of valid conditions. Stress tests state the question.
 
 Short examples:
-Race plan: {{"workflow":"race","summary":"Race three rovers to the east side.","robots":[{{"kind":"rover","count":3}}],"goal":{{"place":"east"}},"run_now":false}}
-Compare plan: {{"workflow":"compare","summary":"Compare rover performance on Mars and Earth.","robots":[{{"kind":"rover"}}],"variants":[{{"label":"Mars","gravity":3.71}},{{"label":"Earth","gravity":9.81}}],"run_now":false}}
-Stress plan: {{"workflow":"stress_test","summary":"Test the rover under varied conditions.","question":"How robust is it?","run_now":false}}
-Edit plan: {{"workflow":"edit","summary":"Make the slope 30 degrees.","changes":{{"world":{{"terrain_kind":"slope","slope_deg":30}},"title":"Rover on a 30° Mars slope"}}}}
+Race plan: {{"workflow":"race","summary":"Three rovers race to the east side","robots":[{{"kind":"rover","count":3}}],"goal":{{"place":"east"}},"run_now":false}}
+Compare plan: {{"workflow":"compare","summary":"Rover on Mars and Earth","robots":[{{"kind":"rover"}}],"variants":[{{"label":"Mars","gravity":3.71}},{{"label":"Earth","gravity":9.81}}],"run_now":false}}
+Stress plan: {{"workflow":"stress_test","summary":"Rover robustness test","question":"How robust is it?","run_now":false}}
+Edit plan: {{"workflow":"edit","summary":"Rover on a 30° Mars slope","changes":{{"world":{{"terrain_kind":"slope","slope_deg":30}},"title":"Rover on a 30° Mars slope"}}}}
 - An edit lists only the fields that change. Include a new title when the change makes the old one wrong.
-Answer plan: {{"workflow":"answer","summary":"Explain the available options.","reply":"You can build robot scenes, compare conditions, race robots, or run stress tests."}}
+Answer plan: {{"workflow":"answer","summary":"What SimGate can do","reply":"You can build robot scenes, compare conditions, race robots, or run stress tests."}}
 
 Available library robots and policies:
 {json.dumps(robots, separators=(",", ":"))}
@@ -351,7 +356,7 @@ def _rule_plan(text: str, world_state: World | SceneSpec | dict[str, Any] | None
             run_now=_asks_to_run(source),
         )
     if is_custom:
-        return Plan(workflow="custom", summary="Build the requested custom world element.", custom_request=text)
+        return Plan(workflow="custom", summary=f"{planned.title} with a custom detail", custom_request=text)
     world = {
         "body": planned.environment.body,
         "surface": planned.environment.surface,
@@ -379,7 +384,7 @@ def _rule_plan(text: str, world_state: World | SceneSpec | dict[str, Any] | None
         robots = _rule_robot_plans(text, planned.robot)
         return Plan(
             workflow="compare",
-            summary="Compare the same robot scene across two conditions.",
+            summary=f"{planned.title} on " + " and ".join(variation["label"] for variation in variations),
             world=world,
             robots=robots,
             variants=variations,

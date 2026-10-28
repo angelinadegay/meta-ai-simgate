@@ -256,7 +256,7 @@ Without a key, it runs in mock mode.
 
 ### 11. Tests
 
-`python tests/test_pipeline.py` runs 49 offline tests. The optional real-terrain integration test skips when
+`python tests/test_pipeline.py` runs 50 offline tests. The optional real-terrain integration test skips when
 `rasterio` is unavailable.
 
 | Test | Checks that |
@@ -282,6 +282,7 @@ Without a key, it runs in mock mode.
 | `director_tools_validate_and_update_world` | Tools validate inputs and update the draft world |
 | `mock_director_turns_race_into_ordered_tool_calls` | Offline planning creates a mixed race and asks before running |
 | `build_custom_retries_and_emits_attempt_steps` | A rejected custom fragment is corrected and both attempts appear in the step tree |
+| `plan_summaries_are_scene_names` | The planner is asked for a short scene name as summary (used as the title), and the rules planner's summaries are scene names too |
 | `plan_prompt_offers_built_in_robots_only_as_kinds` | The planning prompt lists only library robots by ID; rover and walker are offered as kinds |
 | `plan_prompt_uses_compact_current_world_state` | Current-world prompts exclude large code and mesh payloads |
 | `icy_slope_physics` | A rover can't climb a 25° ice slope (friction below tan 25°) |

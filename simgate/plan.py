@@ -159,7 +159,10 @@ class Plan(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     workflow: Workflow
-    summary: str = Field(min_length=1, max_length=400)
+    summary: str = Field(
+        min_length=1, max_length=400,
+        description="A short name for the scene, used as its title, e.g. \"Three rovers race on Mars hills\".",
+    )
     domain: SceneDomain = "robot_terrain"
     world: WorldPlan = Field(default_factory=WorldPlan)
     robots: list[RobotPlan] = Field(default_factory=list, max_length=6)

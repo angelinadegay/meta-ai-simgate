@@ -112,6 +112,8 @@ def test_director_plan_schema_validates_ids_and_expanded_robot_limit():
 
 
 def test_director_planning_uses_one_call_retries_validation_and_falls_back():
+    import asyncio
+
     from simgate import config, llm
     from simgate.director import Director
 
@@ -152,10 +154,15 @@ def test_director_planning_uses_one_call_retries_validation_and_falls_back():
 
         calls.clear()
         llm.chat = lambda *_args, **_kwargs: (calls.append([]) or "not JSON")
-        fallback = Director().plan("race three rovers to the far side")
+        director = Director()
+        fallback = director.plan("race three rovers to the far side")
         assert len(calls) == 2
         assert fallback.workflow == "race" and fallback.robots[0].count == 3
-        assert "I used the simple planner for this one" in fallback.summary
+        assert director.used_rule_planner
+
+        world, message = asyncio.run(Director().execute_plan("race three rovers to the far side"))
+        assert message.startswith("I used the simple planner for this one.")
+        assert world.spec.title == agents._mock_plan("race three rovers to the far side").title
     finally:
         config.MOCK_MODE = original_mock
         llm.chat = original_chat
@@ -212,10 +219,11 @@ def test_stress_plan_requires_an_existing_robot_scene():
         llm.chat = lambda *_args, **_kwargs: (calls.append(True) or (
             '{"workflow":"stress_test","summary":"Test robustness.","question":"How robust?"}'
         ))
-        fallback = Director().plan("stress test", structure)
+        director = Director()
+        fallback = director.plan("stress test", structure)
         assert len(calls) == 2
         assert fallback.workflow == "answer"
-        assert "simple planner" in fallback.summary
+        assert director.used_rule_planner
     finally:
         config.MOCK_MODE = original_mock
         llm.chat = original_chat
@@ -752,6 +760,22 @@ def test_plan_prompt_offers_built_in_robots_only_as_kinds():
     listed = prompt.split("Available library robots and policies:\n", 1)[1].splitlines()[0]
     assert [robot["id"] for robot in json.loads(listed)] == ["g1"]
     assert "Built-in robot kinds: rover, walker" in prompt
+
+
+def test_plan_summaries_are_scene_names():
+    import json
+
+    from simgate.director import Director, _plan_system
+
+    prompt = _plan_system()
+    assert '"Three rovers race on Mars hills", not an action' in prompt
+    examples = [line for line in prompt.splitlines() if line.endswith("}") and ' plan: {"workflow"' in line]
+    summaries = [json.loads(line.split(" plan: ", 1)[1])["summary"] for line in examples]
+    assert len(summaries) == 5
+    assert not any(summary.split()[0] in {"Race", "Compare", "Test", "Make", "Explain", "Create"} for summary in summaries)
+
+    plan = Director().plan("compare a rover on the moon and mars")
+    assert plan.summary.startswith("4-wheel rover on") and "Compare" not in plan.summary
 
 
 def test_plan_prompt_uses_compact_current_world_state():
