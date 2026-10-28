@@ -271,7 +271,7 @@ Without a key, it runs in mock mode.
 | `stress_plan_requires_an_existing_robot_scene` | Stress plans without a robot scene fall back to a safe answer |
 | `plan_workflow_expands_race_and_runs_only_when_requested` | A 3-rover race asks before running, and a requested run is handed to the session to stream |
 | `run_now_race_streams_frames_before_metrics` | A race the user asked to run streams run_start and frames before metrics, then the leaderboard and explanation, like an approved run |
-| `plan_workflow_bounds_visible_repairs_and_asks_before_running` | Repair events form a visible tree, stop after three attempts and never run failed scenes |
+| `plan_workflow_bounds_visible_repairs_and_asks_before_running` | Repair events form a visible Checker → Builder → Checker chain with each failure reported once, stop after three attempts and never run failed scenes |
 | `advisory_course_warning_does_not_block_or_repair` | An obstacle course beyond the robot's limits is a warning: it asks "Run it?" or runs, with no repair loop |
 | `answer_first_does_not_leave_an_empty_scene` | A question asked before any scene leaves no empty scene, so the next prompt builds one |
 | `new_plan_scenes_keep_the_planned_title` | New robot and structure scenes are titled from the plan, not "Untitled scene" |

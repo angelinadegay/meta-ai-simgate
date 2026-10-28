@@ -197,21 +197,12 @@ async def _check_and_repair(
 
     builder_is_llm = not config.MOCK_MODE and config.BUILDER_MODE == "llm"
     attempts = 0
+    checker_id = director.last_checker_id   # the Checker step that reported these failures
     for attempt in range(1, 4):
         failures = blocking_failures(world.checks)
         if not failures:
             return True, ""
         failure_text = _format_failures(failures)
-        checker_id = await _emit_completed_step(
-            director,
-            agent="Checker",
-            model="rules",
-            tool="build_and_check",
-            parent_id=director._root_id,
-            thought="Checker found failed scene checks.",
-            result=failure_text,
-            status="warning",
-        )
         builder_id = await _start_step(
             director,
             agent="Builder",

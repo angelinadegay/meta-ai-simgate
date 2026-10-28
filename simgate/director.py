@@ -21,6 +21,7 @@ class Director:
         self.step_callback = step_callback
         self._counter = 0
         self._root_id: str | None = None
+        self.last_checker_id: str | None = None   # latest Checker hand-off step, parent of any repair
 
     def plan(self, text: str, world_state: World | SceneSpec | dict[str, Any] | None = None) -> Plan:
         """Create a complete validated plan, retry once, then use the deterministic planner."""
@@ -153,9 +154,11 @@ class Director:
             ]
         for agent, model, message in handoffs:
             status = "warning" if agent == "Checker" and not result.data.get("passed") else "done"
-            await self._emit_agent_step(
+            step_id = await self._emit_agent_step(
                 agent, model, tool, parent_id, f"{agent} hand-off.", message, status,
             )
+            if agent == "Checker":
+                self.last_checker_id = step_id
 
     async def _emit_agent_step(
         self,
@@ -166,7 +169,7 @@ class Director:
         thought: str,
         result: str,
         status: str,
-    ) -> None:
+    ) -> str:
         step_id = self._id()
         await self._emit_step(
             id=step_id, parent_id=parent_id, agent=agent, model=model, tool=tool,
@@ -176,6 +179,7 @@ class Director:
             id=step_id, parent_id=parent_id, agent=agent, model=model, tool=tool,
             args={}, thought=thought, result=result, status=status, ms=0,
         )
+        return step_id
 
     async def _emit_step(self, **payload: Any) -> None:
         if self.step_callback is not None:

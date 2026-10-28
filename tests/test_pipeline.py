@@ -374,6 +374,13 @@ def test_plan_workflow_bounds_visible_repairs_and_asks_before_running():
     assert any(event.get("tool") == "ask_user" for event in events)
 
     steps = [event for event in events if event.get("type") == "step"]
+    checkers = [
+        event["id"] for event in steps
+        if event["agent"] == "Checker" and event["status"] == "warning" and "Deliberately failing" in event["result"]
+    ]
+    assert len(checkers) == len(set(checkers)) == 4  # reported once, then once after each of three repairs
+    builders = [event for event in steps if event.get("tool") == "repair" and event["status"] != "working"]
+    assert [event["parent_id"] for event in builders] == checkers[:3]
     parents = {event["id"]: event.get("parent_id") for event in steps}
     for event in steps:
         if event.get("tool") == "repair" and event.get("agent") == "Builder":
