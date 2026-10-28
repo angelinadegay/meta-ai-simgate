@@ -67,7 +67,9 @@ planner is used and the user is told.
 
 After planning, deterministic code runs the fixed workflow: build/race sets up the world and robots, places
 obstacles and goals, then builds and checks before asking for approval or running. Compare and stress workflows
-use the existing batch runner. Edit changes only named fields; answer plans skip simulation. There is no
+use the existing batch runner. Edit changes only named fields; answer plans skip simulation. An edit is applied to
+a copy of the scene while planning, so an invalid edit, or one that changes nothing, gets the one correction
+request. Setting a slope angle on non-slope terrain switches it to a slope, and "steeper" without a number adds 10°. There is no
 one-tool-per-model-turn loop or 12-call limit.
 
 A typical race uses **one Director planning model call**. If it runs, a separate Explainer call may follow; a
@@ -253,7 +255,7 @@ Without a key, it runs in mock mode.
 
 ### 11. Tests
 
-`python tests/test_pipeline.py` runs 46 offline tests. The optional real-terrain integration test skips when
+`python tests/test_pipeline.py` runs 47 offline tests. The optional real-terrain integration test skips when
 `rasterio` is unavailable.
 
 | Test | Checks that |
@@ -273,6 +275,7 @@ Without a key, it runs in mock mode.
 | `new_plan_scenes_keep_the_planned_title` | New robot and structure scenes are titled from the plan, not "Untitled scene" |
 | `plan_workflow_preserves_structural_scene_support` | Structural scenes still use the OpenSees build/check workflow |
 | `edit_plan_changes_only_the_requested_scene_fields` | A terrain edit preserves the existing robot, mission, world and obstacles |
+| `model_edit_plans_are_typed_and_checked_against_the_scene` | Model edits are typed and dry-run against the scene: a slope angle on hills becomes a slope, a no-op edit gets the one retry, "steeper" adds 10° |
 | `template_repair_uses_registered_physics_presets` | Safe repairs restore registered gravity, friction and slope values |
 | `director_tools_validate_and_update_world` | Tools validate inputs and update the draft world |
 | `mock_director_turns_race_into_ordered_tool_calls` | Offline planning creates a mixed race and asks before running |

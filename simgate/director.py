@@ -9,7 +9,7 @@ from typing import Any, Awaitable, Callable
 
 from . import agents, config, llm, presets
 from .library import LibraryRegistry
-from .plan import Plan
+from .plan import Plan, WorldPlan
 from .spec import Robot, SceneSpec
 from .tools import ToolResult, World, invoke_tool
 
@@ -43,6 +43,8 @@ class Director:
                 plan = Plan.model_validate(llm.extract_json(reply))
                 if plan.workflow == "stress_test" and not _has_robot_scene(world_state):
                     raise ValueError("workflow 'stress_test' requires an existing robot scene.")
+                if plan.workflow == "edit":
+                    _check_edit(plan, text, world_state)
                 return plan
             except (ValueError, TypeError) as exc:
                 last_error = str(exc)
@@ -233,7 +235,8 @@ Short examples:
 Race plan: {{"workflow":"race","summary":"Race three rovers to the east side.","robots":[{{"kind":"rover","count":3}}],"goal":{{"place":"east"}},"run_now":false}}
 Compare plan: {{"workflow":"compare","summary":"Compare rover performance on Mars and Earth.","robots":[{{"kind":"rover"}}],"variants":[{{"label":"Mars","gravity":3.71}},{{"label":"Earth","gravity":9.81}}],"run_now":false}}
 Stress plan: {{"workflow":"stress_test","summary":"Test the rover under varied conditions.","question":"How robust is it?","run_now":false}}
-Edit plan: {{"workflow":"edit","summary":"Make the slope steeper.","changes":{{"terrain":{{"kind":"slope","slope_deg":30}}}}}}
+Edit plan: {{"workflow":"edit","summary":"Make the slope 30 degrees.","changes":{{"world":{{"terrain_kind":"slope","slope_deg":30}},"title":"Rover on a 30° Mars slope"}}}}
+- An edit lists only the fields that change. Include a new title when the change makes the old one wrong.
 Answer plan: {{"workflow":"answer","summary":"Explain the available options.","reply":"You can build robot scenes, compare conditions, race robots, or run stress tests."}}
 
 Available library robots and policies:
@@ -318,6 +321,8 @@ def _rule_plan(text: str, world_state: World | SceneSpec | dict[str, Any] | None
                 changes["structure"] = planned.structure.model_dump(mode="json")
             if planned.load != current.load and planned.load is not None:
                 changes["load"] = planned.load.model_dump(mode="json")
+            if changes:
+                changes["title"] = planned.title
             if not changes:
                 return Plan(
                     workflow="answer",
@@ -408,6 +413,8 @@ def _rule_plan(text: str, world_state: World | SceneSpec | dict[str, Any] | None
             changes["robot"] = planned.robot.model_dump(mode="json") if planned.robot else None
         if planned.mission != current.mission and planned.mission is not None:
             changes["mission"] = planned.mission.model_dump(mode="json")
+        if changes:
+            changes["title"] = planned.title
         return Plan(
             workflow="edit" if changes else "answer",
             summary="Applying only the requested changes to the current world." if changes
@@ -424,6 +431,39 @@ def _rule_plan(text: str, world_state: World | SceneSpec | dict[str, Any] | None
         goal=goal,
         run_now=requested_run,
     )
+
+
+def _current_spec(world_state: World | SceneSpec | dict[str, Any] | None) -> SceneSpec | None:
+    if isinstance(world_state, World):
+        return world_state.spec
+    return world_state if isinstance(world_state, SceneSpec) else None
+
+
+def _check_edit(plan: Plan, text: str, world_state: World | SceneSpec | dict[str, Any] | None) -> None:
+    """Apply the edit to a copy of the scene so any problem gets the planner's one retry."""
+    from .workflows import apply_edit
+
+    current = _current_spec(world_state)
+    if current is None:
+        raise ValueError("workflow 'edit' requires an existing scene; use workflow 'build' for a new one.")
+    source = text.lower()
+    if re.search(r"\bsteeper\b", source) and not re.search(r"\d", source):   # no number given: 10° steeper
+        terrain = current.terrain
+        base = terrain.slope_deg if terrain is not None and terrain.kind == "slope" else 0.0
+        world = plan.changes.world.model_dump(exclude_none=True) if plan.changes.world else {}
+        world["slope_deg"] = min(base + 10.0, presets.SLOPE_RANGE_DEG[1])
+        if world.get("terrain_kind") not in (None, "slope"):
+            del world["terrain_kind"]
+        plan.changes.world = WorldPlan.model_validate(world)
+    before = current.model_copy(deep=True)
+    before.assumptions = []
+    before.fill_defaults()
+    after = apply_edit(current, plan.changes).spec
+    if after.model_dump(exclude={"assumptions"}) == before.model_dump(exclude={"assumptions"}):
+        raise ValueError(
+            f"this edit changes nothing: {json.dumps(plan.changes.given(), default=str)} leaves the scene as it is. "
+            "Set the fields that should change to new values."
+        )
 
 
 def _has_robot_scene(world_state: World | SceneSpec | dict[str, Any] | None) -> bool:

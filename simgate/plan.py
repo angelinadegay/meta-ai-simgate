@@ -7,7 +7,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from . import presets
 from .batch import Variation
 from .library import LibraryRegistry
-from .spec import Load, Obstacle, Place, Structure
+from .spec import Load, Mission, Obstacle, Place, Robot, Structure
 from .terrain_data import list_presets
 
 Workflow = Literal["build", "race", "compare", "stress_test", "edit", "custom", "answer"]
@@ -107,6 +107,44 @@ class GoalPlan(BaseModel):
         return self
 
 
+class EditChanges(BaseModel):
+    """Changes to an existing scene; only fields given here change. Checked against the scene in Director.plan."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    title: str | None = Field(default=None, min_length=1, max_length=120)
+    world: WorldPlan | None = None
+    robot: Robot | None = None
+    robots: list[RobotPlan] | None = Field(default=None, min_length=1, max_length=6)
+    obstacles: list[Obstacle] | None = Field(default=None, max_length=30)
+    goal: GoalPlan | None = None
+    mission: Mission | None = None
+    duration_s: float | None = Field(default=None, gt=0, le=120)
+    structure: Structure | None = None
+    load: Load | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def merge_world_aliases(cls, data: Any) -> Any:
+        """Accept {"terrain": {...}} and {"environment": {...}} as parts of world."""
+        if not isinstance(data, dict) or not ({"terrain", "environment"} & set(data)):
+            return data
+        data = dict(data)
+        world = dict(data.get("world") or {})
+        terrain = data.pop("terrain", None) or {}
+        environment = data.pop("environment", None) or {}
+        if not isinstance(terrain, dict) or not isinstance(environment, dict):
+            raise ValueError("terrain and environment changes must be objects.")
+        if "kind" in terrain:
+            terrain = {**terrain, "terrain_kind": terrain["kind"]}
+            del terrain["kind"]
+        data["world"] = {**environment, **terrain, **world}
+        return data
+
+    def given(self) -> dict[str, Any]:
+        return self.model_dump(exclude_none=True)
+
+
 class Plan(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -121,7 +159,7 @@ class Plan(BaseModel):
     goal: GoalPlan | None = None
     variants: list[Variation] = Field(default_factory=list, max_length=23)
     question: str | None = Field(default=None, max_length=1000)
-    changes: dict[str, Any] = Field(default_factory=dict)
+    changes: EditChanges = Field(default_factory=EditChanges)
     custom_request: str | None = Field(default=None, max_length=2000)
     run_now: bool = False
     reply: str | None = Field(default=None, max_length=2000)
@@ -136,7 +174,7 @@ class Plan(BaseModel):
             raise ValueError("workflow 'compare' requires at least one variant.")
         if self.workflow == "stress_test" and not self.question:
             raise ValueError("workflow 'stress_test' requires a question.")
-        if self.workflow == "edit" and not self.changes:
+        if self.workflow == "edit" and not self.changes.given():
             raise ValueError("workflow 'edit' requires at least one change.")
         if self.workflow == "custom" and not self.custom_request:
             raise ValueError("workflow 'custom' requires custom_request.")

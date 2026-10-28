@@ -5,8 +5,9 @@ from typing import TYPE_CHECKING, Any
 
 from . import agents, config, presets
 from .backends.base import blocking_failures
-from .plan import Plan
-from .spec import Load, Mission, Robot, RobotEntry, SceneSpec, Structure, Terrain
+from . import tools
+from .plan import EditChanges, Plan, RobotPlan
+from .spec import Load, Robot, SceneSpec, Structure
 from .tools import World
 
 if TYPE_CHECKING:
@@ -22,8 +23,19 @@ async def execute(plan: Plan, current: SceneSpec | None, director: "Director") -
     if plan.workflow == "edit":
         if current is None:
             raise ValueError("An edit plan needs an existing world.")
-        world = World(current.model_copy(deep=True))
-        await _apply_changes(world, plan.changes, director)
+        changed = plan.changes.given()
+        world = await asyncio.to_thread(apply_edit, current, plan.changes)
+        await _emit_completed_step(
+            director,
+            agent="Director",
+            model="rules",
+            tool="edit",
+            parent_id=director._root_id,
+            thought="Changing only the requested fields.",
+            result="Changed " + ", ".join(changed) + "."
+            + (" " + " ".join(world.spec.assumptions) if world.spec.assumptions else ""),
+            status="done",
+        )
         return await _build_and_finish(world, plan, director)
 
     if plan.domain == "structure":
@@ -102,25 +114,8 @@ async def _prepare_robot_world(
 
     spawned: list[tuple[str, bool]] = []
     for robot_plan in plan.robots:
-        for copy_index in range(robot_plan.count):
-            label = robot_plan.label or (
-                robot_plan.robot_id.replace("_", " ").title() if robot_plan.robot_id else robot_plan.kind.title()
-            )
-            if robot_plan.count > 1:
-                label = f"{label} {copy_index + 1}"
-            args: dict[str, Any] = {
-                "label": label,
-                "kind": robot_plan.kind,
-                "robot_id": robot_plan.robot_id,
-                "policy_id": robot_plan.policy_id,
-                "legs": robot_plan.legs,
-                "wheels": robot_plan.wheels,
-            }
-            if robot_plan.start_place is not None:
-                args["start"] = robot_plan.start_place
-            if robot_plan.goal_place is not None:
-                args["goal"] = robot_plan.goal_place
-            result = await director._mock_call(world, "spawn_robot", args, f"Adding {label}.")
+        for args in _spawn_args(robot_plan):
+            result = await director._mock_call(world, "spawn_robot", args, f"Adding {args['label']}.")
             spawned.append((result.data["robot"]["id"], robot_plan.goal_place is not None))
 
     if plan.obstacles:
@@ -155,6 +150,29 @@ async def _prepare_robot_world(
                     "Assigning the shared goal.",
                 )
     return world
+
+
+def _spawn_args(robot_plan: RobotPlan) -> list[dict[str, Any]]:
+    """spawn_robot arguments for each copy of a planned robot (count expansion)."""
+    base = robot_plan.label or (
+        robot_plan.robot_id.replace("_", " ").title() if robot_plan.robot_id else robot_plan.kind.title()
+    )
+    copies = []
+    for copy_index in range(robot_plan.count):
+        args: dict[str, Any] = {
+            "label": f"{base} {copy_index + 1}" if robot_plan.count > 1 else base,
+            "kind": robot_plan.kind,
+            "robot_id": robot_plan.robot_id,
+            "policy_id": robot_plan.policy_id,
+            "legs": robot_plan.legs,
+            "wheels": robot_plan.wheels,
+        }
+        if robot_plan.start_place is not None:
+            args["start"] = robot_plan.start_place
+        if robot_plan.goal_place is not None:
+            args["goal"] = robot_plan.goal_place
+        copies.append(args)
+    return copies
 
 
 def _title(plan: Plan) -> str:
@@ -407,55 +425,66 @@ async def _emit_completed_step(
     return step_id
 
 
-async def _apply_changes(world: World, changes: dict[str, Any], director: "Director") -> None:
+def apply_edit(current: SceneSpec, changes: EditChanges) -> World:
+    """Apply only the given fields to a copy of the scene. Raises ValueError with the reason if it can't."""
+    world = World(current.model_copy(deep=True))
+    notes: list[str] = []
+    if changes.world is not None:
+        args = changes.world.model_dump(exclude_none=True)
+        terrain = world.spec.terrain
+        if "slope_deg" in args and "terrain_kind" not in args and (terrain is None or terrain.kind != "slope"):
+            args["terrain_kind"] = "slope"
+            notes.append(f"Switched the terrain to a {args['slope_deg']:g}° slope to set its angle.")
+        tools.set_world(world, args)
     spec = world.spec
-    supported = {
-        "world", "environment", "terrain", "robot", "robots", "obstacles", "goal", "mission",
-        "structure", "load",
-    }
-    unknown = set(changes) - supported
-    if unknown:
-        raise ValueError(f"Unsupported edit fields: {', '.join(sorted(unknown))}")
-
-    if "world" in changes:
-        await director._mock_call(world, "set_world", changes["world"], "Changing the requested world settings.")
-        spec = world.spec
-    if "environment" in changes:
-        for key, value in changes["environment"].items():
-            if key not in {"body", "surface"}:
-                raise ValueError(f"Unsupported environment edit: {key}")
-            setattr(spec.environment, key, value)
-    if "terrain" in changes:
-        values = {**(spec.terrain.model_dump() if spec.terrain else {}), **changes["terrain"]}
-        spec.terrain = Terrain.model_validate(values)
-    if "robot" in changes:
-        robot = Robot.model_validate(changes["robot"])
-        spec.robot = robot
+    if changes.robot is not None:
+        spec.robot = changes.robot.model_copy(deep=True)
         for entry in spec.robots:
-            entry.robot = robot.model_copy(deep=True)
-    if "robots" in changes:
-        spec.robots = [RobotEntry.model_validate(item) for item in changes["robots"]]
-    if "obstacles" in changes:
-        spec.obstacles = changes["obstacles"]
-    if "mission" in changes:
-        mission = Mission.model_validate(changes["mission"])
+            entry.robot = changes.robot.model_copy(deep=True)
+    if changes.robots is not None:
+        previous = spec.robots[0] if spec.robots else None
+        spec.robots, spec.robot = [], None
+        for robot_plan in changes.robots:
+            for args in _spawn_args(robot_plan):
+                tools.spawn_robot(world, args)
+        spec = world.spec
+        if previous is not None and (previous.goal_xy is not None or previous.goal_place is not None):
+            for entry in spec.robots:
+                if entry.goal_xy is None and entry.goal_place is None:
+                    entry.goal_xy, entry.goal_place = previous.goal_xy, previous.goal_place
+    if changes.obstacles is not None:
+        if spec.domain != "robot_terrain":
+            raise ValueError("Obstacles can only be changed in robot scenes.")
+        spec.obstacles = [obstacle.model_copy(deep=True) for obstacle in changes.obstacles]
+    if changes.mission is not None:
+        mission = changes.mission.model_copy(deep=True)
         spec.mission = mission
         if spec.robots:
             entry = spec.robots[0]
             entry.start_xy, entry.start_place = mission.start_xy, mission.start_place
             for robot in spec.robots:
                 robot.goal_xy, robot.goal_place = mission.goal_xy, mission.goal_place
-    if "structure" in changes:
-        spec.structure = Structure.model_validate(changes["structure"])
-    if "load" in changes:
-        spec.load = Load.model_validate(changes["load"])
-    if "goal" in changes:
-        goal = changes["goal"]
-        args = {"robot_id": "all", **goal}
-        await director._mock_call(world, "set_goal", args, "Changing the requested goal.")
+    if changes.goal is not None:
+        target = {"xy": changes.goal.xy} if changes.goal.xy is not None else {"place": changes.goal.place}
+        tools.set_goal(world, {"robot_id": "all", **target})
         spec = world.spec
+    if changes.duration_s is not None:
+        spec.duration_s = changes.duration_s
+    if changes.structure is not None:
+        if spec.domain != "structure":
+            raise ValueError("structure can only be changed in a structure scene.")
+        spec.structure = changes.structure.model_copy(deep=True)
+    if changes.load is not None:
+        if spec.domain != "structure":
+            raise ValueError("load can only be changed in a structure scene.")
+        spec.load = changes.load.model_copy(deep=True)
+    if changes.title is not None:
+        spec.title = changes.title
+    spec.assumptions = []
     spec.fill_defaults()
+    spec.assumptions.extend(notes)
     world.spec = spec
+    return world
 
 
 async def _approval_or_run(
