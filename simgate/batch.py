@@ -89,7 +89,8 @@ def _validate_variation(base_spec: SceneSpec, raw: dict) -> tuple[Variation, Sce
     if "friction" in knobs:
         spec.environment.friction = knobs["friction"]
     if "payload_kg" in knobs:
-        spec.robot.mass_kg += knobs["payload_kg"]
+        payload = knobs["payload_kg"]
+        _update_robots(spec, target, lambda robot: robot.model_copy(update={"mass_kg": robot.mass_kg + payload}))
     if "slope_deg" in knobs:
         if spec.terrain is None or spec.terrain.kind != "slope":
             raise ValueError("slope_deg only applies to slope terrain.")
@@ -200,20 +201,55 @@ def _result_error(run_id: int, label: str, changes: dict, message: str) -> dict:
 
 
 def _robot_geom_ids(code: str) -> tuple[list[int], int]:
+    """Every robot's geoms (a single robot's root body is "rover", each racer's is "<id>_rover") and the index of
+    the first robot's chassis, or of its first geom when it has none (library robots)."""
     import mujoco
 
     model = mujoco.MjModel.from_xml_string(code)
-    robot = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "rover")
-    if robot < 0:
-        raise ValueError("The simulation has no robot body named 'rover'.")
+    names = {body: mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_BODY, body) or "" for body in range(model.nbody)}
+    roots = [body for body, name in names.items()
+             if int(model.body_parentid[body]) == 0 and (name == "rover" or name.endswith("_rover"))]
+    if not roots:
+        raise ValueError("The simulation has no robot body to record.")
     geom_ids = [
         geom for geom in range(model.ngeom)
-        if int(model.body_rootid[int(model.geom_bodyid[geom])]) == robot
+        if int(model.body_rootid[int(model.geom_bodyid[geom])]) in roots
     ]
-    chassis = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, "chassis")
-    if not geom_ids or chassis not in geom_ids:
+    if not geom_ids:
         raise ValueError("The simulation has no robot geoms to record.")
+    first = [geom for geom in geom_ids if int(model.body_rootid[int(model.geom_bodyid[geom])]) == roots[0]]
+    chassis = next((geom for geom in first
+                    if (mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_GEOM, geom) or "").endswith("chassis")), first[0])
     return geom_ids, geom_ids.index(chassis)
+
+
+def robot_passed(metrics: dict, has_goal: bool) -> bool:
+    """The pass rule for one robot: reach the goal if it has one, otherwise stay upright and make 1 m of progress."""
+    if has_goal:
+        return bool(metrics.get("goal_reached"))
+    return not metrics.get("flipped", False) and (metrics.get("forward_progress_m") or 0) >= 1.0
+
+
+def _reason(metrics: dict, passed: bool, stopped_by: dict | None) -> str:
+    reason = metrics.get("outcome") or (
+        "fell" if metrics.get("flipped") else
+        "made progress" if passed else "made little progress"
+    )
+    if stopped_by:
+        reason += f"; stopped by {stopped_by.get('kind', 'obstacle')}"
+    return reason
+
+
+def robot_results(spec: SceneSpec, summary: dict) -> dict[str, dict]:
+    """Each racer's pass/fail and reason in a multi-robot run, in the scene's robot order."""
+    robots = summary.get("robots") or {}
+    results = {}
+    for entry in spec.robots:
+        metrics = robots.get(entry.id) or {}
+        passed = robot_passed(metrics, metrics.get("goal_xy") is not None)
+        results[entry.id] = {"label": entry.label, "kind": entry.robot.kind, "passed": passed,
+                             "reason": _reason(metrics, passed, (metrics.get("obstacles") or {}).get("stopped_by"))}
+    return results
 
 
 def _stopped_time(frames: list[list], chassis_index: int, outcome: str | None) -> float | None:
@@ -269,19 +305,16 @@ def _run_worker(run_id: int, label: str, base_spec_json: str, raw_variation: dic
                     ghost_frames.append([round(float(frame["t"]), 3), robot_poses])
                 frame_number += 1
         summary = sim.summary()
-        stopped_at = _stopped_time(ghost_frames, chassis_index, summary.get("outcome")) if ghost_allowed else None
-        if stopped_at is not None:
-            summary["stopped_making_progress_at_s"] = stopped_at
-        has_goal = spec.mission is not None and spec.mission.has_goal()
-        passed = bool(summary.get("goal_reached")) if has_goal else (
-            not summary.get("flipped", False) and summary.get("forward_progress_m", 0) >= 1.0
-        )
-        reason = summary.get("outcome") or (
-            "fell" if summary.get("flipped") else
-            "made progress" if passed else "made little progress"
-        )
-        if summary.get("stopped_by"):
-            reason += f"; stopped by {summary['stopped_by'].get('kind', 'obstacle')}"
+        per_robot = robot_results(spec, summary) if isinstance(summary.get("robots"), dict) else None
+        if per_robot is not None:   # a race passes when every robot passes; each robot's result is kept
+            passed = all(robot["passed"] for robot in per_robot.values())
+            reason = "; ".join(f"{robot['label']}: {robot['reason']}" for robot in per_robot.values())
+        else:
+            stopped_at = _stopped_time(ghost_frames, chassis_index, summary.get("outcome")) if ghost_allowed else None
+            if stopped_at is not None:
+                summary["stopped_making_progress_at_s"] = stopped_at
+            passed = robot_passed(summary, spec.mission is not None and spec.mission.has_goal())
+            reason = _reason(summary, passed, summary.get("stopped_by"))
         return {
             "id": f"run-{run_id}",
             "label": label,
@@ -289,6 +322,7 @@ def _run_worker(run_id: int, label: str, base_spec_json: str, raw_variation: dic
             "summary": summary,
             "passed": passed,
             "reason": reason,
+            **({"robots": per_robot} if per_robot is not None else {}),
             "ghost": _encode_ghost(ghost_ids, ghost_frames) if ghost_allowed else None,
             "ghost_status": "available" if ghost_allowed else "not in ghost view",
         }

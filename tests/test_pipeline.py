@@ -1847,6 +1847,26 @@ def test_race_on_an_existing_course_builds_and_checks():
     assert any(check["name"] == "Robot starts and goals clear obstacles" for check in checks)
 
 
+MIXED_RACE = "race a rover and a six-legged walker to the summit on Mars hills, go"
+
+
+def test_stress_test_on_a_race_reports_each_robot():
+    session, (_, stress) = session_turns(MIXED_RACE, "stress test")
+    results = [e["result"] for e in stress if e["type"] == "batch_result"]
+    assert results and not [r["error"] for r in results if r.get("error")], [r.get("error") for r in results]
+    ids = [entry.id for entry in session.spec.robots]
+    assert all(list(r["robots"]) == ids for r in results)
+    report = next(e for e in stress if e["type"] == "report")
+    assert [column["id"] for column in report["robots"]] == ids
+    assert all(set(row["robots"]) == set(ids) and all("passed" in cell for cell in row["robots"].values())
+               for row in report["rows"])
+    baseline = next(r for r in results if r["label"] == "Baseline")
+    payload = next(r for r in results if r["changes"].get("payload_kg"))
+    for robot_id in ids:   # the payload reaches every robot
+        before = baseline["summary"]["robots"][robot_id]["robot"]["mass_kg"]
+        assert payload["summary"]["robots"][robot_id]["robot"]["mass_kg"] == before + payload["changes"]["payload_kg"]
+
+
 def test_stress_trigger_requires_robot_scene():
     import asyncio
     from unittest.mock import patch

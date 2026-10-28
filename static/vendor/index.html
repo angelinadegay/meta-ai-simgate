@@ -102,6 +102,9 @@
   .stress-row .dot { grid-row: span 2; padding-top: 1px; color: var(--bad); }
   .stress-row.pass .dot { color: var(--ok); }
   .stress-row small { color: var(--muted); }
+  .stress-row .robot-cells { grid-column: 2; display: grid; grid-template-columns: repeat(var(--robots), minmax(0, 1fr)); gap: 6px; }
+  .stress-row .robot-cells span { font-size: 0.85em; }
+  .stress-row .robot-cells .pass { color: var(--ok); } .stress-row .robot-cells .fail { color: var(--bad); }
   #stressExplanation { margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--line); color: var(--text); }
   #player { left: 14px; right: 14px; bottom: 14px; flex-direction: row; align-items: center; }
   #player .card { display: flex; align-items: center; gap: 12px; width: 100%; }
@@ -537,6 +540,12 @@ function receiveBatchResult(result) {
   })().catch((error) => addMsg(`Could not load ghost track: ${error.message}`, "err"));
   batchDecodeTasks.push(task);
 }
+function stressMetricText(metrics) {
+  const names = { time_to_goal_s: "goal time", final_distance_m: "distance left", forward_progress_m: "progress",
+    max_tilt_deg: "max tilt", slip_ratio: "slip" };
+  return Object.entries(metrics || {}).map(([key, value]) =>
+    `${names[key] || key}: ${key === "slip_ratio" ? `${Math.round(value * 100)}%` : `${value}${key.endsWith("_deg") ? "°" : key.endsWith("_s") ? " s" : key.endsWith("_m") ? " m" : ""}`}`).join(" · ");
+}
 function renderReport(report) {
   $("metricsCard").hidden = true; $("reportCard").hidden = false;
   $("reportCounts").textContent = `${report.passed} of ${report.total} runs passed`;
@@ -548,13 +557,24 @@ function renderReport(report) {
     const label = document.createElement("strong"); label.textContent = row.label;
     const reason = document.createElement("span"); reason.textContent = row.reason;
     const metrics = document.createElement("small");
-    const names = { time_to_goal_s: "goal time", final_distance_m: "distance left", forward_progress_m: "progress",
-      max_tilt_deg: "max tilt", slip_ratio: "slip" };
-    const metricText = Object.entries(row.metrics || {}).map(([key, value]) =>
-      `${names[key] || key}: ${key === "slip_ratio" ? `${Math.round(value * 100)}%` : `${value}${key.endsWith("_deg") ? "°" : key.endsWith("_s") ? " s" : key.endsWith("_m") ? " m" : ""}`}`).join(" · ");
     const status = row.ghost_status && row.ghost_status !== "available" ? row.ghost_status : "";
-    metrics.textContent = [metricText, status].filter(Boolean).join(" · ");
-    button.append(dot, label, reason, metrics);
+    button.append(dot, label);
+    if (report.robots && row.robots) {   // a race: a column per robot
+      const cells = document.createElement("div"); cells.className = "robot-cells";
+      cells.style.setProperty("--robots", report.robots.length);
+      for (const column of report.robots) {
+        const cell = row.robots[column.id];
+        const span = textEl("span", cell ? `${column.label}: ${cell.passed ? "✓" : "✕"} ${cell.reason}` : `${column.label}: –`,
+          cell ? (cell.passed ? "pass" : "fail") : "");
+        if (cell) span.title = stressMetricText(cell.metrics);
+        cells.appendChild(span);
+      }
+      metrics.textContent = status;
+      button.append(cells, metrics);
+    } else {
+      metrics.textContent = [stressMetricText(row.metrics), status].filter(Boolean).join(" · ");
+      button.append(reason, metrics);
+    }
     button.dataset.runId = row.id;
     button.disabled = !batchResults.get(row.id)?.ghostTrack;
     button.onclick = () => replayBatchRun(row.id);
