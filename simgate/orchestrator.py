@@ -5,8 +5,9 @@ Every step emits events, so the browser can show the agents working live.
 import asyncio
 from typing import Awaitable, Callable
 
-from . import agents, config
+from . import agents
 from .backends.base import BuildResult, Simulator
+from .director import Director
 from .spec import Mission, SceneSpec
 
 Emit = Callable[[dict], Awaitable[None]]
@@ -48,13 +49,30 @@ class Session:
             await self.emit({"type": "error", "message": f"{type(e).__name__}: {e}"})
 
     async def make(self, text: str, editing: bool) -> None:
-        mode = "MOCK planner (no model configured)" if config.MOCK_MODE else config.PLANNER_MODEL
-        await self.agent("Planner", "working", f"{'Updating the plan' if editing else 'Reading your request'} with {mode}…")
-        spec = await asyncio.to_thread(agents.edit if editing else agents.plan, *( (self.spec, text) if editing else (text,) ))
+        await self.agent("Director", "working", "Planning the world operations…")
+        director = Director(self.emit)
+        world, message = await director.execute(text, self.spec if editing else None)
+        spec = world.spec
         if self.library_selection and spec.domain == "robot_terrain":
             self._apply_library_selection(spec)
-        await self.agent("Planner", "done", spec.title + (" — " + " ".join(spec.assumptions) if spec.assumptions else ""))
-        await self.build_and_check(spec)
+            world.spec = spec
+        self.spec, self.sim, self.build = spec, world.simulator, world.build
+        await self.emit({"type": "spec", "spec": spec.model_dump()})
+        if world.build is not None:
+            await self.emit({
+                "type": "scene",
+                "scene": world.build.scene,
+                "code": world.build.code,
+                "language": world.build.language,
+            })
+            await self.emit({"type": "checks", "checks": [check.__dict__ for check in world.checks]})
+        self.awaiting_approval = world.question is not None
+        await self.agent("Director", "done", spec.title + (" — " + " ".join(spec.assumptions) if spec.assumptions else ""))
+        await self.emit({
+            "type": "question",
+            "message": message,
+            "stress_test_available": spec.domain == "robot_terrain",
+        })
 
     def _apply_library_selection(self, spec: SceneSpec) -> None:
         from .library import LibraryRegistry

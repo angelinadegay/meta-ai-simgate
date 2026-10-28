@@ -109,6 +109,100 @@ def test_director_tools_validate_and_update_world():
     assert world.build is not None and world.simulator is not None
 
 
+def test_mock_director_turns_race_into_ordered_tool_calls():
+    import asyncio
+
+    from simgate import config
+    from simgate.director import Director
+
+    async def scenario(text):
+        events = []
+
+        async def emit(event):
+            events.append(event)
+
+        config.MOCK_MODE = True
+        world, message = await Director(emit).execute(text)
+        done_tools = [
+            event["tool"] for event in events
+            if event.get("type") == "step" and event.get("status") == "done" and event.get("tool")
+        ]
+        return world, message, done_tools, events
+
+    world, message, tools, events = asyncio.run(scenario("race three rovers to the far side"))
+    assert tools == ["set_world", "spawn_robot", "spawn_robot", "spawn_robot", "set_goal", "build_and_check", "ask_user"]
+    assert len(world.spec.robots) == 3 and all(entry.goal_place == "east" for entry in world.spec.robots)
+    assert message == "Run it?" and all(check.passed for check in world.checks)
+    assert all(event.get("parent_id") in {None, events[0]["id"]} for event in events if event["type"] == "step")
+
+    mixed, _, mixed_tools, _ = asyncio.run(
+        scenario("a rover and a 6-legged walker on Mars hills, race to the summit")
+    )
+    assert [entry.robot.kind for entry in mixed.spec.robots] == ["rover", "walker"]
+    assert mixed.spec.robots[1].robot.legs == 6
+    assert mixed.spec.environment.body == "mars" and mixed.spec.terrain.kind == "hills"
+    assert mixed_tools[-1] == "ask_user"
+
+
+def test_director_recovers_from_invalid_replies_and_failed_checks():
+    import asyncio
+
+    from simgate import config
+    from simgate.director import Director
+    from simgate.tools import ToolResult
+
+    original_chat = agents.llm.chat
+    original_invoke = __import__("simgate.director", fromlist=["invoke_tool"]).invoke_tool
+
+    async def execute_script(replies, invoke=None):
+        iterator = iter(replies)
+        agents.llm.chat = lambda *_args, **_kwargs: next(iterator)
+        if invoke is not None:
+            import simgate.director as director_module
+            director_module.invoke_tool = invoke
+        config.MOCK_MODE = False
+        return await Director().execute("prepare a robot")
+
+    try:
+        recovered, message = asyncio.run(execute_script([
+            "not JSON",
+            '{"thought":"Recovered format","final":"Recovered."}',
+        ]))
+        assert message == "Recovered."
+
+        recovered, message = asyncio.run(execute_script([
+            '{"thought":"Try unknown tool","tool":"erase_world","args":{}}',
+            '{"thought":"Recovered tool choice","final":"Stopped safely."}',
+        ]))
+        assert message == "Stopped safely."
+
+        calls = []
+
+        def fake_invoke(_world, name, args):
+            calls.append(name)
+            if name == "build_and_check" and calls.count(name) == 1:
+                return ToolResult("A gravity check failed.", {"passed": False})
+            if name == "build_and_check":
+                return ToolResult("All checks pass.", {"passed": True})
+            if name == "ask_user":
+                return ToolResult("Run it?", {"question": "Run it?"})
+            return ToolResult("Updated.", {})
+
+        recovered, message = asyncio.run(execute_script([
+            '{"thought":"Check the draft","tool":"build_and_check","args":{}}',
+            '{"thought":"Repair the world","tool":"set_world","args":{"body":"mars"}}',
+            '{"thought":"Check the repair","tool":"build_and_check","args":{}}',
+            '{"thought":"Ask before running","tool":"ask_user","args":{"question":"Run it?"}}',
+        ], fake_invoke))
+        assert message == "Run it?"
+        assert calls == ["build_and_check", "set_world", "build_and_check", "ask_user"]
+    finally:
+        agents.llm.chat = original_chat
+        import simgate.director as director_module
+        director_module.invoke_tool = original_invoke
+        config.MOCK_MODE = True
+
+
 def test_icy_slope_physics():
     # Friction 0.1 is below tan(25°) ≈ 0.47, so the rover cannot hold position and should not climb.
     spec = SceneSpec(domain="robot_terrain", environment=Environment(surface="ice"), terrain=Terrain(kind="slope", slope_deg=25, roughness=0.1)).fill_defaults()

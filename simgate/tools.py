@@ -36,6 +36,8 @@ class SpawnRobotArgs(ToolArgs):
     robot_id: str | None = None
     policy_id: str | None = None
     label: str | None = Field(default=None, min_length=1, max_length=80)
+    legs: Literal[4, 6] | None = None
+    wheels: Literal[4, 6] | None = None
     start: Place | list[float] | None = None
     goal: Place | list[float] | None = None
 
@@ -186,7 +188,8 @@ def set_world(world: World, args: dict[str, Any]) -> ToolResult:
         spec.terrain.slope_deg = parsed.slope_deg
     if parsed.roughness is not None:
         spec.terrain.roughness = parsed.roughness
-    _refresh_spec(spec)
+    if spec.robots or spec.robot is not None:
+        _refresh_spec(spec)
     world.spec = spec
     return _result(
         f"World set to {spec.environment.body} with {spec.environment.surface} on {spec.terrain.kind} terrain.",
@@ -215,7 +218,11 @@ def spawn_robot(world: World, args: dict[str, Any]) -> ToolResult:
             robot = Robot(kind="library", robot_id=card.id, policy_id=policy_id, mass_kg=card.mass_kg)
         default_label = card.name
     else:
-        robot = Robot(kind=parsed.kind)
+        robot = Robot(
+            kind=parsed.kind,
+            legs=parsed.legs or 4,
+            wheels=parsed.wheels or 4,
+        )
         default_label = parsed.kind.title()
     index = 1
     existing = {entry.id for entry in spec.robots}

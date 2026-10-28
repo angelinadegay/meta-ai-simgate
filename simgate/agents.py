@@ -252,11 +252,24 @@ def _mock_plan(text: str, current: SceneSpec | None = None) -> SceneSpec:
         if m := re.search(r"(\d+(?:\.\d+)?)\s*g\b", t):
             spec.load.pga_g = float(m.group(1))
         spec.title = f"{spec.structure.stories}-story frame in an earthquake"
+    if spec.domain == "robot_terrain" and spec.robots and spec.robot is not None:
+        first = spec.robots[0]
+        first.robot = spec.robot.model_copy(deep=True)
+        if spec.mission is not None:
+            first.start_xy = spec.mission.start_xy
+            first.start_place = spec.mission.start_place
+            first.start_heading_deg = spec.mission.start_heading_deg
+            if spec.mission.has_goal():
+                for entry in spec.robots:
+                    entry.goal_xy = spec.mission.goal_xy
+                    entry.goal_place = spec.mission.goal_place
+                    entry.goal_radius_m = spec.mission.goal_radius_m
     return spec.fill_defaults()
 
 
 PLACE_WORDS = [("lowest", ("lowest", "bottom", "crater floor", "valley", "low point")),
                ("highest", ("highest", "top", "summit", "peak", "rim", "high point")),
+               ("east", ("far side",)),
                ("center", ("center", "centre", "middle")),
                ("north", ("north",)), ("south", ("south",)), ("east", ("east",)), ("west", ("west",))]
 
@@ -311,7 +324,7 @@ def _mock_mission(spec: SceneSpec, t: str) -> None:
 
     nums = r"\(?\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*\)?"
     goal_xy = re.search(r"(?:goal|go to|get to|reach)\s*(?:at|to)?\s*" + nums, t)
-    wants = goal_xy or any(w in t for w in ("reach", "get to", "go to", "goal", "destination", "make it to", "drive to", "walk to", "climb to")) \
+    wants = goal_xy or any(w in t for w in ("reach", "get to", "go to", "goal", "destination", "make it to", "drive to", "walk to", "climb to", "far side")) \
         or re.search(r"\bfrom (?:the )?.+? to (?:the )?(?:" + "|".join(w for _, ws in PLACE_WORDS for w in ws) + ")", t)
     if not wants:
         return
