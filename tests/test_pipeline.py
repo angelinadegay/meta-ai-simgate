@@ -51,6 +51,7 @@ def test_three_rover_race_has_non_overlapping_spawns_and_leaderboard():
     assert sum(len(chunk) for chunk in sim.run(spec, build)) == int(spec.duration_s * 30)
     leaderboard = sim.summary()["leaderboard"]
     assert len(leaderboard) == 3 and all(row["goal_reached"] for row in leaderboard)
+    assert all(row["brain"] == "wheel controller" for row in leaderboard)
     arrival_times = [row["time_to_goal_s"] for row in leaderboard]
     assert arrival_times == sorted(arrival_times)
 

@@ -79,6 +79,11 @@
   .kv { display: grid; grid-template-columns: 1fr auto; gap: 2px 10px; }
   .kv span:nth-child(odd) { color: var(--muted); }
   #reportRows { display: flex; flex-direction: column; gap: 4px; max-height: 34vh; overflow-y: auto; }
+  #leaderboardRows { display: flex; flex-direction: column; gap: 4px; max-height: 24vh; overflow-y: auto; }
+  .leader-row { display: grid; grid-template-columns: 19px 10px 1fr; gap: 0 7px; width: 100%; padding: 6px 7px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel-2); color: var(--text); font: inherit; text-align: left; cursor: pointer; }
+  .leader-row .rank { grid-row: span 2; color: var(--muted); }
+  .leader-row .dot { width: 8px; height: 8px; border-radius: 50%; align-self: center; grid-row: span 2; }
+  .leader-row small { color: var(--muted); }
   .stress-row { display: grid; grid-template-columns: 12px 1fr; gap: 0 7px; width: 100%; padding: 6px 7px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel-2); color: var(--text); font: inherit; text-align: left; }
   .stress-row .dot { grid-row: span 2; padding-top: 1px; color: var(--bad); }
   .stress-row.pass .dot { color: var(--ok); }
@@ -93,6 +98,9 @@
   #tools { position: absolute; top: 14px; left: 14px; display: flex; gap: 6px; }
   #tools .chip { background: rgba(21,26,33,.88); }
   #tools .chip.on { border-color: var(--accent); color: var(--accent); }
+  #robotCameras { position: absolute; top: 52px; left: 14px; display: flex; gap: 5px; flex-wrap: wrap; max-width: 360px; }
+  #robotCameras .chip { background: rgba(21,26,33,.9); }
+  #robotCameras .chip.selected { border-color: var(--accent); color: var(--accent); }
   #pickHint { position: absolute; top: 52px; left: 14px; font-size: 12px; color: var(--accent); }
   .badge { margin: -2px 0 8px; padding: 6px 9px; border-radius: 7px; font-weight: 600; font-size: 12.5px; }
   .badge.ok { background: rgba(52,211,153,.15); color: var(--ok); } .badge.miss { background: rgba(248,113,113,.15); color: var(--bad); }
@@ -147,12 +155,14 @@
       <button class="chip" id="startBtn" hidden title="Then click the terrain">Set start</button>
       <button class="chip" id="goalBtn" hidden title="Then click the terrain">Set goal</button>
     </div>
+    <div id="robotCameras" hidden></div>
     <div id="pickHint" hidden></div>
     <pre class="card" id="code"></pre>
     <div class="hud" id="topright">
       <div class="card" id="agentsCard"><h3>Agents</h3><svg id="agentGraph" viewBox="0 0 360 160" aria-label="Live agent graph"></svg></div>
       <div class="card" id="checksCard" hidden><h3>Physics checks</h3><div id="checks"></div></div>
       <div class="card" id="metricsCard" hidden><h3>Results</h3><div id="badge" hidden></div><div class="kv" id="metrics"></div></div>
+      <div class="card" id="leaderboardCard" hidden><h3>Leaderboard</h3><div id="leaderboardRows"></div></div>
       <div class="card" id="reportCard" hidden><h3>Report card</h3><div id="reportCounts"></div><div id="reportRows"></div><div id="stressExplanation"></div></div>
     </div>
     <div class="hud" id="player" hidden>
@@ -373,7 +383,7 @@ ws.onmessage = (m) => {
       const label = ev.message.startsWith("This scene already ran") ? "Run again" : "Run";
       chips(q, ev.stress_test_available ? [label, "Stress test"] : [label], label); d.appendChild(q); break;
     }
-    case "run_start": batchIsActive = false; $("reportCard").hidden = true; disableRunButtons(); startRun(); break;
+    case "run_start": batchIsActive = false; $("reportCard").hidden = true; $("leaderboardCard").hidden = true; disableRunButtons(); startRun(); break;
     case "frames": for (const f of ev.frames) { frames.push(f); addTrailPoint(f); } $("scrub").max = frames.length - 1; break;
     case "metrics": renderMetrics(ev.metrics); streaming = false; break;
     case "batch_start":
@@ -466,6 +476,7 @@ const PERCENT = new Set(["slip_ratio", "slip_ratio_last_1s_before_fall", "path_e
 const OUTCOME = { fell: "it fell", stuck: "stuck", out_of_time: "out of time", left_terrain: "went off the edge" };
 function renderMetrics(m) {
   $("metricsCard").hidden = false; $("metrics").innerHTML = "";
+  renderLeaderboard(m.leaderboard);
   const badge = $("badge"); badge.hidden = !("goal_reached" in m);
   if ("goal_reached" in m) {
     badge.className = `badge ${m.goal_reached ? "ok" : "miss"}`;
@@ -488,6 +499,26 @@ function renderMetrics(m) {
       : k === "obstacles_cleared" ? `${m[k]} of ${m.obstacles_total}` : m[k];
     $("metrics").append(a, b);
   }
+}
+function renderLeaderboard(rows) {
+  const card = $("leaderboardCard"), container = $("leaderboardRows");
+  if (!Array.isArray(rows) || !rows.length) { card.hidden = true; container.replaceChildren(); return; }
+  card.hidden = false; container.replaceChildren();
+  for (let index = 0; index < rows.length; index++) {
+    const entry = rows[index], button = document.createElement("button");
+    button.type = "button"; button.className = "leader-row";
+    const rank = document.createElement("span"); rank.className = "rank"; rank.textContent = `#${entry.rank}`;
+    const robotIndex = current?.robots ? Object.keys(current.robots).indexOf(entry.id) : index;
+    const dot = document.createElement("span"); dot.className = "dot";
+    dot.style.backgroundColor = `#${ROBOT_COLORS[Math.max(0, robotIndex) % ROBOT_COLORS.length].toString(16).padStart(6, "0")}`;
+    const label = document.createElement("strong"); label.textContent = entry.label;
+    const detail = document.createElement("small");
+    detail.textContent = `${entry.robot} · ${entry.brain} · ${entry.result}`;
+    button.append(rank, dot, label, detail);
+    button.onclick = () => setCameraRobot(entry.id);
+    container.appendChild(button);
+  }
+  if (!cameraChosenByUser && rows[0].id) setCameraRobot(rows[0].id, false);
 }
 $("codeBtn").onclick = () => { const c = $("code"); const show = c.style.display !== "block"; c.style.display = show ? "block" : "none"; $("codeBtn").textContent = show ? "Hide code" : "Show code"; };
 
@@ -517,6 +548,10 @@ let current = null, frames = [], playing = true, streaming = false, idx = 0, acc
 const meshes = [];
 let batchPlayback = false, batchTimeline = [], batchGhostRuns = [], activeBatchRunId = null, ghostGroup = null;
 let hiddenBaseGeomIds = [];
+let cameraRobotId = null;
+let cameraChosenByUser = false;
+const robotTrails = new Map(), robotLabels = new Map();
+const ROBOT_COLORS = [0x22d3ee, 0xf59e0b, 0xa78bfa, 0x34d399, 0xf87171, 0x60a5fa];
 
 // Path trail: where the robot's body has been, drawn up to the current playback frame.
 const TRAIL_MAX = 4000;
@@ -524,12 +559,69 @@ const trail = new THREE.Line(new THREE.BufferGeometry(), new THREE.LineBasicMate
 trail.geometry.setAttribute("position", new THREE.BufferAttribute(new Float32Array(TRAIL_MAX * 3), 3));
 trail.frustumCulled = false;
 let trailCount = 0;
-function resetTrail() { trailCount = 0; trail.geometry.setDrawRange(0, 0); trail.material.color.set(0x22d3ee); }
+function resetTrail() {
+  trailCount = 0; trail.geometry.setDrawRange(0, 0); trail.material.color.set(0x22d3ee);
+  for (const state of robotTrails.values()) {
+    state.count = 0; state.geometry.setDrawRange(0, 0);
+  }
+}
 function addTrailPoint(f) {
-  if (!current || current.kind !== "mujoco" || trailCount >= TRAIL_MAX) return;
+  if (!current || current.kind !== "mujoco") return;
+  if (current.robots && Object.keys(current.robots).length > 1) {
+    for (const [id, info] of Object.entries(current.robots)) {
+      const state = robotTrails.get(id), p = f.poses[info.follow_geom];
+      if (!state || !p || state.count >= TRAIL_MAX) continue;
+      state.geometry.attributes.position.setXYZ(state.count++, p[0], p[1], p[2] + 0.05);
+      state.geometry.attributes.position.needsUpdate = true;
+    }
+    return;
+  }
+  if (trailCount >= TRAIL_MAX) return;
   const p = f.poses[current.follow_geom]; if (!p) return;
   trail.geometry.attributes.position.setXYZ(trailCount++, p[0], p[1], p[2] + 0.05);
   trail.geometry.attributes.position.needsUpdate = true;
+}
+function cameraGeom() {
+  return current?.robots?.[cameraRobotId]?.follow_geom ?? current?.follow_geom;
+}
+function setCameraRobot(id, userSelected = true) {
+  if (!current?.robots?.[id]) return;
+  cameraRobotId = id;
+  if (userSelected) cameraChosenByUser = true;
+  for (const button of $("robotCameras").querySelectorAll("button")) {
+    button.classList.toggle("selected", button.dataset.robotId === id);
+  }
+  const target = meshes[cameraGeom()];
+  if (target) {
+    const position = target.getWorldPosition(new THREE.Vector3());
+    controls.target.copy(position);
+    camera.position.set(position.x - 3.2, position.y + 2.2, position.z + 2.6);
+  }
+}
+function renderRobotCameras(robots) {
+  const container = $("robotCameras"); container.replaceChildren();
+  const entries = Object.entries(robots || {});
+  container.hidden = entries.length < 2;
+  for (const [id, info] of entries) {
+    const button = document.createElement("button"); button.type = "button"; button.className = "chip";
+    button.textContent = info.label || id; button.dataset.robotId = id;
+    button.onclick = () => setCameraRobot(id);
+    container.appendChild(button);
+  }
+  cameraRobotId = entries[0]?.[0] || null;
+  cameraChosenByUser = false;
+  if (cameraRobotId) setCameraRobot(cameraRobotId, false);
+}
+function makeRobotLabel(text, color) {
+  const canvas = document.createElement("canvas"); canvas.width = 512; canvas.height = 96;
+  const ctx = canvas.getContext("2d"); ctx.font = "600 38px Inter, sans-serif";
+  ctx.textAlign = "center"; ctx.textBaseline = "middle";
+  ctx.fillStyle = `#${color.toString(16).padStart(6, "0")}`;
+  ctx.shadowColor = "#0d1015"; ctx.shadowBlur = 12; ctx.fillText(text, canvas.width / 2, canvas.height / 2);
+  const texture = new THREE.CanvasTexture(canvas);
+  const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: texture, transparent: true, depthTest: false }));
+  sprite.scale.set(1.7, 0.32, 1); sprite.renderOrder = 10;
+  return sprite;
 }
 function clearGhosts() {
   if (ghostGroup) {
@@ -655,7 +747,20 @@ renderer.domElement.addEventListener("pointerup", (e) => {
   setPick(pickMode);   // one click, then back to orbiting
 });
 
-function clearWorld() { clearGhosts(); world.remove(trail); while (world.children.length) { const c = world.children.pop(); c.traverse?.((o) => { o.geometry?.dispose(); o.material?.dispose?.(); }); } meshes.length = 0; }
+function clearWorld() {
+  clearGhosts(); world.remove(trail);
+  while (world.children.length) {
+    const child = world.children.pop();
+    child.traverse?.((object) => {
+      object.geometry?.dispose();
+      if (Array.isArray(object.material)) object.material.forEach((material) => material.dispose());
+      else object.material?.dispose?.();
+      object.material?.map?.dispose?.();
+    });
+  }
+  meshes.length = 0; robotTrails.clear(); robotLabels.clear();
+  $("robotCameras").replaceChildren(); $("robotCameras").hidden = true;
+}
 
 function heightColor(base, t) { return new THREE.Color(base[0], base[1], base[2]).multiplyScalar(0.55 + 0.65 * t); }
 
@@ -704,6 +809,7 @@ function geomMesh(g, meshAssets, meshGeometries) {
 
 function loadScene(s) {
   batchIsActive = false; batchResults.clear(); $("reportCard").hidden = true;
+  $("leaderboardCard").hidden = true;
   clearWorld(); current = s; frames = []; idx = 0; $("empty").hidden = true; $("player").hidden = true; $("metricsCard").hidden = true;
   terrainMesh = null; resetTrail();
   if (s.kind === "mujoco") {
@@ -714,8 +820,24 @@ function loadScene(s) {
       meshes[g.id] = m; if (m) world.add(m);
     }
     world.add(trail);
+    robotTrails.clear(); robotLabels.clear();
+    const robotEntries = Object.entries(s.robots || {});
+    for (let index = 0; index < robotEntries.length; index++) {
+      const [id, info] = robotEntries[index];
+      const geometry = new THREE.BufferGeometry();
+      geometry.setAttribute("position", new THREE.BufferAttribute(new Float32Array(TRAIL_MAX * 3), 3));
+      geometry.setDrawRange(0, 0);
+      const color = ROBOT_COLORS[index % ROBOT_COLORS.length];
+      const path = new THREE.Line(geometry, new THREE.LineBasicMaterial({ color }));
+      path.frustumCulled = false; world.add(path);
+      const label = makeRobotLabel(info.label || id, color);
+      world.add(label);
+      robotTrails.set(id, { geometry, line: path, count: 0 });
+      robotLabels.set(id, label);
+    }
+    renderRobotCameras(s.robots || {});
     applyFrame({ t: 0, poses: s.poses });
-    const target = meshes[s.follow_geom];
+    const target = meshes[cameraGeom()];
     const start = target ? target.getWorldPosition(new THREE.Vector3()) : new THREE.Vector3();
     controls.target.copy(start); camera.position.set(start.x - 3.2, start.y + 2.2, start.z + 2.6);
   } else if (s.kind === "frame") {
@@ -782,9 +904,17 @@ function applyFrame(f) {
       const m = meshes[g.id]; if (!m || g.type === "hfield") return;
       const p = f.poses[k]; m.position.set(p[0], p[1], p[2]); m.quaternion.set(p[4], p[5], p[6], p[3]);
     });
-    trail.geometry.setDrawRange(0, Math.min(idx + 1, trailCount));
+    if (current.robots && Object.keys(current.robots).length > 1) {
+      for (const [id, info] of Object.entries(current.robots)) {
+        const pose = f.poses[info.follow_geom], label = robotLabels.get(id), path = robotTrails.get(id);
+        if (pose && label) label.position.set(pose[0], pose[1], pose[2] + 1.0);
+        if (path) path.geometry.setDrawRange(0, Math.min(idx + 1, path.count));
+      }
+    } else {
+      trail.geometry.setDrawRange(0, Math.min(idx + 1, trailCount));
+    }
     // Follow cam: move the camera with the robot so it stays the same size on screen.
-    const target = meshes[current.follow_geom];
+    const target = meshes[cameraGeom()];
     if (target && followCam) {
       const before = controls.target.clone();
       controls.target.lerp(target.getWorldPosition(new THREE.Vector3()), 0.08);

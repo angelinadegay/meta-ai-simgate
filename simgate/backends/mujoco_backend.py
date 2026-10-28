@@ -1503,7 +1503,10 @@ class MuJoCoSimulator(Simulator):
                 "id": metrics["id"],
                 "label": metrics["label"],
                 "robot": metrics["robot"].get("robot_id") or metrics["robot"]["kind"],
-                "policy": metrics["robot"].get("policy_id"),
+                "brain": metrics["robot"].get("policy_id") or {
+                    "rover": "wheel controller",
+                    "walker": "open-loop gait",
+                }.get(metrics["robot"]["kind"], "library policy"),
                 "result": result,
                 "goal_reached": metrics["goal_reached"],
                 "time_to_goal_s": metrics["time_to_goal_s"],
@@ -1511,6 +1514,9 @@ class MuJoCoSimulator(Simulator):
         self._summary = {
             "simulator": self.name,
             "duration_s": spec.duration_s,
+            "gravity": spec.environment.gravity,
+            "friction": spec.environment.friction,
+            "terrain": spec.terrain.model_dump(),
             "robots": per_robot,
             "leaderboard": leaderboard,
             "robot_contacts": len(cross_pairs),

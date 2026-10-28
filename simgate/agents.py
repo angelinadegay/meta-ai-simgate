@@ -90,6 +90,8 @@ Evidence rules:
   stuck (no real movement in its last 3 s), out_of_time (still moving when time ran out) or left_terrain.
   path_efficiency is progress toward the goal divided by the distance travelled (1.0 = a straight line).
   The robot steers itself straight at the goal; it does not plan a route around steep ground.
+- Multi-robot runs: use leaderboard rank and per-robot measurements. Lead with who won or arrived, then explain
+  why the others did not, using only their reported outcomes, distances, tilt, and contacts.
 - Obstacles: obstacles lists each one in course order with its height (gap: width_m is the opening, height_m its
   depth), whether the robot touched it (touched_at_s) and got past it (cleared). stopped_by is the first obstacle it
   didn't get past. robot_rough_limits are measured limits for this robot (climb_m: tallest step it usually
@@ -489,6 +491,28 @@ def build(sim: Simulator, spec: SceneSpec, log) -> BuildResult:
 
 def _mock_explain(spec: SceneSpec, m: dict) -> str:
     if m.get("simulator") == "MuJoCo":
+        if m.get("robots"):
+            leaderboard = m.get("leaderboard", [])
+            if not leaderboard:
+                return "The robots ran, but no leaderboard was recorded. Try running the race again."
+            winner = leaderboard[0]
+            if winner.get("goal_reached"):
+                text = f"{winner['label']} placed first and reached the goal in {winner['time_to_goal_s']} s."
+            elif m["robots"][winner["id"]].get("final_distance_m") is not None:
+                text = (f"{winner['label']} made the most progress but missed the goal by "
+                        f"{m['robots'][winner['id']].get('final_distance_m')} m.")
+            else:
+                text = (f"{winner['label']} placed first with "
+                        f"{m['robots'][winner['id']].get('forward_progress_m')} m of forward progress.")
+            for entry in leaderboard[1:]:
+                robot = m["robots"][entry["id"]]
+                if entry.get("goal_reached"):
+                    detail = f"arrived in {entry['time_to_goal_s']} s"
+                else:
+                    detail = f"finished {robot.get('final_distance_m')} m from the goal ({robot.get('outcome')})"
+                text += f" {entry['label']} {detail}, with a maximum tilt of {robot['max_tilt_deg']}°."
+            text += f" The robots recorded {m.get('robot_contacts', 0)} cross-robot contact pairs."
+            return text + " Try changing their starting lanes or widening the goal area."
         g, f = m["gravity"], m["friction"]
         walker = spec.robot.kind == "walker"
         humanoid = spec.robot.kind == "library"
