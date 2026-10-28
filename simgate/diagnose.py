@@ -187,6 +187,22 @@ def _applicable(spec: SceneSpec, intervention: dict) -> str | None:
     return None
 
 
+def allowed_value(spec: SceneSpec, knob: str, value: Any) -> Any:
+    """The one value each first-round experiment may use (the allowed mappings); obstacle names pass through."""
+    terrain = spec.terrain
+    return {
+        "surface": "rock",
+        "friction": round((spec.environment.friction or 0.8) * 1.5, 2),
+        "gravity": 9.81,
+        "slope_deg": max(0.0, terrain.slope_deg - 10) if terrain is not None else value,
+        "flatten_terrain": True,
+        "obstacle_scale": 0.5,
+        "no_push": True,
+        "speed_scale": 0.6,
+        "face_uphill": True,
+    }.get(knob, value)
+
+
 def _slipping(spec: SceneSpec) -> dict:
     if spec.environment.surface != "rock":
         return {"surface": "rock"}
@@ -285,6 +301,12 @@ def model_hypotheses(spec: SceneSpec, m: dict, decisions: list[dict], calls: lis
             allowed = {first: allowed[first]}
         if not allowed:
             continue
+        knob, value = next(iter(allowed.items()))
+        mapped = allowed_value(spec, knob, value)
+        if mapped != value:
+            decisions.append({"agent": "Explainer", "decision": "adjusted",
+                              "reason": f"{item.cause}: {knob} {value} isn't an allowed experiment; testing {mapped} instead."})
+            allowed = {knob: mapped}
         problem = _applicable(spec, allowed)
         if problem:
             decisions.append({"agent": "Explainer", "decision": "dropped", "reason": f"{item.cause}: {problem}."})

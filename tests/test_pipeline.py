@@ -1498,7 +1498,7 @@ def test_model_explainer_decisions_are_validated_bounded_and_visible():
             {"cause": "slipping", "why": "slip was 1%", "intervention": {"surface": "rock"}, "control": True}]})],
         "deciding what to do": [
             json.dumps({"decision": "test more", "reason": "The step only partly explains it; trying a lower step.",
-                        "next": [{"cause": "step height (stronger)", "intervention": {"obstacle_scale": 0.5}},
+                        "next": [{"cause": "step height (stronger)", "intervention": {"obstacle_scale": 0.25}},
                                  {"cause": "bad", "intervention": {"mass_kg": 5}}]}),
             json.dumps({"decision": "conclude", "reason": "The lower step passed, so the evidence is enough."})],
         "Write 3 to 5": ["The step height explains it."],
@@ -1513,6 +1513,10 @@ def test_model_explainer_decisions_are_validated_bounded_and_visible():
 
     causes = [h["cause"] for h in report["hypotheses"]]
     assert "wheels too small" not in causes and causes[-1] == "step height (stronger)"
+    step_height = next(h for h in report["hypotheses"] if h["cause"] == "step height")
+    assert step_height["intervention"] == {"obstacle_scale": 0.5}   # the allowed mapping, not the model's 0.9
+    assert any(d["reason"] == "step height: obstacle_scale 0.9 isn't an allowed experiment; testing 0.5 instead."
+               for d in report["decisions"])
     assert sum(1 for h in report["hypotheses"] if h.get("follow_up")) == 1
     assert report["runs"] <= MAX_RERUNS and report["hypotheses"][-1]["verdict"] == "confirmed"
     assert [role for role, _, _ in calls] == ["candidate\ncauses", "deciding what to do", "deciding what to do", "Write 3 to 5"]

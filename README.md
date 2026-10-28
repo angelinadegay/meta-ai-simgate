@@ -264,8 +264,8 @@ of guessing:
    experiments are allowed: slipping → a rock surface (or friction +50%); low gravity → 9.81 m/s²; steep ground →
    10° less slope (slope terrain) or the same scene on flat ground (generated hills, rocks or craters); an obstacle
    → remove that obstacle, or halve every obstacle; a push → no push; too fast → speed × 0.6; tipping on a side
-   slope → face straight uphill. The model's reply is checked against this list; anything else is dropped with a
-   visible reason, and a bad reply gets one retry that shows the model its own reply and the exact errors. In
+   slope → face straight uphill. The model's reply is checked against this list: anything else is dropped with a
+   visible reason, the value of each change is the mapping's (a different value is replaced, visibly), and a bad reply gets one retry that shows the model its own reply and the exact errors. In
    mock mode, rules read the evidence (slip above 40%, the obstacle that stopped it, a fall on ground steeper than
    12°, gravity below 5 m/s², a large sideways slope). There is always at least one **control**: a cause the
    evidence says is *not* responsible, so the results can rule something out.
