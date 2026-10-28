@@ -1527,6 +1527,8 @@ def test_model_explainer_decisions_are_validated_bounded_and_visible():
     assert any("mass_kg" not in d["reason"] and d["decision"] == "dropped" and d["reason"].startswith("bad:")
                for d in report["decisions"])
     assert "Test more: The step only partly explains it" in " ".join(reasons)
+    assert "Adjusted: step height: obstacle_scale 0.9 isn't an allowed experiment; testing 0.5 instead." in reasons
+    assert "Dropped: wheels too small: wheel_radius is not an allowed experiment." in reasons
     assert report["conclusion"] == "The step height explains it."
 
 

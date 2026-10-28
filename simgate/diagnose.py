@@ -548,7 +548,7 @@ def diagnose(spec: SceneSpec, summary: dict, robot_id: str | None = None,
     hypotheses = None if config.MOCK_MODE else model_hypotheses(spec, base, report["decisions"], report["model_calls"])
     for dropped in report["decisions"]:
         _emit(on_step, dropped["agent"], "hypotheses", "Checking the proposed experiments.",
-              f"Dropped: {dropped['reason']}", "warning")
+              f"{dropped['decision'].capitalize()}: {dropped['reason']}", "warning")
     if hypotheses is None or len(hypotheses) < 2:
         rules = rule_hypotheses(spec, base)
         hypotheses = (hypotheses or []) + [h for h in rules if h["cause"] not in {x["cause"] for x in hypotheses or []}]
@@ -569,11 +569,15 @@ def diagnose(spec: SceneSpec, summary: dict, robot_id: str | None = None,
             spec, report["hypotheses"], remaining, report["decisions"], report["model_calls"])
         for dropped in report["decisions"][recorded:]:
             _emit(on_step, dropped["agent"], "decision", "Checking the follow-up experiments.",
-                  f"Dropped: {dropped['reason']}", "warning")
+                  f"{dropped['decision'].capitalize()}: {dropped['reason']}", "warning")
         decided = decided or rule_decision(spec, report["hypotheses"], remaining)
         follow = decided["next"][: min(MAX_FOLLOW_UPS, remaining)] if decided["decision"] == "test more" else []
         outcome = decided["decision"] if decided["decision"] != "test more" or follow else "conclude"
-        reason = decided["reason"] + ("" if follow or decided["decision"] != "test more" else " No reruns are left, so concluding.")
+        if follow or decided["decision"] != "test more":
+            reason = decided["reason"]
+        else:
+            reason = decided["reason"] + (" No reruns are left, so concluding." if remaining <= 0
+                                          else " No new experiment is left to run, so concluding.")
         report["decisions"].append({"agent": "Explainer", "decision": outcome if not follow else "test more", "reason": reason})
         _emit(on_step, "Explainer", "decision", "Deciding whether the evidence is enough.",
               f"{'Test more' if follow else outcome.capitalize()}: {reason}")
