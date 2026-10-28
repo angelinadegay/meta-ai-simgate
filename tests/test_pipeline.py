@@ -201,6 +201,63 @@ def test_race_goals_and_run_cues_in_plans():
     assert plan.goal.place == "east" and plan.robots[0].goal_place == "east"
 
 
+def test_model_plans_are_corrected_from_the_request_words():
+    import asyncio
+    import json
+
+    from simgate import config, llm
+    from simgate.director import Director
+
+    original_mock, original_chat = config.MOCK_MODE, llm.chat
+
+    def planned(text, **plan):
+        llm.chat = lambda *_args, **_kwargs: json.dumps({"workflow": "build", "summary": "A scene", **plan})
+        director = Director()
+        return director.plan(text), director.guard_notes
+
+    rover = [{"kind": "rover"}]
+    try:
+        config.MOCK_MODE = False
+        # a. world from the words
+        plan, notes = planned("A rover on Mars hills", robots=rover, world={"terrain_kind": "hills"})
+        assert plan.world.body == "mars" and notes == ["You named Mars, so the world is Mars."]
+        plan, _ = planned("a lunar rover", robots=rover, world={"body": "mars"})
+        assert plan.world.body == "moon"
+        plan, notes = planned("A rover in Gale Crater", robots=rover, world={"terrain_kind": "hills"})
+        assert (plan.world.preset, plan.world.terrain_kind, plan.world.body) == ("gale", "real", "mars")
+        assert "Gale Crater, Mars" in notes[-1]
+        # b. a preset nobody asked for
+        plan, notes = planned("A rover on Mars hills", robots=rover,
+                              world={"body": "mars", "terrain_kind": "hills", "preset": "real-ares3"})
+        assert plan.world.preset is None and plan.world.terrain_kind == "hills"
+        assert notes == ["You didn't ask for a real place, so I used generated terrain instead of real-ares3."]
+        plan, notes = planned("A rover on real terrain from NASA", robots=rover, world={"preset": "real-jezero"})
+        assert plan.world.preset == "real-jezero" and notes == []
+        # c. course placement
+        course = [{"kind": "rock", "size": "small", "count": 10, "placement": "scattered"},
+                  {"kind": "step", "placement": "place", "place": "center"}]
+        plan, notes = planned("Rover obstacle course: 10 small rocks and a step", robots=rover, obstacles=course)
+        assert [obstacle.placement for obstacle in plan.obstacles] == ["path", "path"]
+        assert notes == ["Placed the obstacles along the path in the order given."]
+        plan, _ = planned("a rover with rocks scattered everywhere", robots=rover, obstacles=course[:1])
+        assert plan.obstacles[0].placement == "scattered"
+        plan, _ = planned("a rover with a step in the center", robots=rover, obstacles=course[1:])
+        assert (plan.obstacles[0].placement, plan.obstacles[0].place) == ("place", "center")
+        # d. run intent
+        plan, notes = planned("two rovers to the east, race them", robots=[{"kind": "rover", "count": 2}],
+                              goal={"place": "east"}, run_now=False)
+        assert plan.run_now and notes == ["You asked to run it, so it runs now."]
+        plan, notes = planned("A rover on flat ground", robots=rover)
+        assert not plan.run_now and notes == []
+
+        llm.chat = lambda *_args, **_kwargs: '{"workflow":"build","summary":"Rover","robots":[{"kind":"rover"}]}'
+        world, _ = asyncio.run(Director().execute_plan("A rover on the Moon"))
+        assert world.spec.environment.body == "moon"
+        assert "You named Moon, so the world is Moon." in world.spec.assumptions
+    finally:
+        config.MOCK_MODE, llm.chat = original_mock, original_chat
+
+
 def test_stress_plan_requires_an_existing_robot_scene():
     from simgate import config, llm
     from simgate.director import Director

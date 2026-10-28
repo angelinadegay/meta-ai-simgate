@@ -70,7 +70,13 @@ After planning, deterministic code runs the fixed workflow: build/race sets up t
 obstacles and goals, then builds and checks before asking for approval or running. Compare and stress workflows
 use the existing batch runner. Edit changes only named fields; answer plans skip simulation. An edit is applied to
 a copy of the scene while planning, so an invalid edit, or one that changes nothing, gets the one correction
-request. Setting a slope angle on non-slope terrain switches it to a slope, and "steeper" without a number adds 10°. There is no
+request. Setting a slope angle on non-slope terrain switches it to a slope, and "steeper" without a number adds 10°.
+
+Code then checks the model's plan against the request's own words, and each correction appears as an assumption
+the user sees: a world named in the request ("Mars", "lunar") or a real place ("Gale Crater") wins over the plan;
+a real-terrain preset the user didn't ask for is dropped in favour of generated terrain; course obstacles go along
+the path in the order given unless the request says to scatter them or names a place; and a request ending in
+"go", "start", "run it" or "race them" runs. There is no
 one-tool-per-model-turn loop or 12-call limit.
 
 A typical race uses **one Director planning model call**. If it runs, a separate Explainer call may follow; a
@@ -256,7 +262,7 @@ Without a key, it runs in mock mode.
 
 ### 11. Tests
 
-`python tests/test_pipeline.py` runs 54 offline tests. The optional real-terrain integration test skips when
+`python tests/test_pipeline.py` runs 55 offline tests. The optional real-terrain integration test skips when
 `rasterio` is unavailable.
 
 | Test | Checks that |
@@ -268,6 +274,7 @@ Without a key, it runs in mock mode.
 | `director_plan_schema_validates_ids_and_expanded_robot_limit` | Plan IDs are registered and expanded robot counts stay within six |
 | `director_planning_uses_one_call_retries_validation_and_falls_back` | A valid plan uses one call; a validation error gets one retry that shows the model its own reply and the exact error; then rules fallback |
 | `race_goals_and_run_cues_in_plans` | "Race … to the summit/top/bottom/far side" sets the shared goal, a closing "go"/"start"/"run it" asks to run, and a model's "far side" maps to the east goal |
+| `model_plans_are_corrected_from_the_request_words` | Model plans are corrected from the request's words (named world or real place, unrequested preset dropped, course obstacles on the path, closing run words), with a note the user sees |
 | `stress_plan_requires_an_existing_robot_scene` | Stress plans without a robot scene fall back to a safe answer |
 | `plan_workflow_expands_race_and_runs_only_when_requested` | A 3-rover race asks before running, and a requested run is handed to the session to stream |
 | `run_now_race_streams_frames_before_metrics` | A race the user asked to run streams run_start and frames before metrics, then the leaderboard and explanation, like an approved run |

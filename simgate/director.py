@@ -11,6 +11,7 @@ from . import agents, config, llm, presets
 from .library import LibraryRegistry
 from .plan import Plan, WorldPlan
 from .spec import Robot, SceneSpec
+from .terrain_data import list_presets
 from .tools import ToolResult, World, invoke_tool
 
 StepCallback = Callable[[dict[str, Any]], Awaitable[None]]
@@ -23,6 +24,7 @@ class Director:
         self._root_id: str | None = None
         self.last_checker_id: str | None = None   # latest Checker hand-off step, parent of any repair
         self.used_rule_planner = False            # the model's plan failed twice; the user is told
+        self.guard_notes: list[str] = []          # corrections made to the model's plan from the request's words
 
     def plan(self, text: str, world_state: World | SceneSpec | dict[str, Any] | None = None) -> Plan:
         """Create a complete validated plan, retry once, then use the deterministic planner."""
@@ -49,6 +51,7 @@ class Director:
                     raise ValueError("workflow 'stress_test' requires an existing robot scene.")
                 if plan.workflow == "edit":
                     _check_edit(plan, text, world_state)
+                self.guard_notes = _apply_text_guards(plan, text)
                 return plan
             except (ValueError, TypeError) as exc:
                 last_error = str(exc)
@@ -86,11 +89,12 @@ class Director:
             result=(
                 f"The model's plan failed validation twice; used the rules planner's {plan.workflow} plan."
                 if self.used_rule_planner else f"Validated {plan.workflow} plan."
-            ),
+            ) + "".join(f" {note}" for note in self.guard_notes),
             status="done",
             ms=round((time.perf_counter() - started) * 1000),
         )
         world, message = await workflows.execute(plan, current, self)
+        world.spec.assumptions.extend(self.guard_notes)
         if self.used_rule_planner:
             message = f"I used the simple planner for this one. {message}"
         await self._finish_root(message)
@@ -480,6 +484,67 @@ def _check_edit(plan: Plan, text: str, world_state: World | SceneSpec | dict[str
         )
 
 
+_WORLD_WORDS = {
+    "earth": "earth", "moon": "moon", "lunar": "moon", "mars": "mars", "martian": "mars",
+    "titan": "titan", "europa": "europa", "enceladus": "enceladus",
+}
+_REAL_TERRAIN_WORDS = re.compile(r"\breal (?:terrain|place|mars|data|ground|world)\b|\bnasa\b|\bhirise\b")
+_SCATTER_WORDS = re.compile(r"\b(scatter(?:ed)?|around|everywhere)\b")
+_ENDS_WITH_RUN = re.compile(r"\b(go|start|run it|race them)\s*[.!]*\s*$")
+
+
+def _named_presets(source: str) -> list[str]:
+    """Real-terrain presets named in the request, by ID ("gale", "ares 3") or label ("Gale Crater", "Acidalia")."""
+    named = []
+    for name, meta in list_presets().items():
+        label = meta.get("label", "").lower()
+        words = {name, re.sub(r"(\D)(\d)", r"\1 \2", name), label.split(",")[0].split(" (")[0], label.split()[0]}
+        if any(re.search(rf"\b{re.escape(word)}\b", source) for word in words if word):
+            named.append(name)
+    return named
+
+
+def _apply_text_guards(plan: Plan, text: str) -> list[str]:
+    """Correct a model plan where it contradicts or omits what the request says. Returns notes for the user."""
+    if plan.workflow in ("answer", "stress_test"):
+        return []
+    source = text.lower()
+    notes: list[str] = []
+    if plan.workflow != "edit" and plan.domain == "robot_terrain":
+        world = plan.world.model_dump(exclude_none=True)
+        bodies = {body for word, body in _WORLD_WORDS.items() if re.search(rf"\b{word}\b", source)}
+        if len(bodies) == 1 and world.get("body") != (body := bodies.pop()):
+            world["body"] = body
+            notes.append(f"You named {body.title()}, so the world is {body.title()}.")
+        presets_named = _named_presets(source)
+        if presets_named and world.get("preset") not in (presets_named[0], f"real-{presets_named[0]}"):
+            meta = list_presets()[presets_named[0]]
+            world.update(preset=presets_named[0], terrain_kind="real", body=meta.get("body", world.get("body")))
+            world.pop("slope_deg", None)
+            notes.append(f"You named {meta['label']}, so I used that real terrain.")
+        elif world.get("preset") and not presets_named and not _REAL_TERRAIN_WORDS.search(source):
+            notes.append(f"You didn't ask for a real place, so I used generated terrain instead of {world['preset']}.")
+            del world["preset"]
+            if world.get("terrain_kind") == "real":
+                del world["terrain_kind"]
+        plan.world = WorldPlan.model_validate(world)
+
+        moved = False
+        if not _SCATTER_WORDS.search(source):
+            for obstacle in plan.obstacles:
+                place_named = obstacle.placement == "place" and obstacle.place is not None and any(
+                    word in source for name, words in agents.PLACE_WORDS if name == obstacle.place for word in words
+                )
+                if obstacle.placement != "path" and not place_named:
+                    obstacle.placement, obstacle.place, moved = "path", None, True
+        if moved:
+            notes.append("Placed the obstacles along the path in the order given.")
+    if _ENDS_WITH_RUN.search(source) and not plan.run_now:
+        plan.run_now = True
+        notes.append("You asked to run it, so it runs now.")
+    return notes
+
+
 _CHANGE_VERB = re.compile(
     r"\b(build|create|make|put|race|compare|stress|run|simulate|test|spawn|add|remove|use|set|change|switch|try"
     r"|swap|replace|increase|decrease|raise|lower|give|turn|move)\b"
@@ -501,8 +566,7 @@ def _requests_scene_change(source: str) -> bool:
 
 def _asks_to_run(source: str) -> bool:
     """An explicit run request: a run verb anywhere, or "go", "start" or "run it" closing the request."""
-    return bool(re.search(r"\b(run|simulate|start|go ahead|test now)\b", source)
-                or re.search(r"\b(go|start|run it)\s*[.!]*\s*$", source))
+    return bool(re.search(r"\b(run|simulate|start|go ahead|test now)\b", source) or _ENDS_WITH_RUN.search(source))
 
 
 def _has_robot_scene(world_state: World | SceneSpec | dict[str, Any] | None) -> bool:
