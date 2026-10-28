@@ -1111,7 +1111,7 @@ class MuJoCoSimulator(Simulator):
                         vx_limit = card.ranges[card.names.index("vx")][1]
                         yaw_range = card.ranges[card.names.index("yaw_rate")]
                         commands = {
-                            "vx": float(np.clip(0.6 * math.cos(turn), 0.0, vx_limit)),
+                            "vx": float(np.clip(robot.command_speed_m_s * math.cos(turn), 0.0, vx_limit)),
                             "vy": 0.0,
                             "yaw_rate": float(np.clip(turn, yaw_range[0], yaw_range[1])),
                         }
@@ -1576,7 +1576,7 @@ class MuJoCoSimulator(Simulator):
                             speed_limit = command_card.ranges[command_card.names.index("vx")][1]
                             yaw_limits = command_card.ranges[command_card.names.index("yaw_rate")]
                             command_values = {
-                                "vx": float(np.clip(0.6 * math.cos(turn), 0.0, speed_limit)),
+                                "vx": float(np.clip(spec.robot.command_speed_m_s * math.cos(turn), 0.0, speed_limit)),
                                 "vy": 0.0,
                                 "yaw_rate": float(np.clip(turn, yaw_limits[0], yaw_limits[1])),
                             }

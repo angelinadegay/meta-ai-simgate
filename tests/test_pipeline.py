@@ -1311,6 +1311,80 @@ def test_batch_stress_conditions_and_ghosts():
     assert payload_size < 5 * 1024 * 1024 and MAX_BATCH_GHOST_BYTES < 5 * 1024 * 1024
 
 
+def failed_run(spec):
+    sim, _, _ = run(spec)
+    return sim.summary()
+
+
+def test_diagnose_confirms_the_step_and_rules_out_low_gravity():
+    from simgate.diagnose import MAX_RERUNS, diagnose
+
+    # On Mars the 4-wheel rover climbs 0.15 m, so a 0.2 m step is the failing case there.
+    spec = SceneSpec(domain="robot_terrain", environment=Environment(body="mars", surface="regolith"),
+                     terrain=Terrain(kind="flat", roughness=0), robot=Robot(kind="rover"),
+                     obstacles=[Obstacle(kind="step", height_m=0.2)]).fill_defaults()
+    steps = []
+    report = diagnose(spec, failed_run(spec), on_step=steps.append)
+    assert report["reproduced"] is True and report["runs"] <= MAX_RERUNS
+    verdicts = {h["cause"]: h["verdict"] for h in report["hypotheses"]}
+    assert verdicts["obstacle"] == "confirmed" and verdicts["low gravity"] == "ruled out", verdicts
+    assert any(h.get("control") for h in report["hypotheses"])
+    assert "Confirmed: obstacle" in report["conclusion"] and "low gravity" in report["conclusion"]
+    assert [step["agent"] for step in steps if step["status"] != "working"] == [
+        "Batch runner", "Explainer", "Batch runner", "Explainer"]
+
+
+def test_diagnose_confirms_slipping_on_an_icy_slope():
+    from simgate.diagnose import diagnose
+
+    spec = SceneSpec(domain="robot_terrain", environment=Environment(surface="ice"),
+                     terrain=Terrain(kind="slope", slope_deg=25, roughness=0.1)).fill_defaults()
+    report = diagnose(spec, failed_run(spec))
+    slipping = next(h for h in report["hypotheses"] if h["cause"] == "slipping")
+    assert slipping["intervention"] == {"surface": "rock"} and slipping["verdict"] == "confirmed"
+    assert report["conclusion"].startswith("Confirmed: slipping")
+
+
+def test_diagnose_does_not_diagnose_a_passing_run():
+    from simgate.diagnose import diagnose
+
+    spec = SceneSpec(domain="robot_terrain", environment=Environment(body="mars", surface="regolith"),
+                     terrain=Terrain(kind="flat", roughness=0), robot=Robot(kind="rover"),
+                     obstacles=[Obstacle(kind="step", height_m=0.15)]).fill_defaults()
+    report = diagnose(spec, failed_run(spec))
+    assert report["reproduced"] is None and report["runs"] == 0 and report["hypotheses"] == []
+    assert report["conclusion"].startswith("This run passed")
+
+
+def test_experiment_knobs_and_per_robot_metrics():
+    from simgate.batch import _validate_variation, obstacle_entry_index
+    from simgate.diagnose import robot_metrics
+
+    spec = SceneSpec(domain="robot_terrain", terrain=Terrain(kind="flat"), robot=Robot(kind="rover"),
+                     obstacles=[Obstacle(kind="rock", count=10), Obstacle(kind="step", count=2),
+                                Obstacle(kind="gap")]).fill_defaults()
+    assert [obstacle_entry_index(spec, name) for name in ("obs0_rock", "obs1_step", "obs2_step", "obs3_gap")] == [0, 1, 1, 2]
+    _, removed, _ = _validate_variation(spec, {"remove_obstacle": "obs2_step"})
+    assert [(o.kind, o.count) for o in removed.obstacles] == [("rock", 10), ("step", 1), ("gap", 1)]
+    _, slower, _ = _validate_variation(spec, {"speed_scale": 0.5})
+    assert slower.robot.drive_speed == slower.robots[0].robot.drive_speed == 3.0
+    _, bigger, _ = _validate_variation(spec, {"robot": {"wheel_radius": 0.2, "wheels": 6}})
+    assert (bigger.robots[0].robot.wheel_radius, bigger.robots[0].robot.wheels) == (0.2, 6)
+    for bad in ({"robot": {"kind": "walker"}}, {"robot": {"wings": 2}}, {"face_uphill": True}, {"no_push": True}):
+        try:
+            _validate_variation(spec, bad)
+        except ValueError:
+            continue
+        raise AssertionError(f"accepted {bad}")
+
+    multi = {"robots": {"r1": {"goal_reached": True, "final_distance_m": 0.5},
+                        "r2": {"goal_reached": False, "final_distance_m": 4.0, "flipped": True,
+                               "obstacles": {"stopped_by": {"name": "obs0_step", "kind": "step"}}}}}
+    second = robot_metrics(multi, "r2")
+    assert not second["passed"] and second["stopped_by"]["name"] == "obs0_step" and second["flipped"]
+    assert robot_metrics(multi, "r1")["passed"]
+
+
 def test_stress_trigger_requires_robot_scene():
     import asyncio
     from unittest.mock import patch

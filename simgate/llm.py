@@ -51,3 +51,22 @@ def extract_json(text: str) -> dict:
 def extract_code(text: str, lang: str = "xml") -> str:
     fenced = re.search(rf"```(?:{lang})?\s*(.*?)```", text, re.S)
     return (fenced.group(1) if fenced else text).strip()
+
+
+def chat_json(messages: list[dict], model: str, parse) -> tuple[object | None, list[dict]]:
+    """Ask for JSON and parse it with ``parse`` (which raises ValueError/TypeError on a bad reply). One retry
+    shows the model its own reply and the exact error. Returns (parsed or None, one record per call)."""
+    messages = list(messages)
+    calls: list[dict] = []
+    for attempt in range(2):
+        reply = chat(messages, model)
+        try:
+            parsed = parse(extract_json(reply))
+        except (ValueError, TypeError) as exc:
+            calls.append({"attempt": attempt + 1, "valid": False, "error": str(exc)[:500]})
+            messages.append({"role": "assistant", "content": reply})
+            messages.append({"role": "user", "content": f"That reply failed validation with this exact error:\n{exc}\nReturn corrected JSON only."})
+            continue
+        calls.append({"attempt": attempt + 1, "valid": True})
+        return parsed, calls
+    return None, calls

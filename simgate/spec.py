@@ -45,6 +45,8 @@ class Robot(BaseModel):
     chassis_length: float = 0.6
     chassis_width: float = 0.4
     mass_kg: float = 10.0
+    # library robot with a trained policy: forward walking command given to the policy, m/s
+    command_speed_m_s: float = 0.6
 
 
 Place = Literal["start_area", "center", "lowest", "highest", "north", "south", "east", "west"]

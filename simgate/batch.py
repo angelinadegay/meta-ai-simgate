@@ -4,7 +4,7 @@ import base64
 import json
 import os
 import time
-from typing import Callable, Literal
+from typing import Any, Callable, Literal
 import zlib
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
@@ -29,16 +29,58 @@ class Variation(BaseModel):
     obstacle_scale: float | None = Field(default=None, gt=0, le=10)
     push_n: float | None = Field(default=None, gt=0, le=1000)
     seed: int | None = Field(default=None, ge=0)
+    # Single-change experiments (Prove why) and design changes (Make it pass).
+    remove_obstacle: str | None = Field(default=None, pattern=r"^obs\d+_[a-z]+$")
+    no_push: bool | None = None
+    speed_scale: float | None = Field(default=None, gt=0, le=2)
+    face_uphill: bool | None = None
+    flatten_terrain: bool | None = None
+    robot: dict[str, Any] | None = None
+    robot_id: str | None = None      # robot-level knobs apply to this robot only (default: every robot)
+
+
+GEOMETRY_KNOBS = ("slope_deg", "obstacle_scale", "seed", "remove_obstacle", "flatten_terrain", "robot")
+
+
+def obstacle_entry_index(spec: SceneSpec, name: str) -> int:
+    """The spec.obstacles entry behind a placed obstacle name such as "obs1_step" (same expansion as the course
+    planner: a rock/boulder/log field is one slot; other kinds repeat once per count)."""
+    slot = int(name.removeprefix("obs").split("_", 1)[0])
+    seen = 0
+    for index, obstacle in enumerate(spec.obstacles):
+        field = obstacle.kind in ("rock", "boulder", "log") and obstacle.placement != "scattered"
+        seen += 1 if field else obstacle.count
+        if slot < seen:
+            return index
+    raise ValueError(f"No obstacle named {name} in this scene.")
+
+
+def _target_entries(spec: SceneSpec, robot_id: str | None) -> list:
+    entries = [entry for entry in spec.robots if robot_id is None or entry.id == robot_id]
+    if not entries:
+        raise ValueError(f"Unknown robot id: {robot_id}")
+    return entries
+
+
+def _update_robots(spec: SceneSpec, robot_id: str | None, change) -> None:
+    """Apply change(robot) -> robot to the targeted entries, keeping the legacy single robot in step."""
+    for entry in _target_entries(spec, robot_id):
+        entry.robot = change(entry.robot)
+        if spec.robot is not None and entry is spec.robots[0]:
+            spec.robot = entry.robot.model_copy(deep=True)
 
 
 def _validate_variation(base_spec: SceneSpec, raw: dict) -> tuple[Variation, SceneSpec, dict]:
     variation = Variation.model_validate(raw)
     knobs = variation.model_dump(exclude={"label"}, exclude_unset=True)
-    if not knobs:
+    target = knobs.get("robot_id")
+    if not set(knobs) - {"robot_id"}:
         raise ValueError("A variation must change at least one condition.")
     spec = base_spec.model_copy(deep=True)
     if spec.domain != "robot_terrain" or spec.robot is None:
         raise ValueError("Stress tests currently support robot scenes only.")
+    if target is not None:
+        _target_entries(spec, target)
     if "surface" in knobs:
         spec.environment.surface = knobs["surface"]
         spec.environment.friction = None
@@ -66,14 +108,84 @@ def _validate_variation(base_spec: SceneSpec, raw: dict) -> tuple[Variation, Sce
         spec.terrain.seed = knobs["seed"]
     if "push_n" in knobs:
         spec.disturbance = Disturbance(push_n=knobs["push_n"])
+    if knobs.get("no_push"):
+        if spec.disturbance is None:
+            raise ValueError("no_push requires a push in the scene.")
+        spec.disturbance = None
+    if "remove_obstacle" in knobs:
+        index = obstacle_entry_index(spec, knobs["remove_obstacle"])
+        obstacle = spec.obstacles[index]
+        field = obstacle.kind in ("rock", "boulder", "log") and obstacle.placement != "scattered"
+        if obstacle.count > 1 and not field:
+            obstacle.count -= 1
+        else:
+            del spec.obstacles[index]
+    if knobs.get("flatten_terrain"):
+        if spec.terrain is None or spec.terrain.kind not in ("hills", "rocky", "craters"):
+            raise ValueError("flatten_terrain applies to generated hills, rocky or crater terrain.")
+        spec.terrain.kind = "flat"
+    if "speed_scale" in knobs:
+        scale = knobs["speed_scale"]
+
+        def slower(robot):
+            if robot.kind == "rover":
+                return robot.model_copy(update={"drive_speed": robot.drive_speed * scale})
+            if robot.kind == "walker":
+                return robot.model_copy(update={"gait_freq_hz": min(max(robot.gait_freq_hz * scale, 0.8), 3.0)})
+            return robot.model_copy(update={"command_speed_m_s": min(max(robot.command_speed_m_s * scale, 0.1), 1.0)})
+
+        _update_robots(spec, target, slower)
+    if "robot" in knobs:
+        from .spec import Robot
+
+        changes = knobs["robot"]
+        not_allowed = (set(changes) - set(Robot.model_fields)) | ({"kind", "robot_id"} & set(changes))
+        if not_allowed:
+            raise ValueError(f"Design changes must be robot settings; not allowed: {', '.join(sorted(not_allowed))}")
+        _update_robots(spec, target, lambda robot: Robot.model_validate({**robot.model_dump(), **changes}))
+    if knobs.get("face_uphill"):
+        _face_uphill(spec, target)
     spec.assumptions = []
     spec.fill_defaults()
     changes = {key: value for key, value in knobs.items()}
     return variation, spec, changes
 
 
+def _face_uphill(spec: SceneSpec, robot_id: str | None) -> None:
+    """Point the robot straight up a slope (uphill is +x); a goal moves to straight uphill at the same distance."""
+    import math
+
+    from .backends.mujoco_backend import default_start, make_heights, place_xy
+
+    if spec.terrain is None or spec.terrain.kind != "slope":
+        raise ValueError("face_uphill applies to slope terrain.")
+    heights = None
+    for entry in _target_entries(spec, robot_id):
+        if entry.start_place is not None:
+            heights = heights if heights is not None else make_heights(spec)[0]
+            start = place_xy(heights, spec.terrain.size_m, entry.start_place)
+        else:
+            start = tuple(entry.start_xy) if entry.start_xy is not None else default_start(spec.terrain.size_m)
+        if entry.goal_xy is not None or entry.goal_place is not None:
+            if entry.goal_xy is not None:
+                goal = entry.goal_xy
+            else:
+                heights = heights if heights is not None else make_heights(spec)[0]
+                goal = place_xy(heights, spec.terrain.size_m, entry.goal_place)
+            distance = math.dist(start, goal)
+            limit = spec.terrain.size_m / 2 * 0.9
+            entry.goal_xy, entry.goal_place = [round(min(start[0] + distance, limit), 2), round(start[1], 2)], None
+        entry.start_xy, entry.start_place, entry.start_heading_deg = [round(start[0], 2), round(start[1], 2)], None, 0.0
+    if spec.mission is not None and spec.robots:
+        first = spec.robots[0]
+        spec.mission.start_xy, spec.mission.start_place = first.start_xy, None
+        spec.mission.start_heading_deg = first.start_heading_deg
+        if first.goal_xy is not None:
+            spec.mission.goal_xy, spec.mission.goal_place = first.goal_xy, None
+
+
 def _result_error(run_id: int, label: str, changes: dict, message: str) -> dict:
-    geometry_changed = any(key in changes for key in ("slope_deg", "obstacle_scale", "seed"))
+    geometry_changed = any(key in changes for key in GEOMETRY_KNOBS)
     return {
         "id": f"run-{run_id}",
         "label": label,
@@ -143,7 +255,7 @@ def _run_worker(run_id: int, label: str, base_spec_json: str, raw_variation: dic
             raise ValueError("Stress tests currently support robot scenes only.")
         sim = agents.route(spec)
         build = sim.build(spec)
-        ghost_allowed = not any(key in changes for key in ("slope_deg", "obstacle_scale", "seed"))
+        ghost_allowed = not any(key in changes for key in GEOMETRY_KNOBS)
         ghost_ids, chassis_index = _robot_geom_ids(build.code) if ghost_allowed else ([], -1)
         ghost_frames = []
         frame_number = 0
@@ -194,8 +306,10 @@ def run_batch(
     variations: list[dict],
     on_result: Callable[[dict], None] | None = None,
     timeout: float = RUN_TIMEOUT_SECONDS,
+    baseline: bool = True,
 ) -> list[dict]:
-    """Run an unchanged baseline and each valid variation in separate worker processes.
+    """Run an unchanged baseline (unless ``baseline`` is False) and each valid variation in separate
+    worker processes.
 
     Results are returned in baseline/input order and also sent to ``on_result`` as
     workers finish. Invalid variations become error rows without aborting the batch.
@@ -228,11 +342,11 @@ def run_batch(
 
     try:
         worker_count = min(
-            len(raw_variations) + 1,
+            max(len(raw_variations) + int(baseline), 1),
             max(1, (os.cpu_count() or 1) - 1),
         )
         executor = ProcessPoolExecutor(max_workers=worker_count)
-        jobs = [(0, baseline_label, None)]
+        jobs = [(0, baseline_label, None)] if baseline else []
         for run_id, raw in enumerate(raw_variations, start=1):
             label = raw.get("label") if isinstance(raw, dict) else None
             changes = {key: value for key, value in raw.items() if key != "label"} if isinstance(raw, dict) else {}
