@@ -1,6 +1,5 @@
 """Validated tools that let the Director operate on one mutable world draft."""
 
-import json
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from typing import Any, Literal
@@ -561,24 +560,6 @@ TOOL_FUNCTIONS = {
     "explain": explain,
 }
 
-TOOL_ARGUMENT_MODELS: dict[str, type[BaseModel] | None] = {
-    "set_world": SetWorldArgs,
-    "spawn_robot": SpawnRobotArgs,
-    "remove_robot": RemoveRobotArgs,
-    "list_library": None,
-    "add_obstacles": AddObstaclesArgs,
-    "clear_obstacles": None,
-    "set_goal": SetGoalArgs,
-    "set_start": SetGoalArgs,
-    "build_and_check": None,
-    "run": None,
-    "compare": CompareArgs,
-    "build_custom": BuildCustomArgs,
-    "ask_user": AskUserArgs,
-    "explain": ExplainArgs,
-    "stress_test": StressTestArgs,
-}
-
 try:
     from . import batch as _batch
 except ImportError:
@@ -592,39 +573,3 @@ def invoke_tool(world: World, name: str, args: dict[str, Any]) -> ToolResult:
     if function is None:
         raise ValueError(f"Unknown tool: {name}")
     return function(world, args)
-
-
-def tool_catalog() -> dict[str, str]:
-    descriptions = {
-        "set_world": "Choose a registered body/surface/terrain preset and physical terrain settings.",
-        "spawn_robot": (
-            "Add a compatible robot. REQUIRED: provide exactly one of kind ('rover' or 'walker') "
-            "or robot_id (a registered library ID). An empty args object is invalid."
-        ),
-        "remove_robot": "Remove a robot by id, keeping at least one robot in the world.",
-        "list_library": "List registered robots, policies, and worlds.",
-        "add_obstacles": "Add validated shared obstacles; placement is computed by the simulator.",
-        "clear_obstacles": "Remove all obstacles.",
-        "set_goal": "Set a named or coordinate goal for one robot or all robots.",
-        "set_start": "Set a named or coordinate start for one robot.",
-        "build_and_check": "Build the world and return all checks, including failures.",
-        "run": "Run the checked world and return metrics and leaderboard.",
-        "compare": "Compare the same world under a list of supported condition variations.",
-        "build_custom": "Add a constrained, checker-validated MJCF body/geom fragment.",
-        "ask_user": "Pause and ask the user a question before continuing.",
-        "explain": "Explain the latest run or comparison results.",
-        **({"stress_test": "Run the registered stress-test planner and batch runner."} if "stress_test" in TOOL_FUNCTIONS else {}),
-    }
-    catalog = {}
-    for name in TOOL_FUNCTIONS:
-        description = descriptions[name]
-        argument_model = TOOL_ARGUMENT_MODELS.get(name)
-        schema = (
-            argument_model.model_json_schema()
-            if argument_model is not None
-            else {"type": "object", "properties": {}, "additionalProperties": False}
-        )
-        if name == "spawn_robot":
-            description += " Schema constraint: kind XOR robot_id; provide kind='rover' for a standard rover."
-        catalog[name] = f"{description}\nArguments JSON Schema: {json.dumps(schema, separators=(',', ':'))}"
-    return catalog

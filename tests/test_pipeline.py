@@ -653,6 +653,13 @@ def test_director_tools_validate_and_update_world():
     assert world.build is not None and world.simulator is not None
 
 
+def test_no_tool_loop_leftovers():
+    from simgate import director, tools
+
+    assert "loop" not in director.__doc__.lower()
+    assert not hasattr(tools, "tool_catalog") and not hasattr(tools, "TOOL_ARGUMENT_MODELS")
+
+
 def test_mock_director_turns_race_into_ordered_tool_calls():
     import asyncio
 

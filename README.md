@@ -256,7 +256,7 @@ Without a key, it runs in mock mode.
 
 ### 11. Tests
 
-`python tests/test_pipeline.py` runs 51 offline tests. The optional real-terrain integration test skips when
+`python tests/test_pipeline.py` runs 52 offline tests. The optional real-terrain integration test skips when
 `rasterio` is unavailable.
 
 | Test | Checks that |
@@ -280,6 +280,7 @@ Without a key, it runs in mock mode.
 | `model_edit_plans_are_typed_and_checked_against_the_scene` | Model edits are typed and dry-run against the scene: a slope angle on hills becomes a slope, a no-op edit gets the one retry, "steeper" adds 10° |
 | `template_repair_uses_registered_physics_presets` | Safe repairs restore registered gravity, friction and slope values |
 | `director_tools_validate_and_update_world` | Tools validate inputs and update the draft world |
+| `no_tool_loop_leftovers` | The removed one-tool-per-turn loop leaves no docstring or tool-catalog code behind |
 | `mock_director_turns_race_into_ordered_tool_calls` | Offline planning creates a mixed race and asks before running |
 | `build_custom_retries_and_emits_attempt_steps` | A rejected custom fragment is corrected and both attempts appear in the step tree |
 | `plan_summaries_are_scene_names` | The planner is asked for a short scene name as summary (used as the title), and the rules planner's summaries are scene names too |

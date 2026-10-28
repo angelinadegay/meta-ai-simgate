@@ -1,4 +1,4 @@
-"""Tool-using Director loop for constructing and operating simulation worlds."""
+"""The Director: one validated plan per request, executed by fixed workflows in code."""
 
 import asyncio
 import json
