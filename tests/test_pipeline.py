@@ -596,9 +596,11 @@ def test_model_edit_plans_are_typed_and_checked_against_the_scene():
         assert plan.changes.world.body == "moon" and plan.changes.title == "Rover on Moon hills"
 
         calls.clear()
-        scripted(['{"workflow":"edit","summary":"Steeper.","changes":{"world":{"terrain_kind":"slope","slope_deg":35}}}'])
+        scripted(['{"workflow":"edit","summary":"Rover on a 35° slope","changes":'
+                  '{"world":{"terrain_kind":"slope","slope_deg":35},"title":"Rover on a 35° slope"}}'])
         plan = Director().plan("make the slope steeper", current)
         assert plan.changes.world.slope_deg == 10  # no number given: 10° steeper than the hills' 0°
+        assert plan.changes.title is None  # the model's title named its own angle
     finally:
         config.MOCK_MODE, llm.chat = original_mock, original_chat
 

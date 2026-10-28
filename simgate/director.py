@@ -462,7 +462,10 @@ def _check_edit(plan: Plan, text: str, world_state: World | SceneSpec | dict[str
         terrain = current.terrain
         base = terrain.slope_deg if terrain is not None and terrain.kind == "slope" else 0.0
         world = plan.changes.world.model_dump(exclude_none=True) if plan.changes.world else {}
-        world["slope_deg"] = min(base + 10.0, presets.SLOPE_RANGE_DEG[1])
+        slope = min(base + 10.0, presets.SLOPE_RANGE_DEG[1])
+        if world.get("slope_deg") not in (None, slope):
+            plan.changes.title = None   # a title the model wrote may name the angle it chose
+        world["slope_deg"] = slope
         if world.get("terrain_kind") not in (None, "slope"):
             del world["terrain_kind"]
         plan.changes.world = WorldPlan.model_validate(world)
