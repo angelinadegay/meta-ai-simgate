@@ -485,6 +485,7 @@ def _experiment(spec: SceneSpec, items: list[dict], base: dict, robot_id: str | 
         item["key_numbers"] = key_numbers(base, after)
         item["improvement"] = improvement(base, after)
         item["change"] = describe_change(item["intervention"])
+        item["numbers_text"] = describe_numbers(item["key_numbers"])
     report["hypotheses"] += items
     _emit(on_step, "Batch runner", "experiments", "Experiments.",
           "; ".join(f"{h['cause']}: {h['verdict']} ({describe_numbers(h['key_numbers'])})" for h in items))

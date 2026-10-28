@@ -27,6 +27,7 @@ class Session:
         self.last_summary: dict | None = None
         self.last_diagnosis: dict | None = None
         self.last_redesign: dict | None = None
+        self._view_shows_other_scene = False   # set after "Show runs" loads the winning design's scene
 
     async def agent(self, name: str, status: str, message: str) -> None:
         await self.emit({"type": "agent", "agent": name, "status": status, "message": message})
@@ -110,8 +111,64 @@ class Session:
         await self.emit({
             "type": "question",
             "message": message,
+            "chips": self._next_chips(world.report),
             "stress_test_available": spec.domain == "robot_terrain",
         })
+
+    @staticmethod
+    def _next_chips(report: dict | None) -> list[str] | None:
+        """After a diagnosis or redesign, offer the next step instead of "Run"."""
+        if report is None:
+            return None
+        if report["type"] == "diagnosis":
+            return ["Make it pass"] if report.get("reproduced") else ["Run again"]
+        return ["Use this design"] if report.get("winner") else ["Run again"]
+
+    async def show_design(self) -> None:
+        """Replay the last redesign's winning design with streamed frames, without applying it."""
+        try:
+            winner = (self.last_redesign or {}).get("winner")
+            if self.spec is None or winner is None or self.last_summary is None:
+                await self.emit({"type": "question", "message": "There's no passing design to show yet. Ask me to make it pass first."})
+                return
+            from .batch import _validate_variation
+            from .diagnose import pin_task
+
+            variation = {"robot": winner["changes"]}
+            if self.last_redesign.get("robot_id"):
+                variation["robot_id"] = self.last_redesign["robot_id"]
+            _, spec, _ = _validate_variation(pin_task(self.spec, self.last_summary), variation)
+            sim = agents.route(spec)
+            build = await asyncio.to_thread(sim.build, spec)
+            await self.emit({"type": "scene", "scene": build.scene, "code": build.code, "language": build.language})
+            self._view_shows_other_scene = True
+            await self.agent("Simulator", "working", f"Replaying the winning design: {winner['description']}…")
+            await self._stream(spec, sim, build)
+            await self.agent("Simulator", "done", "Replay finished; the scene itself is unchanged.")
+            await self.emit({"type": "explanation",
+                             "message": f"That was the winning design ({winner['description']}), not applied yet. "
+                                        "Say \"use this design\" to apply it."})
+        except Exception as e:  # noqa: BLE001
+            await self.emit({"type": "error", "message": f"{type(e).__name__}: {e}"})
+
+    async def _stream(self, spec: SceneSpec, sim: Simulator, build: BuildResult) -> dict:
+        """Run a scene, streaming run_start, frames and metrics to the browser; returns the metrics."""
+        await self.emit({"type": "run_start", "duration_s": spec.duration_s})
+        queue: asyncio.Queue = asyncio.Queue()
+        loop = asyncio.get_running_loop()
+
+        def produce() -> None:
+            for chunk in sim.run(spec, build):
+                loop.call_soon_threadsafe(queue.put_nowait, chunk)
+            loop.call_soon_threadsafe(queue.put_nowait, None)
+
+        task = loop.run_in_executor(None, produce)
+        while (chunk := await queue.get()) is not None:
+            await self.emit({"type": "frames", "frames": chunk})
+        await task
+        metrics = sim.summary()
+        await self.emit({"type": "metrics", "metrics": metrics})
+        return metrics
 
     def _forget_runs(self) -> None:
         self.last_summary = self.last_diagnosis = self.last_redesign = None
@@ -314,24 +371,12 @@ class Session:
 
     async def run(self) -> None:
         assert self.spec and self.sim and self.build
+        if self._view_shows_other_scene:   # "Show runs" left another design in the view
+            await self.emit({"type": "scene", "scene": self.build.scene, "code": self.build.code, "language": self.build.language})
+            self._view_shows_other_scene = False
         await self.agent("Simulator", "working", f"Running {self.spec.duration_s:.0f} s in {self.sim.name}…")
-        await self.emit({"type": "run_start", "duration_s": self.spec.duration_s})
-        queue: asyncio.Queue = asyncio.Queue()
-        loop = asyncio.get_running_loop()
-
-        def produce() -> None:
-            for chunk in self.sim.run(self.spec, self.build):
-                loop.call_soon_threadsafe(queue.put_nowait, chunk)
-            loop.call_soon_threadsafe(queue.put_nowait, None)
-
-        task = loop.run_in_executor(None, produce)
-        while (chunk := await queue.get()) is not None:
-            await self.emit({"type": "frames", "frames": chunk})
-        await task
-
-        metrics = self.sim.summary()
+        metrics = await self._stream(self.spec, self.sim, self.build)
         self.last_summary, self.last_diagnosis, self.last_redesign = metrics, None, None
-        await self.emit({"type": "metrics", "metrics": metrics})
         await self.agent("Simulator", "done", "Run finished.")
         await self.agent("Explainer", "working", "Explaining what happened…")
         text = await asyncio.to_thread(agents.explain, self.spec, metrics)

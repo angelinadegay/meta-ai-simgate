@@ -419,6 +419,8 @@ def redesign(spec: SceneSpec, summary: dict, constraints: str | None = None, dia
         return report
     world = pin_task(spec, summary)
     base = diagnosis.get("reproduced_metrics") or original_metrics
+    report["before"] = (f"{base.get('outcome') or 'failed'}" + (f", {base['final_distance_m']:.1f} m from the goal"
+                        if base.get("final_distance_m") is not None else ""))
     problem = _problem(base, diagnosis)
     tried: set[str] = set()
     passing: list[dict] = []
@@ -514,9 +516,18 @@ def redesign(spec: SceneSpec, summary: dict, constraints: str | None = None, dia
 
 
 def _winner_fields(candidate: dict, space: DesignSpace) -> dict:
+    original = space.original()
+    rows = [{"knob": NAMES.get(name, name), "before": _shown(name, original.get(name)), "after": _shown(name, value)}
+            for name, value in candidate["changes"].items()]
     return {"changes": candidate["changes"], "summary": candidate["result"], "numbers": candidate["numbers"],
-            "distance": candidate["distance"], "label": candidate.get("label"),
-            "description": describe_design(candidate["changes"], space.original())}
+            "distance": candidate["distance"], "label": candidate.get("label"), "rows": rows,
+            "description": describe_design(candidate["changes"], original)}
+
+
+def _shown(name: str, value: Any) -> str:
+    if isinstance(value, float):
+        return f"{value:g}{UNITS.get(name, '')}"
+    return str(value)
 
 
 def _pick_winner(world: SceneSpec, space: DesignSpace, passing: list[dict], robot_id: str | None,

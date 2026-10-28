@@ -80,6 +80,20 @@
   .kv span:nth-child(odd) { color: var(--muted); }
   #reportRows { display: flex; flex-direction: column; gap: 4px; max-height: 34vh; overflow-y: auto; }
   #leaderboardRows { display: flex; flex-direction: column; gap: 4px; max-height: 24vh; overflow-y: auto; }
+  #topright { max-height: calc(100% - 100px); overflow-y: auto; }
+  .hyp-row { display: grid; grid-template-columns: 1fr auto; gap: 0 8px; padding: 6px 7px; margin-bottom: 4px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel-2); }
+  .hyp-row small { grid-column: 1 / -1; color: var(--muted); }
+  .hyp-row em { color: var(--muted); font-style: normal; font-size: 11px; }
+  .verdict { align-self: start; padding: 1px 7px; border-radius: 99px; font-size: 11px; font-weight: 600; white-space: nowrap; background: var(--panel-2); color: var(--muted); border: 1px solid var(--line); }
+  .verdict.confirmed { background: rgba(52,211,153,.15); color: var(--ok); border-color: transparent; }
+  .verdict.partly { background: rgba(251,191,36,.15); color: var(--warn); border-color: transparent; }
+  .analysis-lines { margin: 6px 0 0; color: var(--muted); font-size: 11.5px; }
+  .analysis-text { margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--line); }
+  .design-table { width: 100%; border-collapse: collapse; margin-bottom: 6px; }
+  .design-table th { text-align: left; color: var(--muted); font-weight: 500; font-size: 11px; }
+  .design-table td, .design-table th { padding: 2px 4px; border-bottom: 1px solid var(--line); }
+  .card-actions { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
+  .card-actions[hidden] { display: none; }
   .leader-row { display: grid; grid-template-columns: 19px 10px 1fr; gap: 0 7px; width: 100%; padding: 6px 7px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel-2); color: var(--text); font: inherit; text-align: left; cursor: pointer; }
   .leader-row .rank { grid-row: span 2; color: var(--muted); }
   .leader-row .dot { width: 8px; height: 8px; border-radius: 50%; align-self: center; grid-row: span 2; }
@@ -159,10 +173,13 @@
     <div id="pickHint" hidden></div>
     <pre class="card" id="code"></pre>
     <div class="hud" id="topright">
-      <div class="card" id="agentsCard"><h3>Agents</h3><svg id="agentGraph" viewBox="0 0 360 160" aria-label="Live agent graph"></svg></div>
+      <div class="card" id="agentsCard"><h3>Agents</h3><svg id="agentGraph" viewBox="0 0 360 235" aria-label="Live agent graph"></svg></div>
       <div class="card" id="checksCard" hidden><h3>Physics checks</h3><div id="checks"></div></div>
       <div class="card" id="metricsCard" hidden><h3>Results</h3><div id="badge" hidden></div><div class="kv" id="metrics"></div></div>
       <div class="card" id="leaderboardCard" hidden><h3>Leaderboard</h3><div id="leaderboardRows"></div></div>
+      <div class="card" id="diagnosisCard" hidden><h3>Diagnosis</h3><div id="diagnosisRows"></div><div class="analysis-lines" id="diagnosisDecisions"></div><div class="analysis-text" id="diagnosisConclusion"></div></div>
+      <div class="card" id="redesignCard" hidden><h3>Redesign</h3><div id="redesignBody"></div>
+        <div class="card-actions" id="redesignActions"><button type="button" class="chip primary" id="useDesign">Use this design</button><button type="button" class="chip" id="showRuns">Show runs</button></div></div>
       <div class="card" id="reportCard" hidden><h3>Report card</h3><div id="reportCounts"></div><div id="reportRows"></div><div id="stressExplanation"></div></div>
     </div>
     <div class="hud" id="player" hidden>
@@ -210,15 +227,31 @@ const stepRows = new Map(), agentNodes = new Map(), countedSteps = new Set();
 const agentPositions = {
   Director: [55, 38], Builder: [175, 38], Checker: [295, 38],
   Simulator: [295, 115], Explainer: [175, 115], "Stress planner": [55, 115],
+  Designer: [55, 190], "Batch runner": [175, 190],
 };
+const HIDDEN_UNTIL_USED = new Set(["Stress planner", "Designer", "Batch runner"]);
+function edgePath([x1, y1], [x2, y2]) {
+  if (x1 === x2) return `M${x1},${y1 + (y2 > y1 ? 17 : -17)} L${x2},${y2 + (y2 > y1 ? -17 : 17)}`;
+  if (y1 === y2) return `M${x1 + (x2 > x1 ? 42 : -42)},${y1} L${x2 + (x2 > x1 ? -42 : 42)},${y2}`;
+  return `M${x1 + 40},${y1 + 4} L${x2 - 40},${y2 - 4}`;
+}
+// An edge shows only when both of its agents are on the graph.
+function updateEdges() {
+  for (const edge of $("agentGraph").querySelectorAll(".agent-edge")) {
+    const visible = [edge.dataset.from, edge.dataset.to].every((name) => agentNodes.get(name)?.group.style.display !== "none");
+    edge.style.display = visible ? "" : "none";
+  }
+  const thirdRow = ["Designer", "Batch runner"].some((name) => agentNodes.get(name)?.group.style.display !== "none");
+  $("agentGraph").setAttribute("viewBox", `0 0 360 ${thirdRow ? 235 : 160}`);   // grow only when that row is used
+}
 function initAgentGraph() {
   const svg = $("agentGraph"), ns = "http://www.w3.org/2000/svg";
   svg.replaceChildren();
-  for (const [from, to] of [["Director", "Builder"], ["Builder", "Checker"], ["Checker", "Simulator"], ["Simulator", "Explainer"], ["Director", "Stress planner"]]) {
-    const [x1, y1] = agentPositions[from], [x2, y2] = agentPositions[to];
+  for (const [from, to] of [["Director", "Builder"], ["Builder", "Checker"], ["Checker", "Simulator"], ["Simulator", "Explainer"],
+    ["Director", "Stress planner"], ["Explainer", "Batch runner"], ["Designer", "Batch runner"]]) {
     const edge = document.createElementNS(ns, "path");
-    edge.setAttribute("d", `M${x1 + 40},${y1 + 4} L${x2 - 40},${y2 - 4}`);
-    edge.classList.add("agent-edge"); edge.dataset.to = to; svg.appendChild(edge);
+    edge.setAttribute("d", edgePath(agentPositions[from], agentPositions[to]));
+    edge.classList.add("agent-edge"); edge.dataset.from = from; edge.dataset.to = to; svg.appendChild(edge);
   }
   for (const [name, [x, y]] of Object.entries(agentPositions)) {
     const group = document.createElementNS(ns, "g"); group.classList.add("agent-node");
@@ -226,9 +259,10 @@ function initAgentGraph() {
     const title = document.createElementNS(ns, "text"); title.setAttribute("x", x); title.setAttribute("y", y - 3); title.textContent = name;
     const status = document.createElementNS(ns, "text"); status.setAttribute("x", x); status.setAttribute("y", y + 10); status.classList.add("agent-model"); status.textContent = "idle · 0";
     group.append(rect, title, status);
-    if (name === "Stress planner") group.style.display = "none";
+    if (HIDDEN_UNTIL_USED.has(name)) group.style.display = "none";
     svg.appendChild(group); agentNodes.set(name, { group, status });
   }
+  updateEdges();
 }
 initAgentGraph();
 function renderStep(ev) {
@@ -249,7 +283,7 @@ function renderStep(ev) {
   ].filter(Boolean).join("\n");
   const node = agentNodes.get(ev.agent);
   if (node) {
-    node.group.style.display = "";
+    if (node.group.style.display === "none") { node.group.style.display = ""; updateEdges(); }
     if (!countedSteps.has(ev.id)) {
       countedSteps.add(ev.id);
       const current = Number(node.status.dataset.count || 0) + 1;
@@ -380,13 +414,16 @@ ws.onmessage = (m) => {
     case "checks": renderChecks(ev.checks); break;
     case "question": {
       const d = addMsg(ev.message); const q = document.createElement("div"); q.className = "quick";
+      if (ev.chips) { chips(q, ev.chips, null); d.appendChild(q); break; }   // the next step after an analysis
       const label = ev.message.startsWith("This scene already ran") ? "Run again"
         : ev.message.startsWith("This scene still fails") ? "Run anyway" : "Run";
       chips(q, ev.stress_test_available ? [label, "Stress test"] : [label], label); d.appendChild(q); break;
     }
     case "run_start": batchIsActive = false; $("reportCard").hidden = true; $("leaderboardCard").hidden = true; disableRunButtons(); startRun(); break;
     case "frames": for (const f of ev.frames) { frames.push(f); addTrailPoint(f); } $("scrub").max = frames.length - 1; break;
-    case "metrics": renderMetrics(ev.metrics); streaming = false; break;
+    case "metrics": renderMetrics(ev.metrics); streaming = false; if (!batchIsActive) lastRunFailed = runFailed(ev.metrics); break;
+    case "diagnosis": renderDiagnosis(ev.report); break;
+    case "redesign": renderRedesign(ev.report); break;
     case "batch_start":
       batchIsActive = true; batchResults.clear(); batchDecodeTasks = []; clearGhosts();
       frames = []; idx = 0; streaming = false; $("player").hidden = true;
@@ -398,14 +435,20 @@ ws.onmessage = (m) => {
       renderReport(ev);
       Promise.all([...batchDecodeTasks]).then(() => setupGhostView(ev));
       break;
-    case "explanation":
-      addMsg(ev.message);
+    case "explanation": {
+      const d = addMsg(ev.message);
       if (batchIsActive) $("stressExplanation").textContent = ev.message;
+      if (lastRunFailed) {   // after a failed run, offer to find out why or to make it pass
+        const q = document.createElement("div"); q.className = "quick";
+        chips(q, ["Why did it fail?", "Make it pass"], null); d.appendChild(q); lastRunFailed = false;
+      }
       break;
+    }
     case "error": addMsg(ev.message, "err"); break;
     case "reset":
       log.replaceChildren(); stepRows.clear(); countedSteps.clear(); agentNodes.clear(); initAgentGraph();
       current = null; frames = []; $("empty").hidden = false; $("checksCard").hidden = true; $("metricsCard").hidden = true;
+      $("diagnosisCard").hidden = true; $("redesignCard").hidden = true;
       break;
     case "library_selected":
       $("libraryStatus").textContent = `Selected ${ev.robot} · ${ev.policy} · ${ev.world}.`;
@@ -414,6 +457,58 @@ ws.onmessage = (m) => {
   }
 };
 ws.onclose = () => { $("mode").textContent = "Disconnected · reload the page"; };
+
+// ── Prove why / Make it pass ──
+let lastRunFailed = false;
+function runFailed(m) {
+  if (m.robots) return Object.values(m.robots).some((r) => (r.goal_xy ? !r.goal_reached : r.flipped || (r.forward_progress_m ?? 0) < 1));
+  return "goal_reached" in m ? !m.goal_reached : Boolean(m.flipped) || (m.forward_progress_m ?? 0) < 1;
+}
+const VERDICTS = { confirmed: "✓ confirmed", partly: "~ partly", "ruled out": "✕ ruled out", "not tested": "– not tested" };
+function textEl(tag, text, cls) { const el = document.createElement(tag); el.textContent = text; if (cls) el.className = cls; return el; }
+function renderDiagnosis(r) {
+  $("diagnosisCard").hidden = false; $("redesignCard").hidden = true;
+  $("diagnosisRows").replaceChildren(); $("diagnosisDecisions").replaceChildren();
+  for (const h of r.hypotheses || []) {
+    const row = document.createElement("div"); row.className = "hyp-row";
+    const cause = textEl("strong", h.cause);
+    if (h.control) cause.append(" ", textEl("em", "control"));
+    if (h.follow_up) cause.append(" ", textEl("em", "follow-up"));
+    row.append(cause, textEl("span", VERDICTS[h.verdict] || h.verdict, `verdict ${h.verdict}`),
+      textEl("small", [h.change, h.numbers_text].filter(Boolean).join(" · ")));
+    $("diagnosisRows").appendChild(row);
+  }
+  for (const d of r.decisions || []) $("diagnosisDecisions").appendChild(textEl("div", `${d.agent}: ${d.reason}`));
+  $("diagnosisConclusion").textContent = r.conclusion || "";
+}
+function renderRedesign(r) {
+  $("redesignCard").hidden = false; $("diagnosisCard").hidden = true;
+  const body = $("redesignBody"); body.replaceChildren();
+  const w = r.winner;
+  if (w) {
+    const table = document.createElement("table"); table.className = "design-table";
+    const head = document.createElement("tr"); head.append(textEl("th", "Change"), textEl("th", "Before"), textEl("th", "After"));
+    table.appendChild(head);
+    for (const row of w.rows || []) {
+      const tr = document.createElement("tr"); tr.append(textEl("td", row.knob), textEl("td", row.before), textEl("td", row.after));
+      table.appendChild(tr);
+    }
+    body.append(table, textEl("div", `Result: ${r.before || "failed"} → ${w.summary}`));
+    if (w.robustness) body.appendChild(textEl("div", `Robustness: passes ${w.robustness.passed}/${w.robustness.total}`
+      + (w.robustness.failed.length ? ` (failed: ${w.robustness.failed.join(", ")})` : "")));
+    if (w.label) body.appendChild(textEl("div", `Untested gait: outside the tuned 2.0 Hz / 15° settings.`));
+  } else {
+    body.appendChild(textEl("div", r.message || "No design passed."));
+  }
+  body.appendChild(textEl("div", `Runs tried: ${r.tried_count}${r.robustness_runs ? ` + ${r.robustness_runs} robustness checks` : ""}`));
+  const lines = document.createElement("div"); lines.className = "analysis-lines";
+  for (const round of r.rounds || []) lines.appendChild(textEl("div", `Round ${round.round} · ${round.strategy}: ${round.reason}`));
+  for (const note of r.notes || []) lines.appendChild(textEl("div", note));
+  body.appendChild(lines);
+  $("redesignActions").hidden = !w;
+}
+$("useDesign").onclick = () => send("use this design");
+$("showRuns").onclick = () => { addMsg("Show runs", "user"); ws.send(JSON.stringify({ type: "show_design" })); };
 
 function renderChecks(checks) {
   $("checksCard").hidden = false;

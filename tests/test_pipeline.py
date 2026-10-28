@@ -1665,6 +1665,55 @@ def test_an_answer_keeps_the_built_scene():
     assert any(event["type"] == "run_start" for event in events)
 
 
+def test_show_runs_replays_the_winner_without_applying_it():
+    import asyncio
+
+    from simgate.orchestrator import Session
+
+    async def flow():
+        events = []
+
+        async def emit(event):
+            events.append(event)
+
+        session = Session(emit)
+        await session.handle("Rover obstacle course with a big step")
+        await session.handle("run")
+        spec, build = session.spec.model_copy(deep=True), session.build
+        session.last_redesign = {"type": "redesign", "robot_id": "r1",
+                                 "winner": {"changes": {"wheels": 6}, "description": "wheels 4 → 6"}}
+        start = len(events)
+        await session.show_design()
+        replay = events[start:]
+        assert session.spec == spec and session.build is build   # shown, not applied
+        start = len(events)
+        await session.handle("run again")
+        return replay, events[start:]
+
+    replay, rerun = asyncio.run(flow())
+    types = [event["type"] for event in replay]
+    assert types.index("scene") < types.index("run_start") < types.index("frames") < types.index("metrics")
+    scene = next(event["scene"] for event in replay if event["type"] == "scene")
+    assert next(e["metrics"] for e in replay if e["type"] == "metrics")["goal_reached"]
+    assert "wheels 4 → 6" in replay[-1]["message"] and "use this design" in replay[-1]["message"]
+    rerun_types = [event["type"] for event in rerun]
+    assert rerun_types.index("scene") < rerun_types.index("run_start")   # the original scene comes back first
+    assert next(e["scene"] for e in rerun if e["type"] == "scene") != scene
+
+
+def test_browser_handles_the_analysis_events():
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parent.parent
+    page = (root / "static" / "vendor" / "index.html").read_text(encoding="utf-8")
+    for needed in ('case "diagnosis"', 'case "redesign"', 'id="diagnosisCard"', 'id="redesignCard"',
+                   '"Why did it fail?", "Make it pass"', 'send("use this design")', 'type: "show_design"',
+                   '"✓ confirmed"', '"~ partly"', '"✕ ruled out"', 'Designer: [55, 190]', '"Batch runner": [175, 190]',
+                   'if (ev.chips)'):
+        assert needed in page, needed
+    assert 'msg.get("type") == "show_design"' in (root / "server.py").read_text(encoding="utf-8")
+
+
 def test_stress_trigger_requires_robot_scene():
     import asyncio
     from unittest.mock import patch

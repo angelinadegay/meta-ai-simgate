@@ -54,6 +54,8 @@ async def ws(socket: WebSocket):
                 await emit({"type": "reset"})
             elif msg.get("type") in ("set_start", "set_goal"):
                 await session.set_point(msg["type"][4:], float(msg["x"]), float(msg["y"]))
+            elif msg.get("type") == "show_design":
+                await session.show_design()
             elif msg.get("type") == "library_select":
                 await session.select_library(msg["robot_id"], msg["policy_id"], msg["world_id"])
             elif text := (msg.get("text") or "").strip():
