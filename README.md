@@ -262,7 +262,7 @@ Without a key, it runs in mock mode.
 
 ### 11. Tests
 
-`python tests/test_pipeline.py` runs 57 offline tests. The optional real-terrain integration test skips when
+`python tests/test_pipeline.py` runs 58 offline tests. The optional real-terrain integration test skips when
 `rasterio` is unavailable.
 
 | Test | Checks that |
@@ -288,6 +288,7 @@ Without a key, it runs in mock mode.
 | `leg_and_wheel_counts_apply_only_to_their_part` | "six-legged" never sets a rover's wheels and "six-wheeled" never sets legs; multi-robot titles name each robot |
 | `model_edit_plans_are_typed_and_checked_against_the_scene` | Model edits are typed and dry-run against the scene: a slope angle on hills becomes a slope, a no-op edit gets the one retry, "steeper" adds 10° |
 | `edits_rebuild_the_scene_title` | Every edit rebuilds the title from the scene (slope angle, unusual surface, robots, course); only a name the user gives ("call it …") is kept |
+| `adding_obstacles_keeps_the_existing_terrain` | Adding obstacles to an existing scene keeps its terrain (a 10° ice slope stays one); only a new course starts flat |
 | `template_repair_uses_registered_physics_presets` | Safe repairs restore registered gravity, friction and slope values |
 | `director_tools_validate_and_update_world` | Tools validate inputs and update the draft world |
 | `no_tool_loop_leftovers` | The removed one-tool-per-turn loop leaves no docstring or tool-catalog code behind |

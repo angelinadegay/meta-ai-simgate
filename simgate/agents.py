@@ -224,7 +224,7 @@ def _mock_plan(text: str, current: SceneSpec | None = None) -> SceneSpec:
                 rb.wheels = count
         if any(w in t for w in ("hexapod", "insect", "spider")):
             rb.legs = 6
-        _mock_obstacles(spec, t)
+        _mock_obstacles(spec, t, new_scene=current is None)
         _mock_mission(spec, t)
         if "bigger wheel" in t or "larger wheel" in t:
             rb.wheel_radius = round(rb.wheel_radius * 1.5, 3)
@@ -322,8 +322,9 @@ NUMBER_WORDS = {"a": 1, "an": 1, "one": 1, "two": 2, "three": 3, "four": 4, "fiv
                 "some": 5, "few": 3, "a few": 3, "several": 6, "many": 12, "lots of": 15}
 
 
-def _mock_obstacles(spec: SceneSpec, t: str) -> None:
-    """Rule-based obstacles for MOCK mode: 'add 10 small rocks, a big step and a gap'."""
+def _mock_obstacles(spec: SceneSpec, t: str, new_scene: bool = True) -> None:
+    """Rule-based obstacles for MOCK mode: 'add 10 small rocks, a big step and a gap'.
+    A new course starts on flat ground; adding obstacles to an existing scene keeps its terrain."""
     from .spec import Obstacle
     if re.search(r"\b(?:no|remove|clear|without) (?:the )?(?:obstacles|course)", t):
         spec.obstacles = []
@@ -350,7 +351,8 @@ def _mock_obstacles(spec: SceneSpec, t: str) -> None:
                                               placement="scattered" if "scatter" in t else "path")))
             break    # one entry per kind per message
     if found:
-        if not spec.obstacles and spec.terrain.kind not in ("real",) and not any(k in t for k in ("hill", "slope", "crater", "rocky")):
+        if new_scene and not spec.obstacles and spec.terrain.kind not in ("real",) \
+                and not any(k in t for k in ("hill", "slope", "crater", "rocky")):
             spec.terrain.kind, spec.terrain.roughness = "flat", 0.0
         spec.obstacles = list(spec.obstacles) + [ob for _, ob in sorted(found, key=lambda f: f[0])]
 

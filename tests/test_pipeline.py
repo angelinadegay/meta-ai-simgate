@@ -759,6 +759,24 @@ def test_edits_rebuild_the_scene_title():
     assert world.spec.title == "4-wheel rover on ice hills terrain, Mars"
 
 
+def test_adding_obstacles_keeps_the_existing_terrain():
+    import asyncio
+
+    from simgate.orchestrator import Session
+
+    async def flow():
+        session = Session(lambda _event: asyncio.sleep(0))
+        for text in ("A rover on Mars hills", "make the slope steeper and use ice", "add a wall"):
+            await session.handle(text)
+        return session.spec
+
+    spec = asyncio.run(flow())
+    assert (spec.terrain.kind, spec.terrain.slope_deg, spec.environment.surface) == ("slope", 10, "ice")
+    assert [obstacle.kind for obstacle in spec.obstacles] == ["wall"]
+    assert spec.title == "4-wheel rover on a 10° ice slope, Mars with an obstacle course"
+    assert agents.plan("Rover obstacle course: 10 small rocks, a step, stairs and a gap").terrain.kind == "flat"
+
+
 def test_template_repair_uses_registered_physics_presets():
     from simgate import presets, workflows
     from simgate.backends.base import Check
