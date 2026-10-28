@@ -442,6 +442,7 @@ def redesign(spec: SceneSpec, summary: dict, constraints: str | None = None, dia
         else:
             strategy, reason, proposals = rule_strategy(space, report["rounds"], tried)
             raw = [(c, "") for c in proposals]
+        recorded = len(report["decisions"])
         if reply is None and not config.MOCK_MODE:
             report["decisions"].append({"agent": "Designer", "decision": "fallback",
                                         "reason": "The Designer's reply didn't validate twice; using the design rules."})
@@ -454,6 +455,9 @@ def redesign(spec: SceneSpec, summary: dict, constraints: str | None = None, dia
                 candidates.append({"changes": cleaned, "why": why})
             if len(candidates) == CANDIDATES_PER_ROUND:
                 break
+        for note in report["decisions"][recorded:]:
+            _emit(on_step, "Designer", "candidates", "Checking the proposed designs against the bounds.",
+                  f"{note['decision'].capitalize()}: {note['reason']}", "warning")
         if strategy == "stop" or not candidates:
             reason = reason if strategy == "stop" else f"{reason} No new design within the allowed ranges is left to try."
             report["decisions"].append({"agent": "Designer", "decision": "stop", "reason": reason})

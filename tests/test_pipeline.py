@@ -1330,8 +1330,10 @@ def test_diagnose_confirms_the_step_and_rules_out_low_gravity():
     assert verdicts["obstacle"] == "confirmed" and verdicts["low gravity"] == "ruled out", verdicts
     assert any(h.get("control") for h in report["hypotheses"])
     assert "Confirmed: obstacle" in report["conclusion"] and "low gravity" in report["conclusion"]
-    assert [step["agent"] for step in steps if step["status"] != "working"] == [
-        "Batch runner", "Explainer", "Batch runner", "Explainer"]
+    assert [(step["agent"], step["tool"]) for step in steps if step["status"] != "working"] == [
+        ("Batch runner", "reproduce"), ("Explainer", "hypotheses"), ("Batch runner", "experiments"),
+        ("Explainer", "decision"), ("Explainer", "conclusion")]
+    assert report["decisions"] == [{"agent": "Explainer", "decision": "conclude", "reason": "obstacle passed on its own."}]
 
 
 def test_diagnose_confirms_slipping_on_an_icy_slope():
@@ -1445,6 +1447,119 @@ def test_design_constraints_narrow_the_design_space():
     assert walker.fixed == {"legs": 6} and "mass_kg" not in walker.bounds
     g1 = DesignSpace(Robot(kind="library", robot_id="g1", policy_id="g1_walking"), None)
     assert g1.knobs == ["command_speed_m_s"]
+
+
+def test_mock_explainer_tests_more_only_when_the_best_is_partly():
+    from simgate.diagnose import rule_decision
+
+    spec = SceneSpec(domain="robot_terrain", environment=Environment(surface="ice"),
+                     terrain=Terrain(kind="slope", slope_deg=25)).fill_defaults()
+    slip = {"cause": "slipping", "intervention": {"surface": "rock"}, "verdict": "partly", "improvement": 0.5}
+    steep = {"cause": "steep ground", "intervention": {"slope_deg": 15}, "verdict": "partly", "improvement": 0.4}
+    speed = {"cause": "too fast", "intervention": {"speed_scale": 0.6}, "verdict": "ruled out", "improvement": 0.0}
+    both = rule_decision(spec, [slip, steep, speed], remaining=2)
+    assert both["decision"] == "test more" and both["next"] == [
+        {"cause": "slipping + steep ground", "intervention": {"surface": "rock", "slope_deg": 15}}]
+    one = rule_decision(spec, [slip, speed], remaining=1)
+    assert one["decision"] == "test more" and one["next"][0]["cause"] == "slipping (stronger)"
+    assert rule_decision(spec, [slip, steep], remaining=0)["decision"] == "conclude"
+    assert rule_decision(spec, [dict(slip, verdict="confirmed"), steep], remaining=2)["decision"] == "conclude"
+    assert rule_decision(spec, [dict(slip, verdict="ruled out"), speed], remaining=2)["decision"] == "conclude"
+
+
+def scripted_models(replies):
+    """A fake chat model that answers by role: the reply list for the first matching system-prompt key."""
+    calls = []
+
+    def chat(messages, model=None, temperature=0.2):
+        system = messages[0]["content"]
+        role = next(key for key in replies if key in system)
+        calls.append((role, model, messages))
+        return replies[role].pop(0)
+
+    return chat, calls
+
+
+def test_model_explainer_decisions_are_validated_bounded_and_visible():
+    import json
+
+    from simgate import config, llm
+    from simgate.diagnose import MAX_RERUNS, diagnose
+
+    spec = SceneSpec(domain="robot_terrain", environment=Environment(body="mars", surface="regolith"),
+                     terrain=Terrain(kind="flat", roughness=0), robot=Robot(kind="rover"),
+                     obstacles=[Obstacle(kind="step", height_m=0.2)]).fill_defaults()
+    summary = failed_run(spec)
+    chat, calls = scripted_models({
+        "candidate\ncauses": [json.dumps({"hypotheses": [
+            {"cause": "low gravity", "why": "gravity is 3.71 m/s²", "intervention": {"gravity": 9.81}},
+            {"cause": "wheels too small", "why": "stopped at a 0.2 m step", "intervention": {"wheel_radius": 0.3}},
+            {"cause": "step height", "why": "stuck 7.9 m short at the 0.2 m step", "intervention": {"obstacle_scale": 0.9}},
+            {"cause": "slipping", "why": "slip was 1%", "intervention": {"surface": "rock"}, "control": True}]})],
+        "deciding what to do": [
+            json.dumps({"decision": "test more", "reason": "The step only partly explains it; trying a lower step.",
+                        "next": [{"cause": "step height (stronger)", "intervention": {"obstacle_scale": 0.5}},
+                                 {"cause": "bad", "intervention": {"mass_kg": 5}}]}),
+            json.dumps({"decision": "conclude", "reason": "The lower step passed, so the evidence is enough."})],
+        "Write 3 to 5": ["The step height explains it."],
+    })
+    steps = []
+    original_mock, original_chat = config.MOCK_MODE, llm.chat
+    try:
+        config.MOCK_MODE, llm.chat = False, chat
+        report = diagnose(spec, summary, on_step=steps.append)
+    finally:
+        config.MOCK_MODE, llm.chat = original_mock, original_chat
+
+    causes = [h["cause"] for h in report["hypotheses"]]
+    assert "wheels too small" not in causes and causes[-1] == "step height (stronger)"
+    assert sum(1 for h in report["hypotheses"] if h.get("follow_up")) == 1
+    assert report["runs"] <= MAX_RERUNS and report["hypotheses"][-1]["verdict"] == "confirmed"
+    assert [role for role, _, _ in calls] == ["candidate\ncauses", "deciding what to do", "deciding what to do", "Write 3 to 5"]
+    reasons = [step["result"] for step in steps if step["status"] != "working"]
+    for decision in report["decisions"]:
+        assert any(decision["reason"] in reason for reason in reasons), decision
+    assert any("wheel_radius is not an allowed experiment" in d["reason"] for d in report["decisions"])
+    assert any("mass_kg" not in d["reason"] and d["decision"] == "dropped" and d["reason"].startswith("bad:")
+               for d in report["decisions"])
+    assert "Test more: The step only partly explains it" in " ".join(reasons)
+    assert report["conclusion"] == "The step height explains it."
+
+
+def test_model_designer_candidates_are_clamped_and_stop_ends_early():
+    import json
+
+    from simgate import config, llm
+    from simgate.diagnose import robot_metrics
+    from simgate.redesign import redesign
+
+    spec = step_course(0.15)
+    summary = failed_run(spec)
+    diagnosis = {"reproduced": True, "hypotheses": [], "reproduced_metrics": robot_metrics(summary)}
+    chat, calls = scripted_models({"You are the Designer": [
+        json.dumps({"strategy": "bigger change", "reason": "Nothing is close yet.",
+                    "candidates": [{"changes": {"drive_speed": 0.5}, "why": "slower"},
+                                   {"changes": {"wings": 2}, "why": "not a knob"}]}),
+        json.dumps({"strategy": "stop", "reason": "Speed alone can't climb a step.", "candidates": []}),
+    ]})
+    steps = []
+    original_mock, original_chat = config.MOCK_MODE, llm.chat
+    try:
+        config.MOCK_MODE, llm.chat = False, chat
+        report = redesign(spec, summary, diagnosis=diagnosis, on_step=steps.append)
+    finally:
+        config.MOCK_MODE, llm.chat = original_mock, original_chat
+
+    assert [model for _, model, _ in calls] == [config.BUILDER_MODEL] * 2
+    assert len(report["rounds"]) == 1 and report["tried_count"] == 1
+    assert report["rounds"][0]["candidates"][0]["changes"] == {"drive_speed": 2.0}   # clamped to the 2 rad/s minimum
+    assert report["decisions"][-1] == {"agent": "Designer", "decision": "stop", "reason": "Speed alone can't climb a step."}
+    reasons = " ".join(step["result"] for step in steps)
+    assert "wheel speed 0.5 clamped to 2 rad/s" in reasons and "wings isn't a design knob" in reasons
+    assert "Stop: Speed alone can't climb a step." in reasons
+    for decision in report["decisions"]:
+        assert decision["reason"] in reasons, decision
+    assert report["winner"] is None and report["message"].startswith("No design passed")
 
 
 def test_stress_trigger_requires_robot_scene():

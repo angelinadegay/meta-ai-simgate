@@ -2,7 +2,7 @@
 confirmed or ruled out. Every rerun goes through the batch runner."""
 
 import json
-from typing import Any, Callable
+from typing import Any, Callable, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -12,6 +12,8 @@ from .spec import SceneSpec
 
 MAX_RERUNS = 5          # reproduction + every experiment, in total
 MAX_HYPOTHESES = 4
+MAX_DECISION_ROUNDS = 2
+MAX_FOLLOW_UPS = 2
 StepCallback = Callable[[dict], None]
 
 # One change per experiment, using batch knobs only. Values are the allowed mappings, not suggestions.
@@ -114,7 +116,11 @@ def describe_numbers(numbers: dict) -> str:
 
 
 def describe_change(intervention: dict) -> str:
-    knob, value = next((k, v) for k, v in intervention.items() if k != "robot_id")
+    parts = [_describe_one(knob, value) for knob, value in intervention.items() if knob != "robot_id"]
+    return " + ".join(parts)
+
+
+def _describe_one(knob: str, value: Any) -> str:
     return {
         "surface": f"surface → {value}",
         "friction": f"friction → {value:g}" if isinstance(value, (int, float)) else f"friction → {value}",
@@ -306,12 +312,130 @@ def _run(spec: SceneSpec, interventions: list[dict], robot_id: str | None, basel
     return run_batch(spec, variations, baseline=baseline)
 
 
-def mock_conclusion(hypotheses: list[dict]) -> str:
+# ── Decisions between batches ────────────────────────────────────────────────
+
+class FollowUpIn(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    cause: str = Field(min_length=1, max_length=80)
+    intervention: dict[str, Any]
+
+
+class DecisionReply(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    decision: Literal["conclude", "test more", "can't tell"]
+    reason: str = Field(min_length=1, max_length=400)
+    next: list[FollowUpIn] = Field(default_factory=list, max_length=4)
+
+
+DECISION_SYSTEM = """You are the Explainer deciding what to do after a batch of single-change experiments.
+Choose one:
+- "conclude": the evidence is enough
+- "test more": up to 2 follow-up experiments, e.g. the top two causes together (two keys in one
+  intervention) or a stronger version of one cause; each intervention uses only these keys: {knobs}
+- "can't tell": the results contradict each other
+You have {remaining} rerun(s) left. Reply with JSON only, in this shape (the values are placeholders showing the
+format, not suggestions):
+{{"decision":"<conclude|test more|can't tell>","reason":"<one sentence>","next":[{{"cause":"<a + b>","intervention":{{"<knob>":<value>}}}}]}}"""
+
+
+def improvement(base: dict, after: dict) -> float:
+    """How much better a run got than the reproduced failure (1 = passed)."""
+    if after.get("error"):
+        return -1.0
+    if after.get("passed"):
+        return 1.0
+    score = 0.0
+    if (base.get("final_distance_m") or 0) > 0 and after.get("final_distance_m") is not None:
+        score = 1 - after["final_distance_m"] / base["final_distance_m"]
+    if base.get("flipped") and not after.get("flipped"):
+        score += 0.3
+    if (base.get("slip_ratio") or 0) > 0.05 and after.get("slip_ratio") is not None:
+        score += 0.3 * (1 - after["slip_ratio"] / base["slip_ratio"])
+    return round(score, 3)
+
+
+def stronger(spec: SceneSpec, intervention: dict) -> dict | None:
+    """The same single change, pushed further (None when it can't go further)."""
+    knob, value = next(iter(intervention.items()))
+    if knob == "slope_deg" and value > 0:
+        return {"slope_deg": max(0.0, value - 10)}
+    if knob == "speed_scale" and value > 0.3:
+        return {"speed_scale": round(value * 0.6, 2)}
+    if knob == "obstacle_scale" and value > 0.2:
+        return {"obstacle_scale": round(value * 0.5, 3)}
+    if knob == "friction":
+        return {"friction": round(min(value * 1.5, 2.0), 2)} if value < 2.0 else None
+    if knob == "surface":
+        return {"friction": round(min((spec.environment.friction or 0.8) * 2.0, 2.0), 2)}
+    return None
+
+
+def rule_decision(spec: SceneSpec, hypotheses: list[dict], remaining: int) -> dict:
+    """Mock Explainer: test more only when the best result is "partly"; otherwise conclude."""
+    if any(h["verdict"] == "confirmed" for h in hypotheses):
+        confirmed = [h["cause"] for h in hypotheses if h["verdict"] == "confirmed"]
+        return {"decision": "conclude", "reason": f"{_join(confirmed)} passed on {'its' if len(confirmed) == 1 else 'their'} own.", "next": []}
+    ranked = sorted(hypotheses, key=lambda h: -h.get("improvement", 0))
+    partly = [h for h in ranked if h["verdict"] == "partly"]
+    if not partly:
+        return {"decision": "conclude", "reason": "Nothing improved clearly, so more of the same won't help.", "next": []}
+    if remaining <= 0:
+        return {"decision": "conclude", "reason": "The rerun budget is used up.", "next": []}
+    top = partly[0]
+    tested = [h["intervention"] for h in hypotheses]
+    if len(partly) >= 2:
+        second = partly[1]
+        combined = {**top["intervention"], **second["intervention"]}
+        if combined not in tested and len(combined) == 2:
+            return {"decision": "test more",
+                    "reason": f"{top['cause']} and {second['cause']} each only partly explain it; testing them together.",
+                    "next": [{"cause": f"{top['cause']} + {second['cause']}", "intervention": combined}]}
+    push = stronger(spec, top["intervention"])
+    if push is not None and push not in tested and _applicable(spec, push) is None:
+        return {"decision": "test more", "reason": f"{top['cause']} only partly explains it; testing a stronger version.",
+                "next": [{"cause": f"{top['cause']} (stronger)", "intervention": push}]}
+    other = next((h for h in ranked if h is not top and h["cause"] not in top["cause"]), None)
+    if other is not None:
+        combined = {**top["intervention"], **other["intervention"]}
+        if combined not in tested and len(combined) == 2 and _applicable(spec, combined) is None:
+            return {"decision": "test more",
+                    "reason": f"{top['cause']} only partly explains it; testing {top['cause']} + {other['cause']} together.",
+                    "next": [{"cause": f"{top['cause']} + {other['cause']}", "intervention": combined}]}
+    return {"decision": "conclude", "reason": f"{top['cause']} only partly explains it and can't be pushed further.", "next": []}
+
+
+def model_decision(spec: SceneSpec, hypotheses: list[dict], remaining: int, decisions: list[dict],
+                   calls: list[dict]) -> dict | None:
+    knobs = ", ".join(ALLOWED_KNOBS)
+    results = [{"cause": h["cause"], "change": h["intervention"], "verdict": h["verdict"],
+                "numbers": describe_numbers(h["key_numbers"])} for h in hypotheses]
+    messages = [{"role": "system", "content": DECISION_SYSTEM.format(knobs=knobs, remaining=remaining)},
+                {"role": "user", "content": json.dumps(results)}]
+    reply, attempts = llm.chat_json(messages, config.PLANNER_MODEL, DecisionReply.model_validate)
+    calls.append({"agent": "Explainer", "purpose": "decision", "attempts": attempts})
+    if reply is None:
+        return None
+    follow = []
+    for item in reply.next:
+        allowed = {k: v for k, v in item.intervention.items() if k in ALLOWED_KNOBS}
+        problem = None if allowed and len(allowed) <= 2 else "needs one or two allowed changes"
+        problem = problem or _applicable(spec, allowed)
+        if problem or allowed in [h["intervention"] for h in hypotheses]:
+            decisions.append({"agent": "Explainer", "decision": "dropped",
+                              "reason": f"{item.cause}: {problem or 'already tested'}."})
+            continue
+        follow.append({"cause": item.cause, "intervention": allowed})
+    return {"decision": reply.decision, "reason": reply.reason, "next": follow}
+
+
+def mock_conclusion(hypotheses: list[dict], outcome: str = "conclude") -> str:
     confirmed = [h["cause"] for h in hypotheses if h["verdict"] == "confirmed"]
     partly = [h["cause"] for h in hypotheses if h["verdict"] == "partly"]
     ruled_out = [h["cause"] for h in hypotheses if h["verdict"] == "ruled out"]
     combined = any("+" in h["cause"] for h in hypotheses)
-    sentences = []
+    sentences = ["The results contradict each other, so I can't tell for sure."] if outcome == "can't tell" else []
     if confirmed:
         sentences.append(f"Confirmed: {_join(confirmed)} — removing {'it' if len(confirmed) == 1 else 'each one'} "
                          "alone was enough for the run to pass.")
@@ -338,15 +462,32 @@ cause was tested on its own, so causes that only matter together could be missed
 listed. No headings or lists."""
 
 
-def conclusion(hypotheses: list[dict], calls: list[dict]) -> str:
+def conclusion(hypotheses: list[dict], calls: list[dict], outcome: str = "conclude") -> str:
     if config.MOCK_MODE:
-        return mock_conclusion(hypotheses)
-    verdicts = [{"cause": h["cause"], "change_tested": describe_change(h["intervention"]),
-                 "verdict": h["verdict"], "numbers": describe_numbers(h["key_numbers"])} for h in hypotheses]
+        return mock_conclusion(hypotheses, outcome)
+    verdicts = {"outcome": outcome, "results": [
+        {"cause": h["cause"], "change_tested": describe_change(h["intervention"]), "verdict": h["verdict"],
+         "numbers": describe_numbers(h["key_numbers"])} for h in hypotheses]}
     text = llm.chat([{"role": "system", "content": CONCLUSION_SYSTEM},
                      {"role": "user", "content": json.dumps(verdicts)}], temperature=0.3).strip()
     calls.append({"agent": "Explainer", "purpose": "conclusion", "attempts": [{"attempt": 1, "valid": bool(text)}]})
-    return text or mock_conclusion(hypotheses)
+    return text or mock_conclusion(hypotheses, outcome)
+
+
+def _experiment(spec: SceneSpec, items: list[dict], base: dict, robot_id: str | None, report: dict,
+                on_step: StepCallback | None, thought: str) -> None:
+    _emit(on_step, "Batch runner", "experiments", thought.format(n=len(items)), "", "working")
+    results = _run(spec, [h["intervention"] for h in items], robot_id, baseline=False)
+    report["runs"] += len(results)
+    for item, result in zip(items, results):
+        after = result_metrics(result, robot_id)
+        item["verdict"] = verdict(base, after)
+        item["key_numbers"] = key_numbers(base, after)
+        item["improvement"] = improvement(base, after)
+        item["change"] = describe_change(item["intervention"])
+    report["hypotheses"] += items
+    _emit(on_step, "Batch runner", "experiments", "Experiments.",
+          "; ".join(f"{h['cause']}: {h['verdict']} ({describe_numbers(h['key_numbers'])})" for h in items))
 
 
 def diagnose(spec: SceneSpec, summary: dict, robot_id: str | None = None,
@@ -378,6 +519,9 @@ def diagnose(spec: SceneSpec, summary: dict, robot_id: str | None = None,
           f"The failure reproduced ({base.get('outcome') or 'failed'}).")
 
     hypotheses = None if config.MOCK_MODE else model_hypotheses(spec, base, report["decisions"], report["model_calls"])
+    for dropped in report["decisions"]:
+        _emit(on_step, dropped["agent"], "hypotheses", "Checking the proposed experiments.",
+              f"Dropped: {dropped['reason']}", "warning")
     if hypotheses is None or len(hypotheses) < 2:
         rules = rule_hypotheses(spec, base)
         hypotheses = (hypotheses or []) + [h for h in rules if h["cause"] not in {x["cause"] for x in hypotheses or []}]
@@ -389,17 +533,29 @@ def diagnose(spec: SceneSpec, summary: dict, robot_id: str | None = None,
           "; ".join(f"{h['cause']}{' (control)' if h.get('control') else ''}: {describe_change(h['intervention'])}"
                     for h in hypotheses))
 
-    _emit(on_step, "Batch runner", "experiments", f"Running {len(hypotheses)} single-change experiments in parallel.", "", "working")
-    results = _run(spec, [h["intervention"] for h in hypotheses], robot_id, baseline=False)
-    report["runs"] += len(results)
-    for hypothesis, result in zip(hypotheses, results):
-        after = result_metrics(result, robot_id)
-        hypothesis["verdict"] = verdict(base, after)
-        hypothesis["key_numbers"] = key_numbers(base, after)
-        hypothesis["change"] = describe_change(hypothesis["intervention"])
-    _emit(on_step, "Batch runner", "experiments", "Single-change experiments.",
-          "; ".join(f"{h['cause']}: {h['verdict']} ({describe_numbers(h['key_numbers'])})" for h in hypotheses))
-    report["hypotheses"] = hypotheses
-    report["conclusion"] = conclusion(hypotheses, report["model_calls"])
+    _experiment(spec, hypotheses, base, robot_id, report, on_step, "Running {n} single-change experiments in parallel.")
+    outcome = "conclude"
+    for _ in range(MAX_DECISION_ROUNDS):
+        remaining = MAX_RERUNS - report["runs"]
+        recorded = len(report["decisions"])
+        decided = None if config.MOCK_MODE else model_decision(
+            spec, report["hypotheses"], remaining, report["decisions"], report["model_calls"])
+        for dropped in report["decisions"][recorded:]:
+            _emit(on_step, dropped["agent"], "decision", "Checking the follow-up experiments.",
+                  f"Dropped: {dropped['reason']}", "warning")
+        decided = decided or rule_decision(spec, report["hypotheses"], remaining)
+        follow = decided["next"][: min(MAX_FOLLOW_UPS, remaining)] if decided["decision"] == "test more" else []
+        outcome = decided["decision"] if decided["decision"] != "test more" or follow else "conclude"
+        reason = decided["reason"] + ("" if follow or decided["decision"] != "test more" else " No reruns are left, so concluding.")
+        report["decisions"].append({"agent": "Explainer", "decision": outcome if not follow else "test more", "reason": reason})
+        _emit(on_step, "Explainer", "decision", "Deciding whether the evidence is enough.",
+              f"{'Test more' if follow else outcome.capitalize()}: {reason}")
+        if not follow:
+            break
+        for item in follow:
+            item["follow_up"] = True
+        _experiment(spec, follow, base, robot_id, report, on_step, "Running {n} follow-up experiment(s).")
+    report["outcome"] = outcome
+    report["conclusion"] = conclusion(report["hypotheses"], report["model_calls"], outcome)
     _emit(on_step, "Explainer", "conclusion", "Writing the conclusion from the verdicts only.", report["conclusion"])
     return report
