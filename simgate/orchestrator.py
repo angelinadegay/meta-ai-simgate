@@ -52,6 +52,10 @@ class Session:
         await self.agent("Director", "working", "Planning the world operations…")
         director = Director(self.emit)
         world, message = await director.execute_plan(text, self.spec if editing else None)
+        if not editing and world.build is None:   # an answer with no scene yet: don't keep an empty one
+            await self.agent("Director", "done", "Answered without building a scene.")
+            await self.emit({"type": "question", "message": message, "stress_test_available": False})
+            return
         spec = world.spec
         if self.library_selection and spec.domain == "robot_terrain":
             self._apply_library_selection(spec)

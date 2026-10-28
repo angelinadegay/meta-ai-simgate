@@ -336,6 +336,29 @@ def test_advisory_course_warning_does_not_block_or_repair():
     assert world.results is not None
 
 
+def test_answer_first_does_not_leave_an_empty_scene():
+    import asyncio
+
+    from simgate.orchestrator import Session
+
+    async def scenario():
+        events = []
+
+        async def emit(event):
+            events.append(event)
+
+        session = Session(emit)
+        await session.handle("what's the gravity on Mars?")
+        assert session.spec is None and session.build is None
+        assert not any(event["type"] in ("spec", "scene") for event in events)
+        await session.handle("A rover on Mars hills")
+        return session, events
+
+    session, events = asyncio.run(scenario())
+    assert session.build is not None and len(session.spec.robots) == 1
+    assert events[-1]["type"] == "question" and events[-1]["message"] == "Run it?"
+
+
 def test_plan_workflow_preserves_structural_scene_support():
     import asyncio
 
