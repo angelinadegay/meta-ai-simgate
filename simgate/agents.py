@@ -203,9 +203,10 @@ def _mock_plan(text: str, current: SceneSpec | None = None) -> SceneSpec:
             spec.assumptions.append("No real-terrain data is installed yet, so I generated terrain instead.")
         if m := re.search(r"(\d+)\s*(?:°|deg|degree)", t):
             spec.terrain.kind, spec.terrain.slope_deg = "slope", float(m.group(1))
-        if "steeper" in t:
+        if "steeper" in t:   # 10° steeper; hills and flat ground count as 0°
+            base = spec.terrain.slope_deg if spec.terrain.kind == "slope" else 0.0
             spec.terrain.kind = "slope"
-            spec.terrain.slope_deg = min(spec.terrain.slope_deg + 10 if spec.terrain.slope_deg else 20, 45)
+            spec.terrain.slope_deg = min(base + 10, 45)
         if "bigger rock" in t or "rougher" in t:
             spec.terrain.roughness = min(spec.terrain.roughness + 0.3, 1.0)
         rb = spec.robot

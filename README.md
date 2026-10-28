@@ -276,7 +276,7 @@ Without a key, it runs in mock mode.
 | `answer_first_does_not_leave_an_empty_scene` | A question asked before any scene leaves no empty scene, so the next prompt builds one |
 | `new_plan_scenes_keep_the_planned_title` | New robot and structure scenes are titled from the plan, not "Untitled scene" |
 | `plan_workflow_preserves_structural_scene_support` | Structural scenes still use the OpenSees build/check workflow |
-| `edit_plan_changes_only_the_requested_scene_fields` | A terrain edit preserves the existing robot, mission, world and obstacles |
+| `edit_plan_changes_only_the_requested_scene_fields` | "Steeper" adds 10° (hills count as 0°) and the edit preserves the existing robot, mission, world and obstacles |
 | `rules_planner_treats_short_change_requests_as_edits` | With a scene open, short change requests ("use six wheels", "ice", "add a wall", "make it stiffer") are edits; questions stay answers |
 | `leg_and_wheel_counts_apply_only_to_their_part` | "six-legged" never sets a rover's wheels and "six-wheeled" never sets legs; multi-robot titles name each robot |
 | `model_edit_plans_are_typed_and_checked_against_the_scene` | Model edits are typed and dry-run against the scene: a slope angle on hills becomes a slope, a no-op edit gets the one retry, "steeper" adds 10° |

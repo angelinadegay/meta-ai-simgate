@@ -547,7 +547,9 @@ def test_edit_plan_changes_only_the_requested_scene_fields():
         return await Director().execute_plan("make the slope steeper", current)
 
     world, _ = asyncio.run(scenario())
-    assert world.spec.terrain.kind == "slope" and world.spec.terrain.slope_deg == 20
+    assert world.spec.terrain.kind == "slope" and world.spec.terrain.slope_deg == 10  # hills count as 0°
+    steeper_again = Director().plan("make the slope steeper", world.spec)
+    assert steeper_again.changes.world.slope_deg == 20  # +10° on an existing slope, same as the model path
     assert world.spec.environment.body == current.environment.body == "mars"
     assert world.spec.environment.surface == current.environment.surface == "regolith"
     assert world.spec.robot == current.robot
