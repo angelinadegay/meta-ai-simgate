@@ -460,16 +460,19 @@ You receive a working template and a scene spec. Improve or extend the template 
 actuator the template has. Reply with ONLY the complete code in one fenced block."""
 
 
-def build(sim: Simulator, spec: SceneSpec, log) -> BuildResult:
+def build(sim: Simulator, spec: SceneSpec, log, feedback: str | None = None) -> BuildResult:
     """Template build by default; in llm mode the model writes the code with a compile-and-fix loop."""
     if config.MOCK_MODE or config.BUILDER_MODE != "llm" or not hasattr(sim, "template"):
         return sim.build(spec)
 
     template_code = sim.template(spec)[0]
     lang = "xml" if sim.language.startswith("mjcf") else "python"
+    request = f"Simulator: {sim.name} ({sim.language})\nSpec:\n{spec.model_dump_json()}\n\nTemplate:\n```{lang}\n{template_code}\n```"
+    if feedback:
+        request += f"\n\nChecker feedback to resolve:\n{feedback}\nPreserve the scene's named robot bodies, joints, and actuators."
     messages = [
         {"role": "system", "content": BUILDER_SYSTEM},
-        {"role": "user", "content": f"Simulator: {sim.name} ({sim.language})\nSpec:\n{spec.model_dump_json()}\n\nTemplate:\n```{lang}\n{template_code}\n```"},
+        {"role": "user", "content": request},
     ]
     for attempt in range(1, config.BUILDER_MAX_RETRIES + 1):
         reply = llm.chat(messages, model=config.BUILDER_MODEL)

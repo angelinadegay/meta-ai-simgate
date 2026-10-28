@@ -250,6 +250,90 @@ def test_plan_workflow_expands_race_and_runs_only_when_requested():
         llm.chat = original_chat
 
 
+def test_plan_workflow_bounds_visible_repairs_and_asks_before_running():
+    import asyncio
+    from unittest.mock import patch
+
+    from simgate import config, workflows
+    from simgate.backends.base import BuildResult, Check
+    from simgate.director import Director
+
+    class AlwaysFailSimulator:
+        name = "test simulator"
+        language = "test"
+
+        def __init__(self):
+            self.validation_count = 0
+
+        def build(self, _spec, code=None):
+            return BuildResult(code or "template", self.language, {})
+
+        def validate(self, _spec, _build):
+            self.validation_count += 1
+            return [Check("Deliberately failing check", False, "forced for repair-loop test")]
+
+    simulator = AlwaysFailSimulator()
+    events = []
+
+    async def scenario():
+        async def emit(event):
+            events.append(event)
+
+        with patch.object(config, "MOCK_MODE", True), \
+                patch("simgate.agents.route", return_value=simulator), \
+                patch.object(workflows, "_apply_rule_fixes", return_value=True):
+            return await Director(emit).execute_plan("build a rover")
+
+    world, message = asyncio.run(scenario())
+    assert simulator.validation_count == 4  # initial check plus three bounded repairs
+    assert "3 repair attempt(s)" in message
+    assert world.question == message
+    assert len({
+        event["id"] for event in events
+        if event.get("type") == "step" and event.get("agent") == "Builder"
+        and event.get("tool") == "repair"
+    }) == 3
+    assert not any(event.get("tool") == "run" for event in events)
+    assert any(event.get("tool") == "ask_user" for event in events)
+
+    steps = [event for event in events if event.get("type") == "step"]
+    parents = {event["id"]: event.get("parent_id") for event in steps}
+    for event in steps:
+        if event.get("tool") == "repair" and event.get("agent") == "Builder":
+            parent_id = event.get("parent_id")
+            assert parents[parent_id] is not None
+            assert any(
+                child.get("agent") == "Checker"
+                and child.get("parent_id") == event["id"]
+                and child.get("tool") == "build_and_check"
+                for child in steps
+            )
+
+
+def test_template_repair_uses_registered_physics_presets():
+    from simgate import presets, workflows
+    from simgate.backends.base import Check
+    from simgate.tools import World
+
+    spec = SceneSpec(
+        domain="robot_terrain",
+        terrain=Terrain(kind="slope", slope_deg=80),
+    ).fill_defaults()
+    spec.environment.gravity = 1.0
+    spec.environment.friction = 10.0
+    world = World(spec)
+    failures = [
+        Check("Gravity matches reference", False, "incorrect gravity"),
+        Check("Friction is plausible", False, "incorrect friction"),
+        Check("Slope is plausible", False, "too steep"),
+    ]
+
+    assert workflows._apply_rule_fixes(world, failures)
+    assert spec.environment.gravity == presets.gravity_for(spec.environment.body)
+    assert spec.environment.friction == presets.friction_for(spec.environment.surface)
+    assert spec.terrain.slope_deg == presets.SLOPE_RANGE_DEG[1]
+
+
 def test_director_tools_validate_and_update_world():
     import pytest
     from pydantic import ValidationError
