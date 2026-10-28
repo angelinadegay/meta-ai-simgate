@@ -12,7 +12,7 @@ import numpy as np
 from .. import presets
 from ..library import LibraryRegistry
 from ..policy_runtime import PolicyRunner
-from ..spec import SceneSpec
+from ..spec import Mission, SceneSpec
 from ..terrain_data import load_preset, resample
 from . import obstacles as course
 from .base import BuildResult, Check, Simulator
@@ -378,6 +378,7 @@ def _library_robot_parts(
     spec: SceneSpec,
     start: tuple[float, float, float],
     heading_deg: float,
+    prefix: str = "",
 ) -> tuple[str, str, str, str, str]:
     robot = spec.robot
     registry = LibraryRegistry()
@@ -423,6 +424,31 @@ def _library_robot_parts(
     actuators_xml = "".join(
         ET.tostring(item, encoding="unicode") for item in actuator_root
     ) if actuator_root is not None else ""
+    if prefix:
+        body_root = ET.fromstring(ET.tostring(source_body, encoding="unicode"))
+        actuator_root = ET.fromstring(f"<actuators>{actuators_xml}</actuators>")
+        asset_root_xml = ET.fromstring(f"<assets>{mesh_xml}</assets>")
+        defaults_root = ET.fromstring(f"<defaults>{defaults_xml}</defaults>")
+        named = {
+            value
+            for root in (body_root, actuator_root, asset_root_xml, defaults_root)
+            for node in root.iter()
+            if (value := node.get("name")) is not None
+        }
+        replacements = {name: f"{prefix}{name}" for name in named}
+        references = {"joint", "mesh", "class", "material", "texture", "body", "site", "tendon"}
+        for root in (body_root, actuator_root, asset_root_xml, defaults_root):
+            for node in root.iter():
+                if (name := node.get("name")) in replacements:
+                    node.set("name", replacements[name])
+                for attribute in references:
+                    value = node.get(attribute)
+                    if value in replacements:
+                        node.set(attribute, replacements[value])
+        source_body = body_root
+        actuators_xml = "".join(ET.tostring(item, encoding="unicode") for item in actuator_root)
+        mesh_xml = "".join(ET.tostring(item, encoding="unicode") for item in asset_root_xml)
+        defaults_xml = "".join(ET.tostring(item, encoding="unicode") for item in defaults_root)
     return (
         ET.tostring(source_body, encoding="unicode"),
         actuators_xml,
@@ -446,6 +472,33 @@ def contact_parts(model: mujoco.MjModel) -> set[int]:
         ):
             parts.add(g)
     return parts
+
+
+def _prefix_builtin_parts(body_xml: str, actuators_xml: str, prefix: str) -> tuple[str, str]:
+    bodies = ET.fromstring(f"<bodies>{body_xml}</bodies>")
+    actuators = ET.fromstring(f"<actuators>{actuators_xml}</actuators>")
+    for node in (*bodies.iter(), *actuators.iter()):
+        if (name := node.get("name")):
+            node.set("name", f"{prefix}{name}")
+        if (joint := node.get("joint")):
+            node.set("joint", f"{prefix}{joint}")
+    root = bodies.find("body")
+    if root is not None:
+        root.set("name", f"{prefix}rover")
+    return (
+        "".join(ET.tostring(item, encoding="unicode") for item in bodies),
+        "".join(ET.tostring(item, encoding="unicode") for item in actuators),
+    )
+
+
+def _robot_collision_masks(body_xml: str, index: int, count: int) -> str:
+    root = ET.fromstring(body_xml)
+    own_mask = 1 << (index + 1)
+    other_masks = sum(1 << (other + 1) for other in range(count) if other != index)
+    for geom in root.iter("geom"):
+        geom.set("contype", str(own_mask))
+        geom.set("conaffinity", str(1 | other_masks))
+    return ET.tostring(root, encoding="unicode")
 
 
 def ground_geoms(model: mujoco.MjModel) -> set[int]:
@@ -631,8 +684,157 @@ class MuJoCoSimulator(Simulator):
     def __init__(self) -> None:
         self._summary: dict = {}
         self.mission: dict = {}
+        self.missions: dict[str, dict] = {}
+        self.robot_entries: dict[str, dict] = {}
+
+    def _multi_template(self, spec: SceneSpec) -> tuple[str, np.ndarray, float]:
+        terrain = spec.terrain
+        environment = spec.environment
+        count = len(spec.robots)
+        lane_spacing = max(1.5, max(2 * footprint_radius(entry.robot) for entry in spec.robots))
+        initial_heights, _ = make_heights(spec)
+        first = spec.robots[0]
+        base_start = (
+            tuple(first.start_xy)
+            if first.start_xy is not None
+            else place_xy(initial_heights, terrain.size_m, first.start_place)
+            if first.start_place is not None
+            else default_start(terrain.size_m)
+        )
+        if first.goal_xy is not None:
+            target = np.asarray(first.goal_xy, dtype=float)
+        elif first.goal_place is not None:
+            target = np.asarray(place_xy(initial_heights, terrain.size_m, first.goal_place), dtype=float)
+        elif first.start_heading_deg is not None:
+            angle = math.radians(first.start_heading_deg)
+            target = np.asarray(base_start) + np.array([math.cos(angle), math.sin(angle)])
+        else:
+            target = np.asarray(base_start) + np.array([1.0, 0.0])
+        direction = target - np.asarray(base_start)
+        direction /= np.linalg.norm(direction) or 1.0
+        normal = np.array([-direction[1], direction[0]])
+        starts = []
+        for index, entry in enumerate(spec.robots):
+            if entry.start_xy is not None:
+                start = tuple(entry.start_xy)
+            elif entry.start_place is not None:
+                start = place_xy(initial_heights, terrain.size_m, entry.start_place)
+            else:
+                offset = (index - (count - 1) / 2) * lane_spacing
+                start = tuple(np.asarray(base_start) + normal * offset)
+            starts.append(start)
+        H, zmax = make_heights(spec, starts[0])
+        self.missions = {}
+        self.robot_entries = {}
+        for entry, (sx, sy) in zip(spec.robots, starts):
+            start_xy = (float(sx), float(sy))
+            goal_xy = entry.goal_xy
+            if goal_xy is None and entry.goal_place is not None:
+                goal_xy = place_xy(H, terrain.size_m, entry.goal_place)
+            mission_input = Mission(
+                start_xy=list(start_xy),
+                start_heading_deg=entry.start_heading_deg,
+                goal_xy=goal_xy,
+                goal_radius_m=entry.goal_radius_m,
+            )
+            robot_spec = spec.model_copy(deep=True)
+            robot_spec.robot = entry.robot.model_copy(deep=True)
+            robot_spec.mission = mission_input
+            self.missions[entry.id] = resolve_mission(robot_spec, H)
+
+        self.mission = self.missions[spec.robots[0].id]
+        obstacle_xml, self.course, self.course_notes = "", [], []
+        if spec.obstacles:
+            mission = self.mission
+            goal = mission["goal"]
+            if goal is None:
+                h = math.radians(mission["heading_deg"])
+                goal = (
+                    mission["start"][0] + 0.7 * terrain.size_m * math.cos(h),
+                    mission["start"][1] + 0.7 * terrain.size_m * math.sin(h),
+                )
+            slots, self.course_notes = course.plan_course(spec, H, mission["start"], goal, terrain.seed)
+            if any(slot["ob"].kind == "gap" for slot in slots):
+                course.cut_gaps(slots, H, terrain.size_m)
+                H -= H.min()
+                zmax = max(float(H.max()), 0.01)
+            obstacle_xml, self.course = course.build_geoms(slots, H, terrain.size_m, terrain.seed)
+
+        robot_xml, actuator_xml, mesh_xml, defaults_xml = [], [], [], []
+        compiler_assets = set()
+        markers = []
+        for robot_index, entry in enumerate(spec.robots):
+            prefix = f"{entry.id}_"
+            robot_spec = spec.model_copy(deep=True)
+            robot_spec.robot = entry.robot.model_copy(deep=True)
+            mission = self.missions[entry.id]
+            sx, sy = mission["start"]
+            if entry.robot.kind == "walker":
+                sz = height_at(H, terrain.size_m, sx, sy, footprint_radius(entry.robot)) + walker_stand_height(entry.robot) + 0.05
+                body, actuators = walker_xml(robot_spec, (sx, sy, sz), mission["heading_deg"])
+                body, actuators = _prefix_builtin_parts(body, actuators, prefix)
+            elif entry.robot.kind == "library":
+                robot_card = LibraryRegistry().robot(entry.robot.robot_id)
+                sz = height_at(H, terrain.size_m, sx, sy, footprint_radius(entry.robot)) + robot_card.standing_height_m
+                body, actuators, meshes, defaults, asset_root = _library_robot_parts(
+                    robot_spec, (sx, sy, sz), mission["heading_deg"], prefix
+                )
+                compiler_assets.add(asset_root)
+                mesh_xml.append(meshes)
+                defaults_xml.append(defaults)
+            else:
+                sz = height_at(H, terrain.size_m, sx, sy, footprint_radius(entry.robot)) + entry.robot.wheel_radius + 0.1
+                body, actuators = rover_xml(robot_spec, (sx, sy, sz), mission["heading_deg"])
+                body, actuators = _prefix_builtin_parts(body, actuators, prefix)
+            body = _robot_collision_masks(body, robot_index, count)
+            robot_xml.append(body)
+            actuator_xml.append(actuators)
+            self.robot_entries[entry.id] = {
+                "label": entry.label,
+                "robot": entry.robot.model_dump(),
+                "mission": mission,
+                "root_body_name": f"{prefix}rover",
+            }
+            if mission["goal"] is not None:
+                gx, gy = mission["goal"]
+                gz = height_at(H, terrain.size_m, gx, gy, mission["radius"])
+                goal_mark = next((marker for marker in markers if marker[0] == (gx, gy, mission["radius"])), None)
+                if goal_mark is None:
+                    markers.append(((gx, gy, mission["radius"]), f'''
+    <geom name="{prefix}goal_zone" type="cylinder" size="{mission["radius"]:.2f} 0.02" pos="{gx:.2f} {gy:.2f} {gz + 0.02:.3f}" contype="0" conaffinity="0" rgba="0.2 0.85 0.5 0.35"/>
+    <geom name="{prefix}goal_flag" type="capsule" fromto="{gx:.2f} {gy:.2f} {gz:.3f} {gx:.2f} {gy:.2f} {gz + 1.5:.3f}" size="0.03" contype="0" conaffinity="0" rgba="0.2 0.85 0.5 1"/>'''))
+
+        if len(compiler_assets) > 1:
+            raise ValueError("Multi-robot library assets must share one compiler mesh directory.")
+        compiler_xml = f'<compiler angle="radian" meshdir="{next(iter(compiler_assets))}/"/>' if compiler_assets else ""
+        half = terrain.size_m / 2
+        elevation = " ".join(f"{value:.4f}" for value in np.flipud(H / zmax).ravel())
+        marker_xml = "\n".join(marker[1] for marker in markers)
+        obstacle_xml = obstacle_xml + "\n" if obstacle_xml else ""
+        xml = f'''<mujoco model="{spec.title}">
+  {compiler_xml}
+  <option timestep="0.002" gravity="0 0 {-environment.gravity:.4f}"/>
+  <default><geom friction="{environment.friction:.3f} 0.005 0.0001"/>{''.join(defaults_xml)}</default>
+  <asset>
+    <hfield name="terrain" nrow="{GRID}" ncol="{GRID}" size="{half:.3f} {half:.3f} {zmax:.4f} 0.5" elevation="{elevation}"/>
+{''.join(mesh_xml)}
+  </asset>
+  <worldbody>
+    <light pos="0 0 20" dir="0 0 -1"/>
+    <geom name="ground" type="hfield" hfield="terrain" rgba="{' '.join(f'{c:.2f}' for c in terrain_rgb(spec))} 1"/>
+{marker_xml}
+{obstacle_xml}
+{''.join(robot_xml)}
+  </worldbody>
+  <actuator>
+{''.join(actuator_xml)}
+  </actuator>
+</mujoco>'''
+        return xml, H, zmax
 
     def template(self, spec: SceneSpec) -> tuple[str, np.ndarray, float]:
+        if len(spec.robots) > 1:
+            return self._multi_template(spec)
         t, env = spec.terrain, spec.environment
         H, zmax = make_heights(spec)
         mission = resolve_mission(spec, H)
@@ -711,6 +913,23 @@ class MuJoCoSimulator(Simulator):
         scene["terrain_size_m"] = spec.terrain.size_m
         scene["course"] = [vars(p) for p in self.course]
         scene["course_notes"] = self.course_notes
+        if len(spec.robots) > 1:
+            for robot_id, info in self.robot_entries.items():
+                root_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, info["root_body_name"])
+                chassis_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, f"{robot_id}_chassis")
+                if chassis_id < 0:
+                    candidates = [
+                        geom for geom in range(model.ngeom)
+                        if int(model.body_rootid[int(model.geom_bodyid[geom])]) == root_id
+                        and model.geom_contype[geom] != 0
+                    ]
+                    chassis_id = candidates[0] if candidates else -1
+                info["root_body"] = root_id
+                info["follow_geom"] = chassis_id
+                info["mission"] = self.missions[robot_id]
+            scene["robots"] = self.robot_entries
+            scene["follow_geom"] = self.robot_entries[spec.robots[0].id]["follow_geom"]
+            scene["robot_root_body"] = self.robot_entries[spec.robots[0].id]["root_body"]
         event_size = len(
             json.dumps(
                 {"type": "scene", "scene": scene, "code": xml, "language": self.language}
@@ -819,10 +1038,99 @@ class MuJoCoSimulator(Simulator):
         model = _model_from_xml(build.code)
         return model, mujoco.MjData(model)
 
-    def _policy_runner(self, spec: SceneSpec, model: mujoco.MjModel, data: mujoco.MjData) -> PolicyRunner:
+    def _policy_runner(
+        self,
+        spec: SceneSpec,
+        model: mujoco.MjModel,
+        data: mujoco.MjData,
+        name_prefix: str = "",
+    ) -> PolicyRunner:
         if spec.robot.kind != "library":
             raise ValueError("A library policy can only control a library robot.")
-        return PolicyRunner(LibraryRegistry().policy(spec.robot.policy_id), model, data)
+        return PolicyRunner(
+            LibraryRegistry().policy(spec.robot.policy_id),
+            model,
+            data,
+            name_prefix=name_prefix,
+        )
+
+    def _multi_states(self, spec: SceneSpec, model: mujoco.MjModel, data: mujoco.MjData) -> dict:
+        states = {}
+        for entry in spec.robots:
+            prefix = f"{entry.id}_"
+            info = self.robot_entries[entry.id]
+            robot = entry.robot.model_copy(deep=True)
+            robot_spec = spec.model_copy(deep=True)
+            robot_spec.robot = robot
+            root = int(info["root_body"])
+            actuator_ids = [
+                actuator
+                for actuator in range(model.nu)
+                if int(model.body_rootid[int(model.jnt_bodyid[int(model.actuator_trnid[actuator, 0])])]) == root
+            ]
+            runner = self._policy_runner(robot_spec, model, data, prefix) if robot.kind == "library" else None
+            mission = self.missions[entry.id]
+            states[entry.id] = {
+                "entry": entry,
+                "robot": robot,
+                "spec": robot_spec,
+                "root": root,
+                "actuators": actuator_ids,
+                "policy": runner,
+                "navigator": Navigator(mission, robot.kind),
+                "heading": np.array([math.cos(math.radians(mission["heading_deg"])),
+                                     math.sin(math.radians(mission["heading_deg"]))]),
+                "start": data.xpos[root].copy(),
+                "max_tilt": 0.0,
+                "flipped_at": None,
+                "path_len": 0.0,
+                "last_xy": None,
+                "distances": [],
+                "cross_contacts": 0,
+            }
+        return states
+
+    def _multi_control(self, model: mujoco.MjModel, data: mujoco.MjData, states: dict, active_time: float) -> None:
+        for state in states.values():
+            robot, nav, root = state["robot"], state["navigator"], state["root"]
+            xmat = data.xmat[root]
+            if xmat[8] > 0.8:
+                state["heading"] = heading_of(xmat)
+            turn, go = nav.command(data.xpos[root][:2].copy(), state["heading"], max(active_time, 0.0))
+            policy = state["policy"]
+            if policy is not None:
+                if active_time <= 0.0:
+                    policy.hold_default()
+                else:
+                    card = policy.card.command
+                    if nav.goal is None:
+                        commands = dict(zip(card.names, card.default))
+                    elif nav.reached_at is not None:
+                        commands = {name: 0.0 for name in card.names}
+                    else:
+                        vx_limit = card.ranges[card.names.index("vx")][1]
+                        yaw_range = card.ranges[card.names.index("yaw_rate")]
+                        commands = {
+                            "vx": float(np.clip(0.6 * math.cos(turn), 0.0, vx_limit)),
+                            "vy": 0.0,
+                            "yaw_rate": float(np.clip(turn, yaw_range[0], yaw_range[1])),
+                        }
+                    policy.set_command(commands)
+                    policy.step(active_time)
+                continue
+            scale = float(np.clip(active_time / 1.0, 0.0, 1.0)) * go
+            if robot.kind == "walker":
+                controls = walker_ctrl(robot, max(active_time, 0.0), scale, turn)
+            else:
+                controls = np.full(len(state["actuators"]), robot.drive_speed * scale)
+                for i, actuator in enumerate(state["actuators"]):
+                    joint = int(model.actuator_trnid[actuator, 0])
+                    name = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_JOINT, joint) or ""
+                    side = 1.0 if name.endswith("r_j") else -1.0
+                    controls[i] *= 1 + side * turn
+            if len(controls) != len(state["actuators"]):
+                raise ValueError(f"Controller output does not match actuator mapping for {state['entry'].id}.")
+            data.ctrl[state["actuators"]] = controls
 
     def _ctrl(self, spec: SceneSpec, model: mujoco.MjModel, t_active: float, turn: float = 0.0, go: float = 1.0) -> np.ndarray:
         """Controller for the robot. t_active < 0 means standing still (settling).
@@ -847,6 +1155,8 @@ class MuJoCoSimulator(Simulator):
         checks = [Check("Model compiles", True, "MuJoCo accepted the scene.")]
         env = spec.environment
         model, data = self._make(build)
+        if len(spec.robots) > 1:
+            return self._validate_multi(spec, build, model, data, checks)
         policy_runner = None
         if spec.robot.kind == "library":
             try:
@@ -994,7 +1304,222 @@ class MuJoCoSimulator(Simulator):
                                 f"Up to {touched_late} {part}/ground contacts in the last 0.3 s of settling."))
         return checks
 
+    def _validate_multi(self, spec: SceneSpec, build: BuildResult, model, data, checks: list[Check]) -> list[Check]:
+        gravity = -float(model.opt.gravity[2])
+        reference = presets.gravity_for(spec.environment.body)
+        if reference is not None:
+            checks.append(Check(
+                "Gravity matches reference",
+                abs(gravity - reference) / reference < 0.01,
+                f"{gravity:.3f} m/s² in model vs {reference} m/s² for {spec.environment.body}.",
+            ))
+        lo, hi = presets.FRICTION_RANGE
+        checks.append(Check(
+            "Friction is plausible",
+            lo <= spec.environment.friction <= hi,
+            f"{spec.environment.friction:.2f} (expected {lo}–{hi}).",
+        ))
+        mujoco.mj_forward(model, data)
+        states = self._multi_states(spec, model, data)
+        entries = list(states.values())
+        overlaps = []
+        for index, first in enumerate(entries):
+            first_xy = np.asarray(first["start"][:2])
+            first_radius = footprint_radius(first["robot"])
+            for second in entries[index + 1:]:
+                distance = float(np.linalg.norm(first_xy - np.asarray(second["start"][:2])))
+                minimum = first_radius + footprint_radius(second["robot"])
+                if distance < minimum:
+                    overlaps.append(f"{first['entry'].label} and {second['entry'].label} ({distance:.2f} m apart)")
+        checks.append(Check(
+            "Robots do not overlap at spawn",
+            not overlaps,
+            "; ".join(overlaps) if overlaps else "All robot spawn footprints are separated.",
+        ))
+        obstacle_clearance = []
+        for state in entries:
+            mission = state["navigator"]
+            for label, point in (("start", state["start"][:2]), ("goal", mission.goal)):
+                if point is None:
+                    continue
+                for placed in build.scene.get("course", []):
+                    if np.linalg.norm(np.asarray(point) - np.asarray(placed["xy"])) < footprint_radius(state["robot"]) + placed["size_m"] / 2:
+                        obstacle_clearance.append(f"{state['entry'].label} {label}")
+                        break
+        checks.append(Check(
+            "Robot starts and goals clear obstacles",
+            not obstacle_clearance,
+            ", ".join(obstacle_clearance) if obstacle_clearance else "No start or goal intersects a placed obstacle.",
+        ))
+        ground = ground_geoms(model)
+        for _ in range(int(1.0 / model.opt.timestep)):
+            self._multi_control(model, data, states, data.time - 0.5)
+            mujoco.mj_step(model, data)
+        finite = bool(np.all(np.isfinite(data.qpos))) and instability_count(data) == 0
+        checks.append(Check(
+            "Simulation is stable",
+            finite,
+            "No NaN or blow-up in a 1 s settle test." if finite else "The physics became unstable during settling.",
+        ))
+        contact_results = []
+        for state in entries:
+            root = state["root"]
+            contacted = any(
+                int(data.contact[i].geom1) in ground or int(data.contact[i].geom2) in ground
+                for i in range(data.ncon)
+                if int(model.body_rootid[int(model.geom_bodyid[int(data.contact[i].geom1)])]) == root
+                or int(model.body_rootid[int(model.geom_bodyid[int(data.contact[i].geom2)])]) == root
+            )
+            tilt = math.degrees(math.acos(np.clip(data.xmat[root].reshape(3, 3)[2, 2], -1.0, 1.0)))
+            contact_results.append((state["entry"].label, contacted, tilt))
+        checks.append(Check(
+            "Robots rest on terrain",
+            all(contacted and tilt < FALL_TILT_DEG for _, contacted, tilt in contact_results),
+            "; ".join(f"{label}: {'contact' if contact else 'no contact'}, {tilt:.1f}° tilt"
+                      for label, contact, tilt in contact_results),
+        ))
+        return checks
+
+    def _run_multi(self, spec: SceneSpec, build: BuildResult, chunk_frames: int) -> Iterator[list[dict]]:
+        model, data = self._make(build)
+        mujoco.mj_forward(model, data)
+        states = self._multi_states(spec, model, data)
+        for state in states.values():
+            course_scene = dict(build.scene)
+            course_scene["mission"] = {
+                "start": self.missions[state["entry"].id]["start"],
+                "heading_deg": self.missions[state["entry"].id]["heading_deg"],
+                "goal": self.missions[state["entry"].id]["goal"],
+                "radius": self.missions[state["entry"].id]["radius"],
+            }
+            state["track"] = CourseTracker(model, course_scene, state["root"])
+        frames, cross_pairs = [], set()
+        steps_per_frame = max(1, int(round(1.0 / (FPS * model.opt.timestep))))
+        n_frames = int(spec.duration_s * FPS)
+        settle_s = 0.5
+        push_start = max(0.0, (spec.duration_s - spec.disturbance.duration_s) / 2) if spec.disturbance else 0.0
+        settled = False
+        for frame in range(n_frames):
+            for _ in range(steps_per_frame):
+                active_time = data.time - settle_s
+                self._multi_control(model, data, states, active_time)
+                if spec.disturbance is not None:
+                    for state in states.values():
+                        root = state["root"]
+                        data.xfrc_applied[root, 3:5] = 0
+                        if push_start <= active_time < push_start + spec.disturbance.duration_s:
+                            heading = state["heading"]
+                            data.xfrc_applied[root, 3:5] = spec.disturbance.push_n * np.array([-heading[1], heading[0]])
+                mujoco.mj_step(model, data)
+                for i in range(data.ncon):
+                    first = int(model.body_rootid[int(model.geom_bodyid[int(data.contact[i].geom1)])])
+                    second = int(model.body_rootid[int(model.geom_bodyid[int(data.contact[i].geom2)])])
+                    if first != second and first in {state["root"] for state in states.values()} and second in {state["root"] for state in states.values()}:
+                        cross_pairs.add(tuple(sorted((first, second))))
+            if not settled and data.time >= settle_s:
+                settled = True
+                for state in states.values():
+                    state["start"] = data.xpos[state["root"]].copy()
+            for state in states.values():
+                root = state["root"]
+                xmat = data.xmat[root]
+                tilt = math.degrees(math.acos(np.clip(xmat.reshape(3, 3)[2, 2], -1.0, 1.0)))
+                state["max_tilt"] = max(state["max_tilt"], tilt)
+                if tilt >= FLIP_TILT_DEG and state["flipped_at"] is None:
+                    state["flipped_at"] = round(data.time - settle_s, 2)
+                xy = data.xpos[root][:2].copy()
+                if state["last_xy"] is not None:
+                    state["path_len"] += float(np.linalg.norm(xy - state["last_xy"]))
+                state["last_xy"] = xy
+                nav = state["navigator"]
+                if nav.goal is not None:
+                    distance = float(np.linalg.norm(nav.goal - xy))
+                    state["distances"].append((round(data.time - settle_s, 2), distance, xy.copy()))
+                state["track"].update(data, xy, data.time - settle_s, state["flipped_at"] is not None)
+            frames.append({"t": round(frame / FPS, 3), "poses": self._poses(model, data)})
+            if len(frames) >= chunk_frames:
+                yield frames
+                frames = []
+        if frames:
+            yield frames
+
+        per_robot = {}
+        for robot_id, state in states.items():
+            root = state["root"]
+            end = data.xpos[root].copy()
+            start = state["start"]
+            nav = state["navigator"]
+            mission = self.missions[robot_id]
+            angle = math.radians(mission["heading_deg"])
+            forward = np.array([math.cos(angle), math.sin(angle)])
+            lateral = np.array([-forward[1], forward[0]])
+            reached = nav.reached_at is not None
+            start_distance = float(np.linalg.norm(nav.goal - start[:2])) if nav.goal is not None else None
+            final_distance = float(np.linalg.norm(nav.goal - end[:2])) if nav.goal is not None else None
+            closest = min((row[1] for row in state["distances"]), default=start_distance)
+            outcome = "reached" if reached else "fell" if state["flipped_at"] is not None else "out_of_time"
+            metrics = {
+                "id": robot_id,
+                "label": state["entry"].label,
+                "robot": state["robot"].model_dump(),
+                "distance_m": round(float(np.linalg.norm(end[:2] - start[:2])), 2),
+                "forward_progress_m": round(float(np.dot(end[:2] - start[:2], forward)), 2),
+                "lateral_drift_m": round(float(np.dot(end[:2] - start[:2], lateral)), 2),
+                "max_tilt_deg": round(state["max_tilt"], 1),
+                "flipped": state["flipped_at"] is not None,
+                "flipped_at_s": state["flipped_at"],
+                "goal_reached": reached,
+                "outcome": outcome,
+                "time_to_goal_s": round(nav.reached_at, 1) if reached else None,
+                "start_distance_to_goal_m": round(start_distance, 2) if start_distance is not None else None,
+                "closest_distance_m": round(closest, 2) if closest is not None else None,
+                "final_distance_m": round(final_distance, 2) if final_distance is not None else None,
+                "progress_toward_goal_m": round(start_distance - final_distance, 2) if start_distance is not None else None,
+                "path_length_m": round(state["path_len"], 2),
+                "goal_xy": [round(float(v), 2) for v in nav.goal] if nav.goal is not None else None,
+                "goal_radius_m": nav.radius,
+                "cross_robot_contacts": len(cross_pairs),
+                "obstacles": state["track"].summary(state["spec"], reached),
+            }
+            per_robot[robot_id] = metrics
+        ordered = sorted(
+            per_robot.values(),
+            key=lambda row: (
+                not row["goal_reached"],
+                row["time_to_goal_s"] if row["time_to_goal_s"] is not None else float("inf"),
+                -(row["forward_progress_m"] or 0.0),
+            ),
+        )
+        leaderboard = []
+        for rank, metrics in enumerate(ordered, 1):
+            if metrics["goal_reached"]:
+                result = f"arrived in {metrics['time_to_goal_s']:.1f} s"
+            elif metrics["final_distance_m"] is not None:
+                result = f"missed by {metrics['final_distance_m']:.1f} m - {metrics['outcome']}"
+            else:
+                result = f"{metrics['forward_progress_m']:.1f} m progress - {metrics['outcome']}"
+            leaderboard.append({
+                "rank": rank,
+                "id": metrics["id"],
+                "label": metrics["label"],
+                "robot": metrics["robot"].get("robot_id") or metrics["robot"]["kind"],
+                "policy": metrics["robot"].get("policy_id"),
+                "result": result,
+                "goal_reached": metrics["goal_reached"],
+                "time_to_goal_s": metrics["time_to_goal_s"],
+            })
+        self._summary = {
+            "simulator": self.name,
+            "duration_s": spec.duration_s,
+            "robots": per_robot,
+            "leaderboard": leaderboard,
+            "robot_contacts": len(cross_pairs),
+        }
+
     def run(self, spec: SceneSpec, build: BuildResult, chunk_frames: int = 30) -> Iterator[list[dict]]:
+        if len(spec.robots) > 1:
+            yield from self._run_multi(spec, build, chunk_frames)
+            return
         model, data = self._make(build)
         rover = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "rover")
         mujoco.mj_forward(model, data)

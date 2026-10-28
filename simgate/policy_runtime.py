@@ -119,6 +119,7 @@ class PolicyRunner:
         data: mujoco.MjData,
         *,
         inference_model: InferenceModel | None = None,
+        name_prefix: str = "",
     ) -> None:
         if card.format == "builtin":
             raise ValueError("built-in controllers are managed by the simulator, not PolicyRunner")
@@ -129,6 +130,7 @@ class PolicyRunner:
         self.card = card
         self.model = model
         self.data = data
+        self.name_prefix = name_prefix
         self.policy = inference_model or self._load_model(card)
         if self.policy.input_size != card.observation_size:
             raise ValueError(
@@ -255,19 +257,20 @@ class PolicyRunner:
     def _map_joints(self) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         joint_ids, qpos_addresses, dof_addresses, actuator_ids = [], [], [], []
         for name in self.card.joint_order:
-            joint_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_JOINT, name)
+            joint_name = f"{self.name_prefix}{name}"
+            joint_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_JOINT, joint_name)
             if joint_id < 0:
-                raise ValueError(f"policy joint does not exist in MuJoCo model: {name}")
+                raise ValueError(f"policy joint does not exist in MuJoCo model: {joint_name}")
             if int(self.model.jnt_type[joint_id]) not in (
                 int(mujoco.mjtJoint.mjJNT_HINGE),
                 int(mujoco.mjtJoint.mjJNT_SLIDE),
             ):
                 raise ValueError(f"policy joint must be scalar: {name}")
-            actuator_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_ACTUATOR, name)
+            actuator_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_ACTUATOR, joint_name)
             if actuator_id < 0:
-                raise ValueError(f"policy actuator does not exist in MuJoCo model: {name}")
+                raise ValueError(f"policy actuator does not exist in MuJoCo model: {joint_name}")
             if int(self.model.actuator_trnid[actuator_id, 0]) != joint_id:
-                raise ValueError(f"policy actuator {name} is not attached to its named joint")
+                raise ValueError(f"policy actuator {joint_name} is not attached to its named joint")
             joint_ids.append(joint_id)
             qpos_addresses.append(int(self.model.jnt_qposadr[joint_id]))
             dof_addresses.append(int(self.model.jnt_dofadr[joint_id]))

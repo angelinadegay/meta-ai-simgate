@@ -11,7 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from simgate import agents  # noqa: E402
 from simgate.backends.mujoco_backend import MuJoCoSimulator  # noqa: E402
 from simgate.backends.opensees_backend import OpenSeesSimulator  # noqa: E402
-from simgate.spec import Environment, Mission, Obstacle, Robot, SceneSpec, Structure, Terrain  # noqa: E402
+from simgate.spec import Environment, Mission, Obstacle, Robot, RobotEntry, SceneSpec, Structure, Terrain  # noqa: E402
 
 agents.config.MOCK_MODE = True
 
@@ -31,6 +31,56 @@ def test_rover_on_mars():
     assert all(c.passed for c in checks), [c for c in checks if not c.passed]
     assert frames == int(spec.duration_s * 30)
     assert sim.summary()["forward_progress_m"] > 1.0
+
+
+def test_three_rover_race_has_non_overlapping_spawns_and_leaderboard():
+    spec = SceneSpec(
+        domain="robot_terrain",
+        terrain=Terrain(kind="flat", roughness=0),
+        duration_s=22,
+        robots=[
+            RobotEntry(id=f"r{i}", label=f"Rover {i}", robot=Robot(), goal_place="east")
+            for i in range(1, 4)
+        ],
+    ).fill_defaults()
+    sim = MuJoCoSimulator()
+    build = sim.build(spec)
+    checks = sim.validate(spec, build)
+    assert all(check.passed for check in checks), [check for check in checks if not check.passed]
+    assert [row.id for row in spec.robots] == ["r1", "r2", "r3"]
+    assert sum(len(chunk) for chunk in sim.run(spec, build)) == int(spec.duration_s * 30)
+    leaderboard = sim.summary()["leaderboard"]
+    assert len(leaderboard) == 3 and all(row["goal_reached"] for row in leaderboard)
+    arrival_times = [row["time_to_goal_s"] for row in leaderboard]
+    assert arrival_times == sorted(arrival_times)
+
+
+def test_two_rovers_collide_in_shared_world():
+    spec = SceneSpec(
+        domain="robot_terrain",
+        terrain=Terrain(kind="flat", roughness=0),
+        duration_s=5,
+        robots=[
+            RobotEntry(id="left", label="Left rover", robot=Robot(), start_xy=[-2, 0], goal_xy=[2, 0]),
+            RobotEntry(id="right", label="Right rover", robot=Robot(), start_xy=[2, 0], goal_xy=[-2, 0]),
+        ],
+    ).fill_defaults()
+    sim = MuJoCoSimulator()
+    build = sim.build(spec)
+    assert sum(len(chunk) for chunk in sim.run(spec, build)) == 150
+    assert sim.summary()["robot_contacts"] > 0
+
+
+def test_legacy_robot_spec_becomes_single_entry():
+    spec = SceneSpec(
+        domain="robot_terrain",
+        robot=Robot(kind="walker"),
+        mission=Mission(start_xy=[-2, 1], goal_xy=[3, 1]),
+    ).fill_defaults()
+    assert len(spec.robots) == 1
+    assert spec.robots[0].id == "r1"
+    assert spec.robots[0].robot.kind == "walker"
+    assert spec.robots[0].mission().goal_xy == [3, 1]
 
 
 def test_icy_slope_physics():

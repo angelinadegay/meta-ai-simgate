@@ -6,7 +6,7 @@ Adding a new simulator means adding a domain and a backend, nothing else.
 """
 from typing import Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from . import presets
 
@@ -65,6 +65,28 @@ class Mission(BaseModel):
         return self.goal_xy is not None or self.goal_place is not None
 
 
+class RobotEntry(BaseModel):
+    id: str = Field(pattern=r"^[a-z0-9][a-z0-9_-]*$")
+    label: str = Field(min_length=1, max_length=80)
+    robot: Robot
+    start_xy: Optional[list[float]] = None
+    start_place: Optional[Place] = None
+    start_heading_deg: Optional[float] = None
+    goal_xy: Optional[list[float]] = None
+    goal_place: Optional[Place] = None
+    goal_radius_m: float = Field(1.0, gt=0.1, le=5.0)
+
+    def mission(self) -> Mission:
+        return Mission(
+            start_xy=self.start_xy,
+            start_place=self.start_place,
+            start_heading_deg=self.start_heading_deg,
+            goal_xy=self.goal_xy,
+            goal_place=self.goal_place,
+            goal_radius_m=self.goal_radius_m,
+        )
+
+
 ObstacleKind = Literal["rock", "boulder", "step", "stairs", "gap", "ramp", "wall", "log"]
 
 
@@ -108,12 +130,20 @@ class SceneSpec(BaseModel):
     terrain: Optional[Terrain] = None
     robot: Optional[Robot] = None
     mission: Optional[Mission] = None   # start and goal for a robot (optional)
+    robots: list[RobotEntry] = Field(default_factory=list, max_length=6)
     obstacles: list[Obstacle] = []      # an obstacle course (robot scenes only)
     structure: Optional[Structure] = None
     load: Optional[Load] = None
     disturbance: Optional[Disturbance] = None
     duration_s: float = 8.0
     assumptions: list[str] = []         # defaults the agent chose, shown to the user
+
+    @model_validator(mode="after")
+    def validate_robot_entries(self) -> "SceneSpec":
+        ids = [entry.id for entry in self.robots]
+        if len(set(ids)) != len(ids):
+            raise ValueError("robot entry ids must be unique")
+        return self
 
     def fill_defaults(self) -> "SceneSpec":
         """Fill physical values from reference presets and record what was assumed."""
@@ -143,7 +173,52 @@ class SceneSpec(BaseModel):
                 self.assumptions.append(f"Friction set to {env.friction} for a {env.surface} surface.")
         if self.domain == "robot_terrain":
             self.terrain = self.terrain or Terrain()
-            self.robot = self.robot or Robot()
+            if not self.robots:
+                self.robot = self.robot or Robot()
+                mission = self.mission or Mission()
+                self.robots = [
+                    RobotEntry(
+                        id="r1",
+                        label=self.robot.kind.title(),
+                        robot=self.robot.model_copy(deep=True),
+                        start_xy=mission.start_xy,
+                        start_place=mission.start_place,
+                        start_heading_deg=mission.start_heading_deg,
+                        goal_xy=mission.goal_xy,
+                        goal_place=mission.goal_place,
+                        goal_radius_m=mission.goal_radius_m,
+                    )
+                ]
+            else:
+                shared_goal = next(
+                    (
+                        entry for entry in self.robots
+                        if entry.goal_xy is not None or entry.goal_place is not None
+                    ),
+                    None,
+                )
+                if shared_goal is not None:
+                    for entry in self.robots:
+                        if entry.goal_xy is None and entry.goal_place is None:
+                            entry.goal_xy = shared_goal.goal_xy
+                            entry.goal_place = shared_goal.goal_place
+                            entry.goal_radius_m = shared_goal.goal_radius_m
+                self.robot = self.robots[0].robot.model_copy(deep=True)
+                self.mission = self.robots[0].mission()
+            for entry in self.robots:
+                if entry.robot.kind == "library":
+                    if not entry.robot.robot_id or not entry.robot.policy_id:
+                        raise ValueError(f"Library robot entry {entry.id!r} requires robot_id and policy_id.")
+                    from .library import LibraryRegistry
+
+                    registry = LibraryRegistry()
+                    robot_card = registry.robot(entry.robot.robot_id)
+                    compatible = {card.id for card in registry.compatible_policies(robot_card.id)}
+                    if entry.robot.policy_id not in compatible:
+                        raise ValueError(
+                            f"Policy {entry.robot.policy_id!r} is not compatible with robot {robot_card.id!r}."
+                        )
+                    entry.robot.mass_kg = robot_card.mass_kg
             if self.robot.kind == "library":
                 if not self.robot.robot_id or not self.robot.policy_id:
                     raise ValueError("Library robots require robot_id and policy_id.")

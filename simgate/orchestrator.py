@@ -81,6 +81,8 @@ class Session:
                 policy_id=policy.id,
                 mass_kg=robot_card.mass_kg,
             )
+        if spec.robots:
+            spec.robots[0].robot = spec.robot.model_copy(deep=True)
         spec.environment.body = world.body
         spec.environment.gravity = world.gravity_m_s2
         spec.environment.surface = world.surface
@@ -124,8 +126,13 @@ class Session:
             spec.mission = spec.mission or Mission()
             if which == "start":
                 spec.mission.start_xy, spec.mission.start_place, spec.mission.start_heading_deg = [x, y], None, None
+                if spec.robots:
+                    spec.robots[0].start_xy, spec.robots[0].start_place = [x, y], None
+                    spec.robots[0].start_heading_deg = None
             else:
                 spec.mission.goal_xy, spec.mission.goal_place = [x, y], None
+                for entry in spec.robots:
+                    entry.goal_xy, entry.goal_place = [x, y], None
             spec.assumptions = []
             spec.fill_defaults()
             await self.agent("Planner", "done", f"{which.capitalize()} set to ({x:.1f}, {y:.1f}) m."
