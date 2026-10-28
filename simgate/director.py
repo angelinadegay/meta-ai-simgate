@@ -245,8 +245,15 @@ Guidance:
 - run_now is true only when the user explicitly asks to run, race, start, or test now. Otherwise ask before running.
 - A question about capabilities or facts with no requested world change uses workflow answer.
 - Compare variants must each change a small number of valid conditions. Stress tests state the question.
+- A planet or moon named in the request goes in world.body ("martian" is mars, "lunar" is moon).
+- Obstacles for a course use placement "path", listed in the order the user gave them.
+- Only use a preset when the user asks for a real place (a named site such as Gale Crater, "real terrain", NASA
+  or HiRISE). For "Mars hills" or "a crater" use terrain_kind and body, with no preset.
 
 Short examples:
+Named world plan: {{"workflow":"build","summary":"Rover on Moon craters","world":{{"body":"moon","terrain_kind":"craters"}},"robots":[{{"kind":"rover"}}],"run_now":false}}
+Course plan: {{"workflow":"build","summary":"Rover obstacle course","world":{{"terrain_kind":"flat"}},"robots":[{{"kind":"rover"}}],"obstacles":[{{"kind":"rock","size":"small","count":10,"placement":"path"}},{{"kind":"step","placement":"path"}},{{"kind":"gap","placement":"path"}}],"run_now":false}}
+Real place plan: {{"workflow":"build","summary":"Rover in Gale Crater","world":{{"preset":"real-gale"}},"robots":[{{"kind":"rover"}}],"run_now":false}}
 Race plan: {{"workflow":"race","summary":"Three rovers race to the east side","robots":[{{"kind":"rover","count":3}}],"goal":{{"place":"east"}},"run_now":false}}
 Compare plan: {{"workflow":"compare","summary":"Rover on Mars and Earth","robots":[{{"kind":"rover"}}],"variants":[{{"label":"Mars","gravity":3.71}},{{"label":"Earth","gravity":9.81}}],"run_now":false}}
 Stress plan: {{"workflow":"stress_test","summary":"Rover robustness test","question":"How robust is it?","run_now":false}}

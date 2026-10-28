@@ -892,11 +892,30 @@ def test_plan_summaries_are_scene_names():
     assert '"Three rovers race on Mars hills", not an action' in prompt
     examples = [line for line in prompt.splitlines() if line.endswith("}") and ' plan: {"workflow"' in line]
     summaries = [json.loads(line.split(" plan: ", 1)[1])["summary"] for line in examples]
-    assert len(summaries) == 5
+    assert len(summaries) == 8
     assert not any(summary.split()[0] in {"Race", "Compare", "Test", "Make", "Explain", "Create"} for summary in summaries)
 
     plan = Director().plan("compare a rover on the moon and mars")
     assert plan.summary.startswith("4-wheel rover on") and "Compare" not in plan.summary
+
+
+def test_plan_prompt_states_world_course_and_preset_rules():
+    import json
+
+    from simgate.director import _plan_system
+    from simgate.plan import Plan
+
+    prompt = _plan_system()
+    assert "A planet or moon named in the request goes in world.body" in prompt
+    assert 'Obstacles for a course use placement "path", listed in the order the user gave them.' in prompt
+    assert "Only use a preset when the user asks for a real place" in prompt
+    examples = {
+        line.split(" plan: ", 1)[0]: Plan.model_validate(json.loads(line.split(" plan: ", 1)[1]))
+        for line in prompt.splitlines() if ' plan: {"workflow"' in line
+    }
+    assert examples["Named world"].world.body == "moon" and examples["Named world"].world.preset is None
+    assert [obstacle.placement for obstacle in examples["Course"].obstacles] == ["path"] * 3
+    assert examples["Real place"].world.preset == "real-gale"
 
 
 def test_plan_prompt_uses_compact_current_world_state():
