@@ -310,6 +310,32 @@ def test_plan_workflow_bounds_visible_repairs_and_asks_before_running():
             )
 
 
+def test_advisory_course_warning_does_not_block_or_repair():
+    import asyncio
+
+    from simgate.director import Director
+
+    async def scenario(text):
+        events = []
+
+        async def emit(event):
+            events.append(event)
+
+        world, message = await Director(emit).execute_plan(text)
+        return world, message, events
+
+    prompt = "Rover obstacle course: 10 small rocks, a step, stairs and a gap"
+    world, message, events = asyncio.run(scenario(prompt))
+    course = next(check for check in world.checks if check.name == "Course looks passable for this robot")
+    assert not course.passed and course.advisory
+    assert message == "Run it?"
+    assert not any(event.get("tool") == "repair" for event in events)
+
+    world, message, events = asyncio.run(scenario(prompt + ", run it"))
+    assert any(event.get("tool") == "run" and event.get("status") == "done" for event in events)
+    assert world.results is not None
+
+
 def test_plan_workflow_preserves_structural_scene_support():
     import asyncio
 

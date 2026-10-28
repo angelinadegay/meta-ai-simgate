@@ -15,6 +15,12 @@ class Check:
     name: str
     passed: bool
     detail: str
+    advisory: bool = False       # a warning shown to the user that never blocks a run
+
+
+def blocking_failures(checks: list[Check]) -> list[Check]:
+    """Failed checks that must be fixed before a run; advisory warnings are left out."""
+    return [check for check in checks if not check.passed and not check.advisory]
 
 
 @dataclass

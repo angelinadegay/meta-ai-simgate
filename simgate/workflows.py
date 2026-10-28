@@ -4,6 +4,7 @@ import asyncio
 from typing import TYPE_CHECKING, Any
 
 from . import agents, config, presets
+from .backends.base import blocking_failures
 from .plan import Plan
 from .spec import Load, Mission, Robot, RobotEntry, SceneSpec, Structure, Terrain
 from .tools import World
@@ -44,7 +45,7 @@ async def execute(plan: Plan, current: SceneSpec | None, director: "Director") -
             {"request": plan.custom_request or ""},
             "Building the requested custom scene detail.",
         )
-        if world.build is None or any(not check.passed for check in world.checks):
+        if world.build is None or blocking_failures(world.checks):
             return world, result.text
         return await _approval_or_run(world, plan, director, result.text)
 
@@ -165,14 +166,14 @@ async def _check_and_repair(
     director: "Director",
     thought: str,
 ) -> tuple[bool, str]:
-    checked = await director._mock_call(world, "build_and_check", {}, thought)
-    if checked.data.get("passed", False):
+    await director._mock_call(world, "build_and_check", {}, thought)
+    if not blocking_failures(world.checks):
         return True, ""
 
     builder_is_llm = not config.MOCK_MODE and config.BUILDER_MODE == "llm"
     attempts = 0
     for attempt in range(1, 4):
-        failures = [check for check in world.checks if not check.passed]
+        failures = blocking_failures(world.checks)
         if not failures:
             return True, ""
         failure_text = _format_failures(failures)
@@ -249,7 +250,7 @@ async def _check_and_repair(
         )
         checks = await asyncio.to_thread(simulator.validate, world.spec, build)
         world.simulator, world.build, world.checks = simulator, build, checks
-        passed = all(check.passed for check in checks)
+        passed = not blocking_failures(checks)
         await _finish_step(
             director,
             checker_id,
@@ -258,15 +259,13 @@ async def _check_and_repair(
             tool="build_and_check",
             parent_id=builder_id,
             thought=f"Checker finished attempt {attempt}.",
-            result="All checks passed." if passed else _format_failures(
-                [check for check in checks if not check.passed]
-            ),
+            result="All checks passed." if passed else _format_failures(blocking_failures(checks)),
             status="done" if passed else "warning",
         )
         if passed:
             return True, ""
 
-    failures = [check for check in world.checks if not check.passed]
+    failures = blocking_failures(world.checks)
     question = (
         f"The scene still fails checks after {attempts} repair attempt(s): {_format_failures(failures)}. "
         "I stopped without running it. What would you like to change?"

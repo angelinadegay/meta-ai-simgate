@@ -1206,7 +1206,7 @@ class MuJoCoSimulator(Simulator):
                 limit = 20.0 if spec.robot.kind == "walker" else 25.0
                 checks.append(Check("Straight path looks passable", steepest <= limit,
                                     f"Steepest ground on the straight line: {steepest:.0f}° (rough limit for this robot: {limit:.0f}°). "
-                                    "A warning, not a ban: it may still find a way."))
+                                    "A warning, not a ban: it may still find a way.", advisory=True))
 
         placed = build.scene.get("course") or []
         if spec.obstacles:
@@ -1229,7 +1229,7 @@ class MuJoCoSimulator(Simulator):
                                 (f"Probably too much for it: {what}. " if hard else "Every obstacle is within its rough limits. ")
                                 + f"Rough limits: climbs about {lim['climb_m']} m, "
                                 + (f"crosses gaps up to about {lim['gap_m']} m. " if lim["gap_m"] else "can't cross gaps. ")
-                                + "A warning, not a ban: run it to find out."))
+                                + "A warning, not a ban: run it to find out.", advisory=True))
 
         if spec.robot.kind == "library" and policy_runner is None:
             checks.append(

@@ -8,7 +8,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from . import agents, config, llm, presets
-from .backends.base import BuildResult, Check, Simulator
+from .backends.base import BuildResult, Check, Simulator, blocking_failures
 from .library import LibraryRegistry
 from .spec import Mission, Obstacle, Robot, RobotEntry, SceneSpec, Terrain
 
@@ -370,7 +370,7 @@ def run(world: World, args: dict[str, Any] | None = None) -> ToolResult:
         raise ValueError("run takes no arguments.")
     if world.simulator is None or world.build is None:
         raise ValueError("Build and check the scene before running it.")
-    failures = [check for check in world.checks if not check.passed]
+    failures = blocking_failures(world.checks)
     if failures:
         raise ValueError("Cannot run while checks fail: " + "; ".join(check.name for check in failures))
     for _chunk in world.simulator.run(world.spec, world.build):
