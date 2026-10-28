@@ -32,8 +32,10 @@ class Director:
             {"role": "user", "content": f"Current world state:\n{_plan_world_state(world_state)}\n\nRequest:\n{text}"},
         ]
         last_error = ""
+        reply = ""
         for attempt in range(2):
             if attempt:
+                messages.append({"role": "assistant", "content": reply})
                 messages.append({
                     "role": "user",
                     "content": f"The previous response failed validation with this exact error:\n{last_error}\nReturn a corrected Plan JSON only.",

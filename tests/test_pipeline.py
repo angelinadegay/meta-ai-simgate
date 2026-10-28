@@ -144,6 +144,10 @@ def test_director_planning_uses_one_call_retries_validation_and_falls_back():
         corrected = Director().plan("build a rover")
         assert len(calls) == 2
         assert "robot_id 'go3' doesn't exist" in calls[1][-1]["content"]
+        assert calls[1][-2] == {
+            "role": "assistant",
+            "content": '{"workflow":"build","summary":"Use an unknown robot.","robots":[{"robot_id":"go3"}]}',
+        }
         assert corrected.robots[0].kind == "rover"
 
         calls.clear()
