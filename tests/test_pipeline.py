@@ -83,6 +83,32 @@ def test_legacy_robot_spec_becomes_single_entry():
     assert spec.robots[0].mission().goal_xy == [3, 1]
 
 
+def test_director_tools_validate_and_update_world():
+    import pytest
+    from pydantic import ValidationError
+
+    from simgate import tools
+
+    world = tools.World(agents.plan("a rover on flat terrain"))
+    tools.set_world(world, {"body": "mars", "surface": "regolith"})
+    assert world.spec.environment.body == "mars" and world.spec.environment.friction is not None
+    with pytest.raises((ValidationError, ValueError)):
+        tools.set_world(world, {"body": "jupiter"})
+    spawned = tools.spawn_robot(world, {"kind": "walker", "label": "Six-legged scout"})
+    assert spawned.data["robot"]["id"] == "r2"
+    tools.set_goal(world, {"robot_id": "all", "place": "east"})
+    assert all(entry.goal_place == "east" for entry in world.spec.robots)
+    added = tools.add_obstacles(world, {"obstacles": [{"kind": "rock", "count": 2}]})
+    assert len(added.data["obstacles"]) == 1
+    library = tools.list_library(world)
+    assert library.data["robots"] and library.data["policies"]
+    removed = tools.remove_robot(world, {"id": "r2"})
+    assert len(removed.data["robots"]) == 1
+    checked = tools.build_and_check(world)
+    assert checked.data["checks"]
+    assert world.build is not None and world.simulator is not None
+
+
 def test_icy_slope_physics():
     # Friction 0.1 is below tan(25°) ≈ 0.47, so the rover cannot hold position and should not climb.
     spec = SceneSpec(domain="robot_terrain", environment=Environment(surface="ice"), terrain=Terrain(kind="slope", slope_deg=25, roughness=0.1)).fill_defaults()
