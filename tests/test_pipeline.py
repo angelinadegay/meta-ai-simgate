@@ -136,9 +136,22 @@ def test_mock_director_turns_race_into_ordered_tool_calls():
     assert len(world.spec.robots) == 3 and all(entry.goal_place == "east" for entry in world.spec.robots)
     assert message == "Run it?" and all(check.passed for check in world.checks)
     assert {"Builder", "Checker"} <= {event["agent"] for event in events if event["type"] == "step"}
-    step_ids = {event["id"] for event in events if event["type"] == "step"}
-    assert all(event.get("parent_id") is None or event["parent_id"] in step_ids
-               for event in events if event["type"] == "step")
+    steps = [event for event in events if event["type"] == "step"]
+    parents = {}
+    for event in steps:
+        if event["id"] in parents:
+            assert parents[event["id"]] == event.get("parent_id")
+        else:
+            parents[event["id"]] = event.get("parent_id")
+    roots = {step_id for step_id, parent_id in parents.items() if parent_id is None}
+    assert len(roots) == 1
+    for step_id, parent_id in parents.items():
+        visited = {step_id}
+        while parent_id is not None:
+            assert parent_id in parents and parent_id not in visited
+            visited.add(parent_id)
+            parent_id = parents[parent_id]
+        assert visited & roots
 
     mixed, _, mixed_tools, _ = asyncio.run(
         scenario("a rover and a 6-legged walker on Mars hills, race to the summit")
@@ -206,6 +219,50 @@ def test_director_recovers_from_invalid_replies_and_failed_checks():
         import simgate.director as director_module
         director_module.invoke_tool = original_invoke
         config.MOCK_MODE = True
+
+
+def test_build_custom_retries_and_emits_attempt_steps():
+    import asyncio
+
+    from simgate import config
+    from simgate.director import Director
+
+    spec = agents.plan("a rover on flat terrain")
+    original_chat = agents.llm.chat
+    original_retries = config.BUILDER_MAX_RETRIES
+    replies = iter([
+        '{"thought":"Add a custom marker","tool":"build_custom","args":{"request":"Add a marker above the scene."}}',
+        '<geom name="bad_marker" type="cube" size="0.1 0.1 0.1" pos="0 0 20"/>',
+        '<geom name="marker" type="sphere" size="0.05" pos="0 0 20"/>',
+        '{"thought":"The marker is ready","final":"Custom scene detail added."}',
+    ])
+    events = []
+
+    async def emit(event):
+        events.append(event)
+
+    agents.llm.chat = lambda *_args, **_kwargs: next(replies)
+    config.MOCK_MODE = False
+    config.BUILDER_MAX_RETRIES = 2
+    try:
+        world, message = asyncio.run(Director(emit).execute("add a marker", current=spec))
+        assert message == "Custom scene detail added."
+        assert world.build is not None and "marker" in world.build.code
+        builder_steps = [
+            event for event in events
+            if event.get("agent") == "Builder" and event.get("status") != "working"
+        ]
+        assert [event["status"] for event in builder_steps] == ["warning", "done"]
+        assert "Custom fragment attempt 1." == builder_steps[0]["thought"]
+        assert "Custom fragment attempt 2." == builder_steps[1]["thought"]
+        assert "cube" in builder_steps[0]["result"]
+        assert "attempt 2" in builder_steps[1]["result"]
+        step_ids = {event["id"] for event in events if event.get("type") == "step"}
+        assert all(event.get("parent_id") in step_ids for event in builder_steps)
+    finally:
+        agents.llm.chat = original_chat
+        config.MOCK_MODE = True
+        config.BUILDER_MAX_RETRIES = original_retries
 
 
 def test_icy_slope_physics():

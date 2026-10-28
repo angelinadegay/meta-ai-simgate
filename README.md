@@ -34,26 +34,50 @@ learn the tools.
 ### 1. Agent pipeline
 
 ```
-prompt ─► Planner ─► SceneSpec ─► Router ─► Builder ─► Checker ─► (you approve) ─► Simulator ─► Explainer
-          (model)    (shared      (picks     (writes     (reference   "Does this      (streams      (plain-language
-                      format)     simulator)  sim code)   values)      look right?")   frames)       explanation)
+prompt ─► Director ─► tools ─► Builder ─► Checker ─► (you approve) ─► Simulator ─► Explainer
+          (plans       (edit,    (builds    (checks       "Run it?"      (streams      (explains
+           actions)    build,     scene)    physics)                      frames)       evidence)
+                       run...)
 ```
 
-- **Planner** turns a prompt into a structured scene spec. It also handles follow-up edits such as
-  *"make the slope steeper"* or *"use six legs"*. Any value the user doesn't give is filled from reference
-  data and listed as an assumption, so nothing is hidden.
-- **Router** reads the spec and picks the simulator: MuJoCo for robots, OpenSees for buildings.
-- **Builder** writes the simulation code. By default it uses a verified template. In `llm` mode the model writes
-  the MuJoCo XML itself. If MuJoCo rejects the code, the error goes back to the model to fix, and after a few
-  failed tries the Builder falls back to the template.
-- **Checker** verifies the scene before anything runs (see [Physics checks](#physics-checks)).
-- **Checkpoint:** the user approves the scene ("Does this look right?") before it runs. One click gives exactly
+- The **Director** interprets new scenarios and follow-up requests, then chooses registered tools to edit the
+  current world, build and check it, run approved work, and explain results. The model returns one JSON tool
+  action at a time; it does not write physical values or place objects directly.
+- **Builder** produces the simulation from a verified template by default. In `llm` mode it can write MuJoCo
+  XML; invalid output is retried and falls back to the template if needed. The constrained `build_custom` tool
+  only appends body/geom fragments and validates them without allowing robot joints or actuators to be changed.
+- **Checker** verifies the scene before anything runs (see [Physics checks](#physics-checks)). Failed checks are
+  returned to the Director so it can repair the scene before a run.
+- **Approval:** the Director asks "Run it?" unless the user explicitly requested a run. One click gives exactly
   one run, and an explicit "run again" repeats it.
 - **Simulator** streams frames live to the browser.
 - **Explainer** describes what happened in plain language, using only measured evidence. It marks anything it
   infers with "likely" and suggests one thing to try next.
 - **Mock mode:** with no model configured, simple rules stand in for every agent, so the whole pipeline works
   offline.
+
+### Director and tools
+
+The Director can call `set_world`, `spawn_robot`, `remove_robot`, `list_library`, `add_obstacles`,
+`clear_obstacles`, `set_start`, `set_goal`, `build_and_check`, `run`, `compare`, `build_custom`, `ask_user` and
+`explain`. `stress_test` is registered only when the stress-test module is available. The tool loop allows up to
+12 actions per request and one correction attempt after invalid model output or a tool error. A model selects
+options and registered IDs; code and presets provide physical values, terrain placement and obstacle placement.
+
+### Several robots
+
+A world can contain up to six robots sharing the same terrain and obstacles. They collide through the shared
+MuJoCo physics, while each robot keeps its own namespaced bodies, controls, diagnostics and mission. When a
+start is omitted, robots are placed in separated lanes across the route; one shared goal can be used for a race.
+The older single `robot`/`mission` format is still accepted and becomes the first robot entry automatically.
+Multi-robot results include per-robot measurements and an arrival/progress leaderboard; the browser shows
+individual colored trails and labels, and leaderboard rows move the follow camera to that robot.
+
+### Seeing the agents work
+
+The chat timeline shows each Director tool action and each Builder, Checker, Simulator or Explainer hand-off.
+Expand a step to inspect its arguments and result. The **Agents** panel shows which agent is active, its model
+and run count, with an arrow for hand-offs. The same row IDs connect each hand-off to its parent Director step.
 
 ### 2. MuJoCo backend (robots on terrain)
 
@@ -151,7 +175,8 @@ prompt ─► Planner ─► SceneSpec ─► Router ─► Builder ─► Check
 
 - A chat timeline shows each agent working live, with example prompts and one-tap chips for real terrain.
 - A three.js 3D view shows live playback, a follow camera, a play/pause button and a timeline scrubber.
-- Cards show the physics checks and the results, with plain-language labels.
+- Cards show physics checks, measured results and a multi-robot leaderboard. Robot camera chips, colored paths
+  and floating labels distinguish robots in shared scenes; clicking a leaderboard row follows that robot.
 - **Show code** shows the simulation code the Builder wrote.
 
 ### 8. Robot and policy library
@@ -214,11 +239,19 @@ Without a key, it runs in mock mode.
 
 ### 11. Tests
 
-`python tests/test_pipeline.py` runs 26 offline tests:
+`python tests/test_pipeline.py` runs 33 offline tests. The optional real-terrain integration test skips when
+`rasterio` is unavailable.
 
 | Test | Checks that |
 | --- | --- |
 | `rover_on_mars` | A rover on Mars hills passes all checks and makes progress |
+| `three_rover_race_has_non_overlapping_spawns_and_leaderboard` | Three robots start apart, pass checks and are ranked by arrival |
+| `two_rovers_collide_in_shared_world` | Two robots collide and contacts are recorded by shared physics |
+| `legacy_robot_spec_becomes_single_entry` | The single-robot format remains backward compatible |
+| `director_tools_validate_and_update_world` | Tools validate inputs and update the draft world |
+| `mock_director_turns_race_into_ordered_tool_calls` | Offline Director plans a mixed race and asks before running |
+| `director_recovers_from_invalid_replies_and_failed_checks` | Bad JSON, unknown tools and failed checks get a bounded recovery |
+| `build_custom_retries_and_emits_attempt_steps` | A rejected custom fragment is corrected and both attempts appear in the step tree |
 | `icy_slope_physics` | A rover can't climb a 25° ice slope (friction below tan 25°) |
 | `walkers_walk_without_falling` | 4- and 6-legged walkers walk on Mars hills without falling |
 | `building_textbook_and_resonance` | OpenSees matches the textbook cantilever, and a softer building sways more |

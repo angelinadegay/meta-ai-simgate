@@ -494,7 +494,12 @@ def build_custom(world: World, args: dict[str, Any]) -> ToolResult:
                 if failed:
                     raise ValueError("; ".join(f"{check.name}: {check.detail}" for check in failed))
                 world.simulator, world.build, world.checks = simulator, candidate, checks
-                return _result(f"Added custom scene detail on attempt {attempt}.", attempts=attempt, scene=candidate.scene)
+                return _result(
+                    f"Added custom scene detail on attempt {attempt}.",
+                    attempts=attempt,
+                    errors=errors,
+                    scene=candidate.scene,
+                )
             except Exception as exc:
                 message = f"{type(exc).__name__}: {str(exc)[:300]}"
                 errors.append(message)
