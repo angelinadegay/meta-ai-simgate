@@ -1,0 +1,48 @@
+{
+  "id": "g1_walking",
+  "name": "G1 Walking Policy",
+  "robot_id": "g1",
+  "format": "torchscript",
+  "file": "third_party/unitree_rl_gym/deploy/pre_train/g1/motion.pt",
+  "control_dt": 0.02,
+  "joint_order": [
+    "left_hip_pitch_joint",
+    "left_hip_roll_joint",
+    "left_hip_yaw_joint",
+    "left_knee_joint",
+    "left_ankle_pitch_joint",
+    "left_ankle_roll_joint",
+    "right_hip_pitch_joint",
+    "right_hip_roll_joint",
+    "right_hip_yaw_joint",
+    "right_knee_joint",
+    "right_ankle_pitch_joint",
+    "right_ankle_roll_joint"
+  ],
+  "obs_layout": [
+    {"name": "ang_vel", "size": 3, "scale": 0.25},
+    {"name": "gravity_orientation", "size": 3, "scale": 1.0},
+    {"name": "command", "size": 3, "scale": [2.0, 2.0, 0.25]},
+    {"name": "joint_position_delta", "size": 12, "scale": 1.0},
+    {"name": "joint_velocity", "size": 12, "scale": 0.05},
+    {"name": "last_action", "size": 12, "scale": 1.0},
+    {"name": "gait_phase", "size": 2, "scale": 1.0}
+  ],
+  "action_scale": 0.25,
+  "default_angles": [-0.1, 0.0, 0.0, 0.3, -0.2, 0.0, -0.1, 0.0, 0.0, 0.3, -0.2, 0.0],
+  "kps": [100, 100, 100, 150, 40, 40, 100, 100, 100, 150, 40, 40],
+  "kds": [2, 2, 2, 4, 2, 2, 2, 2, 2, 4, 2, 2],
+  "command": {
+    "names": ["vx", "vy", "yaw_rate"],
+    "ranges": [[-1.0, 1.0], [-1.0, 1.0], [-1.0, 1.0]],
+    "default": [0.5, 0.0, 0.0],
+    "scales": [2.0, 2.0, 0.25]
+  },
+  "clock_period_s": 0.8,
+  "training_notes": [
+    "The upstream deployment configuration uses a 50 Hz policy and a 500 Hz physics step.",
+    "Validate transfer to non-Earth gravity, rough terrain, and obstacles before relying on results."
+  ],
+  "license": "BSD-3-Clause",
+  "credit": "Unitree Robotics, unitree_rl_gym; see third_party/unitree_rl_gym/LICENSE and NOTICE.md."
+}

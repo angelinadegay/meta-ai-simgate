@@ -1,0 +1,28 @@
+{
+  "id": "g1",
+  "name": "G1 Humanoid",
+  "kind": "humanoid",
+  "source": "preset",
+  "mjcf_path": "third_party/unitree_rl_gym/resources/robots/g1_description/g1_12dof.xml",
+  "root_body": "pelvis",
+  "joint_names": [
+    "left_hip_pitch_joint",
+    "left_hip_roll_joint",
+    "left_hip_yaw_joint",
+    "left_knee_joint",
+    "left_ankle_pitch_joint",
+    "left_ankle_roll_joint",
+    "right_hip_pitch_joint",
+    "right_hip_roll_joint",
+    "right_hip_yaw_joint",
+    "right_knee_joint",
+    "right_ankle_pitch_joint",
+    "right_ankle_roll_joint"
+  ],
+  "actuator_type": "torque",
+  "standing_height_m": 1.28,
+  "mass_kg": 32.1069,
+  "forward_axis": [1.0, 0.0, 0.0],
+  "license": "BSD-3-Clause",
+  "credit": "Unitree Robotics, unitree_rl_gym; see third_party/unitree_rl_gym/LICENSE and NOTICE.md."
+}

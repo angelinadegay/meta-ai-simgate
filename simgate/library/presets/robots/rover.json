@@ -1,0 +1,13 @@
+{
+  "id": "rover",
+  "name": "Rover",
+  "kind": "wheeled",
+  "source": "builtin",
+  "root_body": "rover",
+  "joint_names": [],
+  "actuator_type": "torque",
+  "standing_height_m": 0.3,
+  "mass_kg": 10.0,
+  "license": "Project",
+  "credit": "Built-in SimGate robot."
+}
