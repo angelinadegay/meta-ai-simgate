@@ -1906,6 +1906,56 @@ def test_failure_chips_name_the_robot_that_failed():
     assert "chips" not in [e for e in won if e["type"] == "explanation"][-1]
 
 
+def test_crashed_runs_are_a_system_problem_not_physics():
+    from simgate import batch, diagnose
+
+    real = batch.run_batch
+
+    def crashing(which):
+        def run(spec, variations, on_result=None, timeout=batch.RUN_TIMEOUT_SECONDS, baseline=True):
+            results = real(spec, variations, None, timeout, baseline)
+            for index, result in enumerate(results):
+                if which(index, result):
+                    results[index] = batch._result_error(index, result["label"], result["changes"], "RuntimeError: boom")
+                if on_result:
+                    on_result(results[index])
+            return results
+        return run
+
+    stress_explained = []
+    original_explain = agents._mock_explain_stress
+    try:   # half the stress runs crash: the rest are explained, the crashed ones are only reported
+        agents._mock_explain_stress = lambda results: stress_explained.append(results) or original_explain(results)
+        batch.run_batch = crashing(lambda index, result: index % 2 == 1)
+        _, (_, stress) = session_turns("Rover obstacle course with a big step", "stress test")
+        warning = next(e for e in stress if e["type"] == "step" and e["tool"] == "crashed")
+        total = next(e for e in stress if e["type"] == "batch_done")["total"]
+        assert warning["status"] == "warning" and warning["result"].startswith(f"{total // 2} of {total} runs crashed: RuntimeError: boom")
+        assert stress_explained and not any(r.get("error") for r in stress_explained[-1])
+        message = stress[-1]["message"]
+        assert stress[-1]["type"] == "explanation" and message.startswith(f"{total // 2} of {total} runs crashed")
+        assert f"of {total - total // 2} runs passed" in message   # the pattern counts only runs that ran
+
+        stress_explained.clear()   # every run crashes: no Explainer at all
+        batch.run_batch = crashing(lambda index, result: True)
+        _, (_, stress) = session_turns("Rover obstacle course with a big step", "stress test")
+        assert not stress_explained and not [e for e in stress if e["type"] == "agent" and e["agent"] == "Explainer"]
+        assert "runs crashed" in stress[-1]["message"] and "nothing to analyse" in stress[-1]["message"]
+    finally:
+        batch.run_batch, agents._mock_explain_stress = real, original_explain
+
+    try:   # the reproduction runs, every experiment crashes: no verdicts, decisions or conclusion from them
+        diagnose.run_batch = crashing(lambda index, result: result["label"] != "Baseline")
+        _, (_, why) = session_turns("Rover obstacle course with a big step, go", "why did it fail?")
+    finally:
+        diagnose.run_batch = real
+    report = next(e["report"] for e in why if e["type"] == "diagnosis")
+    assert report["reproduced"] and report["outcome"] == "crashed"
+    assert report["conclusion"].startswith(f"{len(report['hypotheses'])} of {len(report['hypotheses'])} runs crashed")
+    tools = [e["tool"] for e in why if e["type"] == "step" and e["status"] != "working"]
+    assert "crashed" in tools and "decision" not in tools and "conclusion" not in tools
+
+
 def test_stress_trigger_requires_robot_scene():
     import asyncio
     from unittest.mock import patch

@@ -8,8 +8,9 @@ from typing import Any, Callable, Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 from . import config, llm
-from .batch import _validate_variation, run_batch
-from .diagnose import describe_numbers, diagnose, key_numbers, pin_task, result_metrics, robot_metrics
+from .batch import _validate_variation, crash_report, run_batch
+from .diagnose import (SYSTEM_PROBLEM, describe_numbers, diagnose, key_numbers, pin_task, result_metrics,
+                       robot_metrics)
 from .spec import Robot, SceneSpec
 
 MAX_ROUNDS = 3
@@ -405,9 +406,11 @@ def robustness(spec: SceneSpec, changes: dict, robot_id: str | None) -> dict:
     checks = [{"label": f"seed {seed + 1}", "seed": seed + 1}, {"label": f"seed {seed + 2}", "seed": seed + 2},
               {"label": "friction -10%", "friction": round(friction * 0.9, 3)}]
     results = run_batch(designed, checks, baseline=False)
-    outcomes = [(check["label"], result_metrics(result, robot_id)) for check, result in zip(checks, results)]
+    outcomes = [(check["label"], result_metrics(result, robot_id)) for check, result in zip(checks, results)
+                if not result.get("error")]   # a crashed check is a system problem, not a robustness result
     failed = [label for label, metrics in outcomes if not metrics["passed"]]
-    return {"passed": len(outcomes) - len(failed), "total": len(outcomes), "failed": failed}
+    return {"passed": len(outcomes) - len(failed), "total": len(outcomes), "failed": failed,
+            **({"crashed": crash_report(results)} if crash_report(results) else {})}
 
 
 def redesign(spec: SceneSpec, summary: dict, constraints: str | None = None, diagnosis: dict | None = None,
@@ -524,7 +527,7 @@ def redesign(spec: SceneSpec, summary: dict, constraints: str | None = None, dia
             candidate["passed"] = after["passed"]
             candidate["closeness"] = closeness(base, after)
             candidate["numbers"] = key_numbers(base, after)
-            candidate["result"] = describe_numbers(candidate["numbers"])
+            candidate["result"] = "crashed (not a physics result)" if result.get("error") else describe_numbers(candidate["numbers"])
             candidate["distance"] = space.distance(candidate["changes"])
             if space.kind == "walker" and any(candidate["changes"].get(k, TESTED_GAIT[k]) != TESTED_GAIT[k] for k in TESTED_GAIT):
                 candidate["label"] = "untested gait"
@@ -543,6 +546,14 @@ def redesign(spec: SceneSpec, summary: dict, constraints: str | None = None, dia
         if not unchanged:
             passing = [c for c in passing if c not in candidates]
         report["rounds"].append({"round": number, "strategy": strategy, "reason": reason, "candidates": candidates})
+        if (crashed := crash_report(results)):   # a system problem: crashed designs are left out of the search
+            report["crashed"] = crashed
+            _emit(on_step, "Batch runner", "crashed", "Checking every design run completed.",
+                  f"{crashed}. {SYSTEM_PROBLEM}; crashed designs are left out.", "warning")
+            if not any(c.get("closeness") is not None for c in candidates):
+                report["decisions"].append({"agent": "Designer", "decision": "stop",
+                                            "reason": "Every design run crashed, so the search stopped."})
+                break
 
         if passing:
             winner = _pick_winner(world, space, passing, robot_id, report, on_step)
@@ -586,11 +597,12 @@ def _pick_winner(world: SceneSpec, space: DesignSpace, passing: list[dict], robo
         _emit(on_step, "Batch runner", "robustness", "Checking the smallest passing design on 3 nearby conditions.", "", "working")
         candidate["robustness"] = robustness(world, candidate["changes"], robot_id)
         report["robustness_runs"] += candidate["robustness"]["total"]
-        held = candidate["robustness"]["passed"] >= candidate["robustness"]["total"] - 1
+        held = candidate["robustness"]["total"] > 0 and candidate["robustness"]["passed"] >= candidate["robustness"]["total"] - 1
         _emit(on_step, "Batch runner", "robustness", "Robustness checks.",
               f"{describe_design(candidate['changes'], space.original())}: passes "
               f"{candidate['robustness']['passed']}/{candidate['robustness']['total']}"
-              + (f" (failed: {', '.join(candidate['robustness']['failed'])})" if candidate["robustness"]["failed"] else ""),
+              + (f" (failed: {', '.join(candidate['robustness']['failed'])})" if candidate["robustness"]["failed"] else "")
+              + (f"; {candidate['robustness']['crashed']} (not counted)" if candidate["robustness"].get("crashed") else ""),
               "done" if held else "warning")
         if held:
             return {**_winner_fields(candidate, space), "robustness": candidate["robustness"]}
@@ -608,11 +620,14 @@ def _message(report: dict, space: DesignSpace) -> str:
         robust = winner.get("robustness") or {}
         held = f" It passes {robust['passed']}/{robust['total']} robustness checks" + (
             f" (failed: {', '.join(robust['failed'])})." if robust.get("failed") else ".") if robust else ""
+        held += f" {robust['crashed']}, not counted." if robust.get("crashed") else ""
         gait = " Untested gait: outside the tuned 2.0 Hz / 15° settings." if winner.get("label") == "untested gait" else ""
         return (f"Smallest change that passes: {winner['description']}.{held}{gait} Tried {tried} designs. "
                 "Say \"use this design\" to apply it.")
     scored = [c for r in report["rounds"] for c in r["candidates"] if c.get("closeness") is not None]
     if not scored:
+        if report.get("crashed"):
+            return f"{report['crashed']}. {SYSTEM_PROBLEM}, so no design could be judged."
         return report.get("message") or f"No design passed in {tried} runs."
     best = max(scored, key=lambda c: c["closeness"])
     limits = [limit for c in sorted(scored, key=lambda c: -c["closeness"]) for limit in space.at_bound(c["changes"])]

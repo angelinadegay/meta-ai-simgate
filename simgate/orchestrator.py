@@ -3,10 +3,12 @@
 Every step emits events, so the browser can show the agents working live.
 """
 import asyncio
+import uuid
 from typing import Awaitable, Callable
 
 from . import agents
 from .backends.base import BuildResult, Check, Simulator, blocking_failures
+from .batch import crash_report, measured
 from .director import Director
 from .workflows import SessionState
 from .spec import SceneSpec
@@ -379,6 +381,14 @@ class Session:
         columns = [{"id": entry.id, "label": entry.label, "kind": entry.robot.kind} for entry in spec.robots]
         await self.emit({"type": "report", "rows": rows, "passed": passed, "total": len(results),
                          **({"robots": columns} if len(spec.robots) > 1 else {})})
+        crashed = crash_report(results)
+        if crashed:   # a system problem, not physics: shown as a warning and kept out of the analysis
+            await self.emit({"type": "step", "id": f"crash-{uuid.uuid4().hex[:8]}", "parent_id": None,
+                             "agent": "Batch runner", "model": "ProcessPoolExecutor", "tool": "crashed", "args": {},
+                             "thought": "Checking every run completed.", "result": crashed, "status": "warning", "ms": 0})
+            if not measured(results):
+                await self.emit({"type": "explanation", "message": agents.explain_stress(spec, results)})
+                return
         await self.agent("Explainer", "working", "Finding the pattern across the stress runs…")
         explanation = await asyncio.to_thread(agents.explain_stress, spec, results)
         await self.agent("Explainer", "done", "Stress-test pattern summarized.")

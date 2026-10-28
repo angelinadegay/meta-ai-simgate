@@ -690,13 +690,25 @@ def _mock_explain_stress(results: list[dict]) -> str:
     return text
 
 
+CRASH_NOTE = "That's a problem running the simulation, not a physics result"
+
+
 def explain_stress(spec: SceneSpec, results: list[dict]) -> str:
+    """Explain the runs that ran. Crashed runs are reported as a system problem and never analysed as physics;
+    when every run crashed there is nothing for the Explainer to read."""
+    from .batch import crash_report, measured
+
+    crashed, results = crash_report(results), measured(results)
+    if not results:
+        return f"{crashed}. {CRASH_NOTE}, so there is nothing to analyse." if crashed else "No runs to explain."
     if config.MOCK_MODE:
-        return _mock_explain_stress(results)
-    evidence = [{key: value for key, value in result.items() if key != "ghost"} for result in results]
-    return llm.chat(
-        [{"role": "system", "content": EXPLAIN_STRESS_SYSTEM},
-         {"role": "user", "content": f"Scene: {spec.title}\nAssumptions: {spec.assumptions}\n"
-                                    f"Stress-test results: {json.dumps(evidence)}"}],
-        temperature=0.4,
-    ).strip()
+        text = _mock_explain_stress(results)
+    else:
+        evidence = [{key: value for key, value in result.items() if key != "ghost"} for result in results]
+        text = llm.chat(
+            [{"role": "system", "content": EXPLAIN_STRESS_SYSTEM},
+             {"role": "user", "content": f"Scene: {spec.title}\nAssumptions: {spec.assumptions}\n"
+                                        f"Stress-test results: {json.dumps(evidence)}"}],
+            temperature=0.4,
+        ).strip()
+    return f"{crashed}. {CRASH_NOTE}, so those runs are left out. {text}" if crashed else text

@@ -200,6 +200,23 @@ def _result_error(run_id: int, label: str, changes: dict, message: str) -> dict:
     }
 
 
+def crash_report(results: list[dict]) -> str | None:
+    """"N of M runs crashed: <error>" when any run errored (an exception, a missing body, a timeout); None
+    otherwise. Crashed runs say nothing about the physics, so callers leave them out of any analysis."""
+    crashed = [result for result in results if result.get("error") and not result.get("capped")]
+    if not crashed:
+        return None
+    errors = list(dict.fromkeys(result["error"] for result in crashed))
+    others = f" (and {len(errors) - 1} other error{'s' if len(errors) > 2 else ''})" if len(errors) > 1 else ""
+    total = len([result for result in results if not result.get("capped")])
+    return f"{len(crashed)} of {total} runs crashed: {errors[0][:300]}{others}"
+
+
+def measured(results: list[dict]) -> list[dict]:
+    """The runs that actually ran (crashed and capped rows left out)."""
+    return [result for result in results if not result.get("error")]
+
+
 def _robot_geom_ids(code: str) -> tuple[list[int], int]:
     """Every robot's geoms (a single robot's root body is "rover", each racer's is "<id>_rover") and the index of
     the first robot's chassis, or of its first geom when it has none (library robots)."""
@@ -441,6 +458,7 @@ def run_batch(
 
     if overflow:
         cap_id = MAX_BATCH_RUNS - 1
-        store(_result_error(cap_id, "Run limit", {}, f"Batch capped at {MAX_BATCH_RUNS} runs; extra variations were not started."))
+        store({**_result_error(cap_id, "Run limit", {}, f"Batch capped at {MAX_BATCH_RUNS} runs; extra variations were not started."),
+               "capped": True})
 
     return [results[key] for key in sorted(results)]

@@ -7,7 +7,7 @@ from typing import Any, Callable, Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 from . import config, llm
-from .batch import _validate_variation, run_batch
+from .batch import _validate_variation, crash_report, run_batch
 from .spec import SceneSpec
 
 MAX_RERUNS = 5          # reproduction + every experiment, in total
@@ -535,6 +535,14 @@ def conclusion(hypotheses: list[dict], calls: list[dict], outcome: str = "conclu
     return text or mock_conclusion(hypotheses, outcome)
 
 
+SYSTEM_PROBLEM = "That's a problem running the simulation, not a physics result"
+
+
+def _tested(hypotheses: list[dict]) -> list[dict]:
+    """Experiments that ran: a crashed run has no verdict to analyse."""
+    return [h for h in hypotheses if h.get("verdict") != "not tested"]
+
+
 def _experiment(spec: SceneSpec, items: list[dict], base: dict, robot_id: str | None, report: dict,
                 on_step: StepCallback | None, thought: str) -> None:
     _emit(on_step, "Batch runner", "experiments", thought.format(n=len(items)), "", "working")
@@ -550,6 +558,10 @@ def _experiment(spec: SceneSpec, items: list[dict], base: dict, robot_id: str | 
     report["hypotheses"] += items
     _emit(on_step, "Batch runner", "experiments", "Experiments.",
           "; ".join(f"{h['cause']}: {h['verdict']} ({describe_numbers(h['key_numbers'])})" for h in items))
+    if (crashed := crash_report(results)):   # a system problem: these runs get no verdict and no analysis
+        report["crashed"] = crashed
+        _emit(on_step, "Batch runner", "crashed", "Checking every experiment ran.",
+              f"{crashed}. {SYSTEM_PROBLEM}; crashed runs are left out of the verdicts.", "warning")
 
 
 def diagnose(spec: SceneSpec, summary: dict, robot_id: str | None = None,
@@ -573,7 +585,7 @@ def diagnose(spec: SceneSpec, summary: dict, robot_id: str | None = None,
     base = result_metrics(base_result, robot_id)
     report["reproduced_metrics"] = base
     if base.get("error") or base["passed"]:
-        message = (f"The rerun could not run: {base['error']}" if base.get("error")
+        message = (f"{crash_report([base_result])}. {SYSTEM_PROBLEM}, so nothing was tested." if base.get("error")
                    else "The failure didn't reproduce: the unchanged scene passed when rerun, so I stopped there.")
         _emit(on_step, "Batch runner", "reproduce", "Rerunning the unchanged scene.", message, "warning")
         report.update(reproduced=False, conclusion=message)
@@ -598,16 +610,20 @@ def diagnose(spec: SceneSpec, summary: dict, robot_id: str | None = None,
                     for h in hypotheses))
 
     _experiment(spec, hypotheses, base, robot_id, report, on_step, "Running {n} single-change experiments in parallel.")
+    if not _tested(report["hypotheses"]):   # every experiment crashed: nothing for the Explainer to read
+        report["outcome"] = "crashed"
+        report["conclusion"] = f"{report['crashed']}. {SYSTEM_PROBLEM}, so nothing was concluded."
+        return report
     outcome = "conclude"
     for _ in range(MAX_DECISION_ROUNDS):
         remaining = MAX_RERUNS - report["runs"]
         recorded = len(report["decisions"])
         decided = None if config.MOCK_MODE else model_decision(
-            spec, report["hypotheses"], remaining, report["decisions"], report["model_calls"])
+            spec, _tested(report["hypotheses"]), remaining, report["decisions"], report["model_calls"])
         for dropped in report["decisions"][recorded:]:
             _emit(on_step, dropped["agent"], "decision", "Checking the follow-up experiments.",
                   f"{dropped['decision'].capitalize()}: {dropped['reason']}", "warning")
-        decided = decided or rule_decision(spec, report["hypotheses"], remaining)
+        decided = decided or rule_decision(spec, _tested(report["hypotheses"]), remaining)
         follow = decided["next"][: min(MAX_FOLLOW_UPS, remaining)] if decided["decision"] == "test more" else []
         outcome = decided["decision"] if decided["decision"] != "test more" or follow else "conclude"
         if follow or decided["decision"] != "test more":
@@ -624,6 +640,8 @@ def diagnose(spec: SceneSpec, summary: dict, robot_id: str | None = None,
             item["follow_up"] = True
         _experiment(spec, follow, base, robot_id, report, on_step, "Running {n} follow-up experiment(s).")
     report["outcome"] = outcome
-    report["conclusion"] = conclusion(report["hypotheses"], report["model_calls"], outcome)
+    report["conclusion"] = conclusion(_tested(report["hypotheses"]), report["model_calls"], outcome)
+    if report.get("crashed"):
+        report["conclusion"] += f" ({report['crashed']}; left out of the verdicts.)"
     _emit(on_step, "Explainer", "conclusion", "Writing the conclusion from the verdicts only.", report["conclusion"])
     return report
