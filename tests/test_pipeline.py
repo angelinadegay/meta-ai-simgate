@@ -201,12 +201,35 @@ def test_director_recovers_from_invalid_replies_and_failed_checks():
             return next(replies)
 
         agents.llm.chat = scripted_chat
-        recovered_world, message = asyncio.run(Director().execute("race three rovers"))
+        recovered_world, message = asyncio.run(Director().execute("prepare a robot"))
         assert message == "Added a rover."
         assert len(recovered_world.spec.robots) == 1
         assert recovered_world.spec.robots[0].robot.kind == "rover"
         assert "exactly one" in prompts[0] and "Arguments JSON Schema" in prompts[0]
         assert "do not omit required choices" in prompts[2]
+
+        stalled_replies = iter([
+            '{"thought":"Adjusting the world","tool":"set_world","args":{"body":"earth"}}'
+            for _ in range(12)
+        ])
+        recovery_events = []
+
+        async def recovery_emit(event):
+            recovery_events.append(event)
+
+        agents.llm.chat = lambda *_args, **_kwargs: next(stalled_replies)
+        recovered_world, message = asyncio.run(
+            Director(recovery_emit).execute("race three rovers to the far side")
+        )
+        assert len(recovered_world.spec.robots) == 3
+        assert all(entry.goal_place == "east" for entry in recovered_world.spec.robots)
+        assert recovered_world.build is not None
+        assert all(check.passed for check in recovered_world.checks)
+        assert "rules-based recovery" in message and "Run it?" in message
+        assert sum(
+            event.get("tool") == "spawn_robot" and event.get("status") == "done"
+            for event in recovery_events
+        ) == 3
 
         recovered, message = asyncio.run(execute_script([
             '{"thought":"Try unknown tool","tool":"erase_world","args":{}}',

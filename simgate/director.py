@@ -5,6 +5,7 @@ import json
 import re
 import time
 import uuid
+from collections import Counter
 from typing import Any, Awaitable, Callable
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -73,6 +74,7 @@ class Director:
             {"role": "user", "content": f"Current world state:\n{world.state()}\n\nUser request:\n{text}"},
         ]
         recovery_used = False
+        race_requests = _explicit_race_requests(text)
         root_id = self._id()
         self._root_id = root_id
         await self._emit_step(
@@ -80,7 +82,7 @@ class Director:
             tool=None, args={}, thought="Planning the next simulation actions.", result="",
             status="working", ms=0,
         )
-        for _ in range(12):
+        for action_count in range(12):
             reply = await asyncio.to_thread(llm.chat, _bounded_messages(messages), config.PLANNER_MODEL)
             messages.append({"role": "assistant", "content": reply})
             try:
@@ -101,6 +103,10 @@ class Director:
                 messages.append({"role": "user", "content": f"Invalid Director reply: {exc}. Return one corrected JSON object."})
                 continue
             if turn.final is not None:
+                if race_requests and _race_needs_recovery(world, race_requests):
+                    recovered_world, message = await self._recover_explicit_race(text, race_requests)
+                    await self._finish_root(message)
+                    return recovered_world, message
                 await self._emit_step(
                     id=self._id(), parent_id=root_id, agent="Director", model=config.PLANNER_MODEL,
                     tool=None, args={}, thought=turn.thought, result=turn.final, status="done", ms=0,
@@ -125,6 +131,10 @@ class Director:
                     status="warning", ms=0,
                 )
                 if recovery_used:
+                    if race_requests and _race_needs_recovery(world, race_requests):
+                        recovered_world, message = await self._recover_explicit_race(text, race_requests)
+                        await self._finish_root(message)
+                        return recovered_world, message
                     message = f"I stopped after the tool failed: {message}"
                     await self._finish_root(message)
                     return world, message
@@ -154,10 +164,80 @@ class Director:
                 ),
             })
             if turn.tool == "ask_user":
+                if race_requests and _race_needs_recovery(world, race_requests):
+                    recovered_world, message = await self._recover_explicit_race(text, race_requests)
+                    await self._finish_root(message)
+                    return recovered_world, message
                 await self._finish_root(result.text)
                 return world, result.text
+            if (
+                race_requests
+                and _race_needs_recovery(world, race_requests)
+                and action_count + 1 >= 6
+            ):
+                recovered_world, message = await self._recover_explicit_race(text, race_requests)
+                await self._finish_root(message)
+                return recovered_world, message
+        if race_requests and _race_needs_recovery(world, race_requests):
+            recovered_world, message = await self._recover_explicit_race(text, race_requests)
+            await self._finish_root(message)
+            return recovered_world, message
         message = "The Director reached the 12-tool limit before finishing. Please narrow the request."
         await self._finish_root(message)
+        return world, message
+
+    async def _recover_explicit_race(
+        self, text: str, requests: list[dict[str, Any]]
+    ) -> tuple[World, str]:
+        planned = agents._mock_plan(text)
+        mission = planned.mission
+        planned.robots = []
+        planned.robot = None
+        planned.mission = None
+        world = World(planned)
+
+        terrain = planned.terrain
+        await self._mock_call(world, "set_world", {
+            "body": planned.environment.body,
+            "surface": planned.environment.surface,
+            "terrain_kind": terrain.kind if terrain else None,
+            "preset": terrain.preset if terrain and terrain.kind == "real" else None,
+            "slope_deg": terrain.slope_deg if terrain and terrain.kind == "slope" else None,
+            "roughness": terrain.roughness if terrain else None,
+        }, "Completing the explicit race setup with the rules-based recovery.")
+        for index, robot_args in enumerate(requests, 1):
+            await self._mock_call(
+                world, "spawn_robot", robot_args,
+                f"Adding requested race robot {index} of {len(requests)}.",
+            )
+        if planned.obstacles:
+            await self._mock_call(
+                world, "add_obstacles",
+                {"obstacles": [obstacle.model_dump(mode="json") for obstacle in planned.obstacles]},
+                "Restoring the requested course obstacles.",
+            )
+        if mission is not None and mission.has_goal():
+            goal = mission.goal_xy if mission.goal_xy is not None else mission.goal_place
+            goal_args = {"robot_id": "all", "xy": goal} if isinstance(goal, list) else {
+                "robot_id": "all", "place": goal,
+            }
+            await self._mock_call(world, "set_goal", goal_args, "Assigning the shared race goal.")
+        checked = await self._mock_call(
+            world, "build_and_check", {}, "Building and checking the recovered race scene.",
+        )
+        if not checked.data.get("passed"):
+            failed = [
+                check["name"] for check in checked.data.get("checks", [])
+                if not check.get("passed")
+            ]
+            message = "I recovered the requested race, but physics checks failed: " + ", ".join(failed)
+            await self._finish_root(message)
+            return world, message
+        message = (
+            f"I reached the model's planning limit, so the rules-based recovery built and checked "
+            f"all {len(world.spec.robots)} requested robots. Run it?"
+        )
+        await self._mock_call(world, "ask_user", {"question": message}, "Asking before running the recovered race.")
         return world, message
 
 
@@ -464,6 +544,37 @@ def _compact_metrics(summary: dict[str, Any]) -> dict[str, Any]:
             for robot_id, metrics in summary["robots"].items()
         }
     return compact
+
+
+def _explicit_race_requests(text: str) -> list[dict[str, Any]]:
+    if not re.search(r"\brace\b", text, re.IGNORECASE):
+        return []
+    try:
+        requests = _requested_robots(text, None)
+    except ValueError:
+        return []
+    return requests if len(requests) > 1 else []
+
+
+def _race_needs_recovery(world: World, requests: list[dict[str, Any]]) -> bool:
+    def signature(robot: dict[str, Any]) -> tuple[Any, ...]:
+        if robot.get("robot_id"):
+            return "library", robot["robot_id"], robot.get("policy_id")
+        kind = robot.get("kind")
+        return kind, robot.get("wheels", 4), robot.get("legs", 4)
+
+    desired = Counter(signature(robot) for robot in requests)
+    actual = Counter(
+        (
+            entry.robot.kind if entry.robot.kind != "library" else "library",
+            entry.robot.robot_id if entry.robot.kind == "library" else entry.robot.wheels,
+            entry.robot.policy_id if entry.robot.kind == "library" else entry.robot.legs,
+        )
+        for entry in world.spec.robots
+    )
+    checks_passed = world.build is not None and all(check.passed for check in world.checks)
+    needs_confirmation = world.results is None and world.question is None
+    return desired != actual or not checks_passed or needs_confirmation
 
 
 _NUMBER_WORDS = {

@@ -43,6 +43,8 @@ prompt ─► Director ─► tools ─► Builder ─► Checker ─► (you ap
 - The **Director** interprets new scenarios and follow-up requests, then chooses registered tools to edit the
   current world, build and check it, run approved work, and explain results. The model returns one JSON tool
   action at a time; it does not write physical values or place objects directly.
+- For explicitly counted races, the Director verifies the requested robot mix was created and checked. If its
+  plan stalls or ends early, a rules-based recovery completes that race setup and asks for approval.
 - **Builder** produces the simulation from a verified template by default. In `llm` mode it can write MuJoCo
   XML; invalid output is retried and falls back to the template if needed. The constrained `build_custom` tool
   only appends body/geom fragments and validates them without allowing robot joints or actuators to be changed.
@@ -250,7 +252,7 @@ Without a key, it runs in mock mode.
 | `legacy_robot_spec_becomes_single_entry` | The single-robot format remains backward compatible |
 | `director_tools_validate_and_update_world` | Tools validate inputs and update the draft world |
 | `mock_director_turns_race_into_ordered_tool_calls` | Offline Director plans a mixed race and asks before running |
-| `director_recovers_from_invalid_replies_and_failed_checks` | Bad JSON, unknown tools and failed checks get a bounded recovery |
+| `director_recovers_from_invalid_replies_and_failed_checks` | Bad JSON, invalid tool arguments, stalled multi-robot races and failed checks get a bounded recovery |
 | `build_custom_retries_and_emits_attempt_steps` | A rejected custom fragment is corrected and both attempts appear in the step tree |
 | `director_context_compacts_scene_payload_and_bounds_history` | Large geometry payloads are summarized and conversation history stays bounded |
 | `icy_slope_physics` | A rover can't climb a 25° ice slope (friction below tan 25°) |
