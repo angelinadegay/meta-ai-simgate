@@ -48,6 +48,8 @@ prompt ─► Director ─► fixed workflow ─► Builder/Checker ─► (you 
 - **Checker** verifies the scene before anything runs (see [Physics checks](#physics-checks)). Failed checks
   enter a visible repair loop capped at three attempts. Template mode applies only safe, registered preset
   corrections; LLM Builder mode receives the exact failed checks. Remaining failures are shown and block a run.
+  The two advisory warnings (a steep straight path, a course beyond the robot's measured limits) are shown but
+  never trigger a repair or block a run.
 - **Approval:** the Director asks "Run it?" unless the user explicitly requested a run. One click gives exactly
   one run, and an explicit "run again" repeats it.
 - **Simulator** streams frames live to the browser.
@@ -251,7 +253,7 @@ Without a key, it runs in mock mode.
 
 ### 11. Tests
 
-`python tests/test_pipeline.py` runs 41 offline tests. The optional real-terrain integration test skips when
+`python tests/test_pipeline.py` runs 45 offline tests. The optional real-terrain integration test skips when
 `rasterio` is unavailable.
 
 | Test | Checks that |
@@ -265,12 +267,16 @@ Without a key, it runs in mock mode.
 | `stress_plan_requires_an_existing_robot_scene` | Stress plans without a robot scene fall back to a safe answer |
 | `plan_workflow_expands_race_and_runs_only_when_requested` | A 3-rover race asks before running and produces a 3-row leaderboard when requested |
 | `plan_workflow_bounds_visible_repairs_and_asks_before_running` | Repair events form a visible tree, stop after three attempts and never run failed scenes |
+| `advisory_course_warning_does_not_block_or_repair` | An obstacle course beyond the robot's limits is a warning: it asks "Run it?" or runs, with no repair loop |
+| `answer_first_does_not_leave_an_empty_scene` | A question asked before any scene leaves no empty scene, so the next prompt builds one |
+| `new_plan_scenes_keep_the_planned_title` | New robot and structure scenes are titled from the plan, not "Untitled scene" |
 | `plan_workflow_preserves_structural_scene_support` | Structural scenes still use the OpenSees build/check workflow |
 | `edit_plan_changes_only_the_requested_scene_fields` | A terrain edit preserves the existing robot, mission, world and obstacles |
 | `template_repair_uses_registered_physics_presets` | Safe repairs restore registered gravity, friction and slope values |
 | `director_tools_validate_and_update_world` | Tools validate inputs and update the draft world |
 | `mock_director_turns_race_into_ordered_tool_calls` | Offline planning creates a mixed race and asks before running |
 | `build_custom_retries_and_emits_attempt_steps` | A rejected custom fragment is corrected and both attempts appear in the step tree |
+| `plan_prompt_offers_built_in_robots_only_as_kinds` | The planning prompt lists only library robots by ID; rover and walker are offered as kinds |
 | `plan_prompt_uses_compact_current_world_state` | Current-world prompts exclude large code and mesh payloads |
 | `icy_slope_physics` | A rover can't climb a 25° ice slope (friction below tan 25°) |
 | `walkers_walk_without_falling` | 4- and 6-legged walkers walk on Mars hills without falling |
