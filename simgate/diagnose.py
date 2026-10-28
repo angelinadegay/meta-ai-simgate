@@ -48,6 +48,7 @@ def robot_metrics(summary: dict, robot_id: str | None = None) -> dict:
         not m.get("flipped", False) and (m.get("forward_progress_m") or 0) >= 1.0)
     return {
         "robot_id": robot_id,
+        "label": m.get("label"),
         "passed": passed,
         "has_goal": has_goal,
         "final_distance_m": m.get("final_distance_m"),
@@ -60,6 +61,33 @@ def robot_metrics(summary: dict, robot_id: str | None = None) -> dict:
         "outcome": m.get("outcome"),
         "stopped_by": stopped_by,
     }
+
+
+def target_robot(spec: SceneSpec, summary: dict, requested: str | None = None) -> tuple[str | None, str]:
+    """The ONE robot to diagnose or redesign, and why it was chosen. In a race that is the robot the user named
+    (an id, a label or a kind such as "walker"), otherwise the first robot in leaderboard order that missed."""
+    robots = summary.get("robots") if isinstance(summary.get("robots"), dict) else None
+    if not robots:
+        return None, ""
+    order = [row["id"] for row in summary.get("leaderboard") or [] if row.get("id") in robots]
+    order += [robot_id for robot_id in robots if robot_id not in order]
+    entries = {entry.id: entry for entry in spec.robots}
+    failed = [robot_id for robot_id in order if not robot_metrics(summary, robot_id)["passed"]]
+
+    def label(robot_id: str) -> str:
+        return entries[robot_id].label if robot_id in entries else robot_id
+
+    if requested:
+        word = requested.strip().lower()
+        named = [robot_id for robot_id in order if robot_id in entries and word in (
+            robot_id, entries[robot_id].label.lower(), entries[robot_id].robot.kind, entries[robot_id].robot.robot_id)]
+        named = named or [robot_id for robot_id in order if robot_id in entries and word in entries[robot_id].label.lower()]
+        if named:
+            chosen = next((robot_id for robot_id in named if robot_id in failed), named[0])
+            return chosen, f"{label(chosen)} ({chosen}), the robot you named."
+    if failed:
+        return failed[0], f"{label(failed[0])} ({failed[0]}), the first robot in the leaderboard that missed."
+    return order[0], f"{label(order[0])} ({order[0]})."
 
 
 def result_metrics(result: dict, robot_id: str | None) -> dict:
@@ -456,6 +484,13 @@ def model_decision(spec: SceneSpec, hypotheses: list[dict], remaining: int, deci
     return {"decision": reply.decision, "reason": reply.reason, "next": follow}
 
 
+def _passed_how(summary: dict, robot_id: str | None) -> str:
+    row = next((row for row in summary.get("leaderboard") or [] if row.get("id") == robot_id), None)
+    if row and row.get("goal_reached"):
+        return f"reached the goal in {row['time_to_goal_s']:g} s (rank {row['rank']})"
+    return "passed"
+
+
 def mock_conclusion(hypotheses: list[dict], outcome: str = "conclude") -> str:
     confirmed = [h["cause"] for h in hypotheses if h["verdict"] == "confirmed"]
     partly = [h["cause"] for h in hypotheses if h["verdict"] == "partly"]
@@ -525,8 +560,10 @@ def diagnose(spec: SceneSpec, summary: dict, robot_id: str | None = None,
     report: dict[str, Any] = {"type": "diagnosis", "robot_id": robot_id, "original": original,
                               "hypotheses": [], "decisions": [], "model_calls": [], "runs": 0}
     if original["passed"]:
-        report.update(reproduced=None, conclusion="This run passed, so there is no failure to explain. "
-                                                  "Ask \"why did it fail?\" after a run that fails.")
+        report.update(reproduced=None, conclusion=(
+            f"{original['label']} didn't fail: it {_passed_how(summary, robot_id)}, so there is no failure to explain."
+            if original.get("label") else
+            "This run passed, so there is no failure to explain. Ask \"why did it fail?\" after a run that fails."))
         return report
 
     spec = pin_task(spec, summary)

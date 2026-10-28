@@ -30,13 +30,14 @@ class SessionState:
     redesign: dict | None = None
 
     def failed_robot(self) -> str | None:
-        """The first robot that failed the last run, or None when there is no failed run."""
+        """The first robot in leaderboard order that failed the last run, or None when there is no failed run."""
         from .diagnose import robot_metrics
 
         if self.summary is None:
             return None
         robots = self.summary.get("robots") if isinstance(self.summary.get("robots"), dict) else None
-        for robot_id in (list(robots) if robots else [None]):
+        order = [row["id"] for row in self.summary.get("leaderboard") or [] if robots and row.get("id") in robots]
+        for robot_id in (order + [r for r in robots if r not in order] if robots else [None]):
             metrics = robot_metrics(self.summary, robot_id)
             if not metrics["passed"]:
                 return metrics["robot_id"] or "r1"
@@ -189,7 +190,7 @@ async def _prepare_robot_world(
 
 async def _analysis(plan: Plan, current: SceneSpec | None, director: "Director", state: SessionState) -> WorkflowResult:
     """Prove why the last run failed, or search for a design that passes. The scene itself never changes."""
-    from .diagnose import diagnose
+    from .diagnose import diagnose, target_robot
     from .redesign import redesign
 
     if current is None or current.domain != "robot_terrain":
@@ -197,25 +198,35 @@ async def _analysis(plan: Plan, current: SceneSpec | None, director: "Director",
     world = World(current.model_copy(deep=True), simulator=state.simulator, build=state.build, checks=list(state.checks))
     if state.summary is None:
         return world, "Run the scene first; then I can test why it fails or search for a design that passes."
-    robot_id = plan.robot_id or state.failed_robot()
+    robot_id, chosen = target_robot(current, state.summary, plan.robot_id)
+    parent = director._root_id
+    if len(current.robots) > 1:   # a race: say which ONE robot is analysed; the others stay as they are
+        others = ", ".join(entry.label for entry in current.robots if entry.id != robot_id)
+        parent = await _emit_completed_step(
+            director, agent="Explainer" if plan.workflow == "diagnose" else "Designer", model="rules", tool="target",
+            parent_id=parent, thought="Choosing the one robot to analyse.",
+            result=f"{'Diagnosing' if plan.workflow == 'diagnose' else 'Redesigning'} {chosen} {others} "
+                   f"{'stays' if ',' not in others else 'stay'} unchanged and {'its' if ',' not in others else 'their'} "
+                   "results are ignored for the verdict.",
+            status="done")
 
     if plan.workflow == "diagnose":
         job = lambda on_step: diagnose(current, state.summary, robot_id, on_step)  # noqa: E731
     else:
         job = lambda on_step: redesign(current, state.summary, plan.constraints, state.diagnosis,  # noqa: E731
                                        robot_id, on_step)
-    report = await _stream_steps(job, director)
+    report = await _stream_steps(job, director, parent)
     world.report = report
     return world, report.get("conclusion") or report.get("message", "")
 
 
-async def _stream_steps(job, director: "Director") -> dict:
+async def _stream_steps(job, director: "Director", parent: str | None = None) -> dict:
     """Run a blocking analysis in a thread and show its steps as they happen, each following the previous one."""
     loop = asyncio.get_running_loop()
     queue: asyncio.Queue = asyncio.Queue()
     task = asyncio.ensure_future(asyncio.to_thread(job, lambda step: loop.call_soon_threadsafe(queue.put_nowait, step)))
     open_steps: dict[tuple[str, str], tuple[str, str | None]] = {}
-    parent = director._root_id
+    parent = parent or director._root_id
 
     async def show(step: dict) -> None:
         nonlocal parent

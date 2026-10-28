@@ -385,9 +385,11 @@ def _variation(changes: dict, robot_id: str | None, label: str) -> dict:
     return variation
 
 
-def _world(spec: SceneSpec) -> dict:
-    """Everything that must not change: environment, terrain, obstacles, starts, goals and conditions."""
+def _world(spec: SceneSpec, robot_id: str | None = None) -> dict:
+    """Everything that must not change: environment, terrain, obstacles, starts, goals, conditions and, in a race,
+    every other robot's design."""
     return {
+        "other_robots": [e.robot.model_dump() for e in spec.robots if robot_id is not None and e.id != robot_id],
         "environment": spec.environment.model_dump(), "terrain": spec.terrain.model_dump() if spec.terrain else None,
         "obstacles": [o.model_dump() for o in spec.obstacles], "disturbance": spec.disturbance,
         "duration_s": spec.duration_s,
@@ -427,7 +429,8 @@ def redesign(spec: SceneSpec, summary: dict, constraints: str | None = None, dia
         report["notes"].append("Only the walking speed and the choice of compatible policy can change: the trained "
                                "policy expects this exact body, so its body is never edited.")
     if original_metrics["passed"]:
-        report["message"] = "This run already passes, so there is nothing to redesign."
+        report["message"] = (f"{original_metrics['label']} already passes, so there is nothing to redesign."
+                             if original_metrics.get("label") else "This run already passes, so there is nothing to redesign.")
         return report
     if not space.knobs:
         report["message"] = "Your constraints leave no design knob free to change."
@@ -530,8 +533,8 @@ def redesign(spec: SceneSpec, summary: dict, constraints: str | None = None, dia
         _emit(on_step, "Batch runner", "designs", "Design runs.",
               "; ".join(f"{describe_design(c['changes'], space.original())}: "
                         f"{'passed' if c['passed'] else c['result']}" for c in candidates))
-        unchanged = all(_world(_validate_variation(world, _variation(c["changes"], robot_id, "check"))[1]) == _world(world)
-                        for c in candidates)
+        unchanged = all(_world(_validate_variation(world, _variation(c["changes"], robot_id, "check"))[1], robot_id)
+                        == _world(world, robot_id) for c in candidates)
         _emit(on_step, "Checker", "designs", "Checking every design kept the world and stayed in bounds.",
               ("World unchanged; every change within the allowed ranges." if unchanged
                else "A design changed the world; its result is not used.") +

@@ -1867,6 +1867,32 @@ def test_stress_test_on_a_race_reports_each_robot():
         assert payload["summary"]["robots"][robot_id]["robot"]["mass_kg"] == before + payload["changes"]["payload_kg"]
 
 
+def test_race_diagnosis_and_redesign_target_one_robot():
+    from simgate.redesign import BOUNDS
+
+    session, (race, rover, walker, fix) = session_turns(
+        MIXED_RACE, "why did the rover fail?", "why did it fail?", "make the walker pass")
+    robots = next(e["metrics"] for e in race if e["type"] == "metrics")["robots"]
+    assert robots["r1"]["goal_reached"] and not robots["r2"]["goal_reached"]
+    assert [robots[robot_id]["robot"]["kind"] for robot_id in ("r1", "r2")] == ["rover", "walker"]
+
+    named = next(e["report"] for e in rover if e["type"] == "diagnosis")   # the rover won: nothing to explain
+    assert named["robot_id"] == "r1" and named["runs"] == 0 and "didn't fail" in named["conclusion"]
+
+    diagnosis = next(e["report"] for e in walker if e["type"] == "diagnosis")
+    assert diagnosis["robot_id"] == "r2" and diagnosis["reproduced"]
+    assert not [h for h in diagnosis["hypotheses"] if h["verdict"] == "not tested"]
+    first = [e for e in walker if e["type"] == "step" and e["status"] != "working" and e["agent"] != "Director"][0]
+    assert first["tool"] == "target" and "Walker (r2)" in first["result"] and "Rover stays unchanged" in first["result"]
+
+    redesign = next(e["report"] for e in fix if e["type"] == "redesign")
+    assert redesign["robot_id"] == "r2" and redesign["kind"] == "walker"
+    tried = [c["changes"] for r in redesign["rounds"] for c in r["candidates"]]
+    assert tried and all(set(changes) <= set(BOUNDS["walker"]) for changes in tried)
+    checks = [e for e in fix if e["type"] == "step" and e["agent"] == "Checker" and e["status"] != "working"]
+    assert checks and all(e["status"] == "done" and "World unchanged" in e["result"] for e in checks)
+
+
 def test_stress_trigger_requires_robot_scene():
     import asyncio
     from unittest.mock import patch

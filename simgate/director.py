@@ -63,6 +63,8 @@ class Director:
                     plan = guarded
                 if plan.workflow == "redesign":
                     plan.constraints = text   # limits are read from the user's own words
+                if plan.workflow in ("diagnose", "redesign"):
+                    plan.robot_id = _mentioned_robot(text, world_state) or plan.robot_id
                 return plan
             except (ValueError, TypeError) as exc:
                 last_error = str(exc)
@@ -476,7 +478,7 @@ def _rule_plan(text: str, world_state: World | SceneSpec | dict[str, Any] | None
 
 
 _WHY = re.compile(r"\bwhy\b|\bprove (it|why)\b|\bwhat caused\b|\bwhat went wrong\b|\bdiagnos")
-_FIX = re.compile(r"\bfix (it|this|that)\b|\bmake (it|this|that) (pass|work|succeed)\b|\bwhat would work\b|\bredesign\b")
+_FIX = re.compile(r"\bfix (it|this|that)\b|\bmake (it|this|that|the [\w -]{1,30}?) (pass|work|succeed)\b|\bwhat would work\b|\bredesign\b")
 _USE_DESIGN = re.compile(r"\b(use|apply|take) (this|that|the|your) (new |winning |suggested )?design\b")
 
 
@@ -501,9 +503,27 @@ def _analysis_plan(text: str, world_state: World | SceneSpec | dict[str, Any] | 
         return None
     if only_after_failure and state.failed_robot() is None:
         return None
+    robot_id = _mentioned_robot(text, world_state)
     if fix:
-        return Plan(workflow="redesign", summary="A design that passes the same world", constraints=text)
-    return Plan(workflow="diagnose", summary="Why the last run failed")
+        return Plan(workflow="redesign", summary="A design that passes the same world", constraints=text, robot_id=robot_id)
+    return Plan(workflow="diagnose", summary="Why the last run failed", robot_id=robot_id)
+
+
+def _mentioned_robot(text: str, world_state: World | SceneSpec | dict[str, Any] | None) -> str | None:
+    """In a race, the robot the user named ("why did the walker fail?"): a label gives its id, a kind word or
+    library id is passed on as said. None when no robot of the scene is named."""
+    spec = _current_spec(world_state)
+    if spec is None or len(spec.robots) < 2:
+        return None
+    source = text.lower()
+    for entry in sorted(spec.robots, key=lambda e: -len(e.label)):
+        if re.search(rf"\b{re.escape(entry.label.lower())}\b", source):
+            return entry.id
+    for entry in spec.robots:
+        for word in (entry.id, entry.robot.kind, entry.robot.robot_id):
+            if word and re.search(rf"\b{re.escape(word.lower())}s?\b", source):
+                return word
+    return None
 
 
 def _current_spec(world_state: World | SceneSpec | dict[str, Any] | None) -> SceneSpec | None:
