@@ -642,7 +642,7 @@ def test_model_edit_plans_are_typed_and_checked_against_the_scene():
         assert (world.spec.terrain.kind, world.spec.terrain.slope_deg) == ("slope", 30)
         assert any("30° slope" in note for note in world.spec.assumptions)
         assert world.spec.environment.body == "mars" and world.spec.robot == current.robot
-        assert world.spec.title == "Rover on Mars hills"  # no new title given: keep it
+        assert world.spec.title == "4-wheel rover on a 30° slope, Mars"  # rebuilt from the edited scene
 
         calls.clear()
         scripted([
@@ -652,14 +652,14 @@ def test_model_edit_plans_are_typed_and_checked_against_the_scene():
         plan = Director().plan("put it on the moon", current)
         assert len(calls) == 2
         assert "this edit changes nothing" in calls[1][-1]["content"]
-        assert plan.changes.world.body == "moon" and plan.changes.title == "Rover on Moon hills"
+        assert plan.changes.world.body == "moon" and plan.changes.title is None  # the model's title is ignored
 
         calls.clear()
         scripted(['{"workflow":"edit","summary":"Rover on a 35° slope","changes":'
                   '{"world":{"terrain_kind":"slope","slope_deg":35},"title":"Rover on a 35° slope"}}'])
         plan = Director().plan("make the slope steeper", current)
         assert plan.changes.world.slope_deg == 10  # no number given: 10° steeper than the hills' 0°
-        assert plan.changes.title is None  # the model's title named its own angle
+        assert plan.changes.title is None  # titles are rebuilt in code, not taken from the model
     finally:
         config.MOCK_MODE, llm.chat = original_mock, original_chat
 
@@ -714,6 +714,49 @@ def test_leg_and_wheel_counts_apply_only_to_their_part():
     assert [(robot.kind, robot.wheels, robot.legs) for robot in plan.robots] == [("rover", 4, None), ("walker", None, 6)]
     assert plan.summary == "4-wheel rover and 6-legged walker on hills terrain, Mars."
     assert Director().plan("race three rovers to the far side").summary == "Three 4-wheel rovers on hills terrain, Earth."
+
+
+def test_edits_rebuild_the_scene_title():
+    import asyncio
+
+    from simgate import config, llm
+    from simgate.director import Director
+    from simgate.orchestrator import Session
+
+    async def flow():
+        session = Session(lambda _event: asyncio.sleep(0))
+        titles = []
+        for text in ("A rover on Mars hills", "make the slope steeper", "use ice", "call it Cliff run",
+                     "use six wheels", "use sand and call it Dune run"):
+            await session.handle(text)
+            titles.append(session.spec.title)
+        return titles, session.spec
+
+    titles, spec = asyncio.run(flow())
+    assert titles == [
+        "4-wheel rover on hills terrain, Mars",
+        "4-wheel rover on a 10° slope, Mars",
+        "4-wheel rover on a 10° ice slope, Mars",
+        "Cliff run",
+        "6-wheel rover on a 10° ice slope, Mars",
+        "Dune run",
+    ]
+    assert spec.environment.surface == "sand" and spec.terrain.slope_deg == 10
+    course = agents.plan("Rover obstacle course: 10 small rocks, a step, stairs and a gap")
+    assert agents.scene_title(course) == "4-wheel rover on flat terrain, Earth with an obstacle course"
+
+    current = agents.plan("A rover on Mars hills")
+    original_mock, original_chat = config.MOCK_MODE, llm.chat
+    try:
+        config.MOCK_MODE = False
+        llm.chat = lambda *_args, **_kwargs: (
+            '{"workflow":"edit","summary":"Rover on Mars ice hills",'
+            '"changes":{"world":{"surface":"ice"},"title":"Rover on Mars ice hills"}}'
+        )
+        world, _ = asyncio.run(Director().execute_plan("use ice", current))
+    finally:
+        config.MOCK_MODE, llm.chat = original_mock, original_chat
+    assert world.spec.title == "4-wheel rover on ice hills terrain, Mars"
 
 
 def test_template_repair_uses_registered_physics_presets():

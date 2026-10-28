@@ -469,10 +469,9 @@ def apply_edit(current: SceneSpec, changes: EditChanges) -> World:
         if spec.domain != "structure":
             raise ValueError("load can only be changed in a structure scene.")
         spec.load = changes.load.model_copy(deep=True)
-    if changes.title is not None:
-        spec.title = changes.title
     spec.assumptions = []
     spec.fill_defaults()
+    spec.title = changes.title or agents.scene_title(spec)   # a title only survives if the user set it
     spec.assumptions.extend(notes)
     world.spec = spec
     return world

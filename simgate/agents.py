@@ -273,6 +273,41 @@ def _mock_plan(text: str, current: SceneSpec | None = None) -> SceneSpec:
     return spec.fill_defaults()
 
 
+TYPICAL_SURFACE = {"moon": "regolith", "mars": "regolith", "titan": "sand", "europa": "ice", "enceladus": "ice"}
+_COUNT_WORDS = {2: "Two", 3: "Three", 4: "Four", 5: "Five", 6: "Six"}
+
+
+def scene_title(spec: SceneSpec) -> str:
+    """The rules planner's title, rebuilt from a finished spec: robots, terrain (slope angle, unusual
+    surface, real place), world and course. Used after every edit so the title matches the scene."""
+    if spec.domain == "structure":
+        return f"{spec.structure.stories}-story frame in an earthquake"
+
+    def what(robot) -> str:
+        if robot.kind == "library":
+            return "G1 humanoid"
+        return f"{robot.legs}-legged walker" if robot.kind == "walker" else f"{robot.wheels}-wheel rover"
+
+    robots = [entry.robot for entry in spec.robots] or ([spec.robot] if spec.robot else [])
+    groups: dict[str, int] = {}
+    for robot in robots:
+        groups[what(robot)] = groups.get(what(robot), 0) + 1
+    names = [name if count == 1 else f"{_COUNT_WORDS[count]} {name}s" for name, count in groups.items()] or ["Scene"]
+    listed = names[0] if len(names) == 1 else ", ".join(names[:-1]) + " and " + names[-1]
+    terrain, environment = spec.terrain, spec.environment
+    if terrain is not None and terrain.kind == "real":
+        where = f"real terrain: {list_presets()[terrain.preset]['label']}"
+    else:
+        surface = environment.surface if environment.surface != TYPICAL_SURFACE.get(environment.body, "rock") else ""
+        if terrain is not None and terrain.kind == "slope":
+            where = f"a {terrain.slope_deg:g}° {surface + ' ' if surface else ''}slope, {environment.body.title()}"
+        else:
+            kind = terrain.kind if terrain is not None else "hills"
+            where = f"{surface + ' ' if surface else ''}{kind} terrain, {environment.body.title()}"
+    course = " with an obstacle course" if spec.obstacles else ""
+    return f"{listed[0].upper()}{listed[1:]} on {where}{course}"
+
+
 PLACE_WORDS = [("lowest", ("lowest", "bottom", "crater floor", "valley", "low point")),
                ("highest", ("highest", "top", "summit", "peak", "rim", "high point")),
                ("east", ("far side",)),

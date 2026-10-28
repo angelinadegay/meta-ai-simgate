@@ -29,7 +29,7 @@ class Director:
     def plan(self, text: str, world_state: World | SceneSpec | dict[str, Any] | None = None) -> Plan:
         """Create a complete validated plan, retry once, then use the deterministic planner."""
         if config.MOCK_MODE:
-            return _rule_plan(text, world_state)
+            return _rule_plan_with_title(text, world_state)
 
         messages = [
             {"role": "system", "content": _plan_system()},
@@ -56,7 +56,7 @@ class Director:
             except (ValueError, TypeError) as exc:
                 last_error = str(exc)
         self.used_rule_planner = True
-        return _rule_plan(text, world_state)
+        return _rule_plan_with_title(text, world_state)
 
     async def execute_plan(self, text: str, current: SceneSpec | None = None) -> tuple[World, str]:
         from . import workflows
@@ -461,6 +461,30 @@ def _current_spec(world_state: World | SceneSpec | dict[str, Any] | None) -> Sce
     return world_state if isinstance(world_state, SceneSpec) else None
 
 
+_USER_TITLE = re.compile(r"\b(?:call it|name it|title it|rename it(?: to)?)\s+[\"'“]?(.+?)[\"'”]?\s*[.!]?\s*$", re.I)
+
+
+def _user_title(text: str) -> str | None:
+    """A scene name the user gave explicitly ("call it Cliff run"); every other edit gets a rebuilt title."""
+    match = _USER_TITLE.search(text)
+    if match is None:
+        return None
+    return match.group(1).strip()[:120] or None
+
+
+def _rule_plan_with_title(text: str, world_state: World | SceneSpec | dict[str, Any] | None) -> Plan:
+    """Rules plan for the rest of the request; "call it ..." only names the scene (it never changes it)."""
+    title = _user_title(text)
+    rest = re.sub(r"[\s,;]*(?:\band\b)?\s*$", "", _USER_TITLE.sub("", text)) if title else text
+    current = _current_spec(world_state)
+    if title and current is not None and not rest:
+        return Plan(workflow="edit", domain=current.domain, summary=title, changes={"title": title})
+    plan = _rule_plan(rest or text, world_state)
+    if plan.workflow == "edit":
+        plan.changes.title = title
+    return plan
+
+
 def _check_edit(plan: Plan, text: str, world_state: World | SceneSpec | dict[str, Any] | None) -> None:
     """Apply the edit to a copy of the scene so any problem gets the planner's one retry."""
     from .workflows import apply_edit
@@ -473,18 +497,17 @@ def _check_edit(plan: Plan, text: str, world_state: World | SceneSpec | dict[str
         terrain = current.terrain
         base = terrain.slope_deg if terrain is not None and terrain.kind == "slope" else 0.0
         world = plan.changes.world.model_dump(exclude_none=True) if plan.changes.world else {}
-        slope = min(base + 10.0, presets.SLOPE_RANGE_DEG[1])
-        if world.get("slope_deg") not in (None, slope):
-            plan.changes.title = None   # a title the model wrote may name the angle it chose
-        world["slope_deg"] = slope
+        world["slope_deg"] = min(base + 10.0, presets.SLOPE_RANGE_DEG[1])
         if world.get("terrain_kind") not in (None, "slope"):
             del world["terrain_kind"]
         plan.changes.world = WorldPlan.model_validate(world)
+    plan.changes.title = _user_title(text)
     before = current.model_copy(deep=True)
     before.assumptions = []
     before.fill_defaults()
     after = apply_edit(current, plan.changes).spec
-    if after.model_dump(exclude={"assumptions"}) == before.model_dump(exclude={"assumptions"}):
+    ignored = {"assumptions"} if plan.changes.title else {"assumptions", "title"}   # titles are rebuilt in code
+    if after.model_dump(exclude=ignored) == before.model_dump(exclude=ignored):
         raise ValueError(
             f"this edit changes nothing: {json.dumps(plan.changes.given(), default=str)} leaves the scene as it is. "
             "Set the fields that should change to new values."
