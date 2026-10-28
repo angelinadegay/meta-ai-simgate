@@ -404,7 +404,7 @@ def _rule_plan(text: str, world_state: World | SceneSpec | dict[str, Any] | None
             run_now=requested_run,
         )
 
-    if current is not None and not has_world_request:
+    if current is not None and not _requests_scene_change(source):
         return Plan(
             workflow="answer",
             summary="Answering a question about the current scene.",
@@ -478,6 +478,25 @@ def _check_edit(plan: Plan, text: str, world_state: World | SceneSpec | dict[str
             f"this edit changes nothing: {json.dumps(plan.changes.given(), default=str)} leaves the scene as it is. "
             "Set the fields that should change to new values."
         )
+
+
+_CHANGE_VERB = re.compile(
+    r"\b(build|create|make|put|race|compare|stress|run|simulate|test|spawn|add|remove|use|set|change|switch|try"
+    r"|swap|replace|increase|decrease|raise|lower|give|turn|move)\b"
+)
+_SCENE_ELEMENT = re.compile(
+    r"\b(wheel(?:s|ed)?|legs?|legged|slope|steeper|flatter|gravity|earth|moon|mars|titan|europa|enceladus"
+    r"|saturn|jupiter|martian|lunar|rock|regolith|gravel|sand|mud|ice|icy|rocks|boulders?|steps?|stairs|gaps?"
+    r"|trench|ramps?|walls?|logs?|obstacles?|rover|walker|dog|spider|hexapod|humanoid|g1|robots?|faster|slower"
+    r"|bigger|smaller|larger|hills?|flat|craters?|rocky|goal|summit|top|bottom|peak|north|south|east|west"
+    r"|center|centre)\b"
+)
+_QUESTION = re.compile(r"^\s*(what|why|how|when|where|which|who|is|are|does|do|can you|could you|tell me)\b|\?\s*$")
+
+
+def _requests_scene_change(source: str) -> bool:
+    """A change verb, or a scene element named in anything but a question ("six wheels", "ice")."""
+    return bool(_CHANGE_VERB.search(source) or (_SCENE_ELEMENT.search(source) and not _QUESTION.search(source)))
 
 
 def _asks_to_run(source: str) -> bool:

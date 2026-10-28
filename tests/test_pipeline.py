@@ -605,6 +605,44 @@ def test_model_edit_plans_are_typed_and_checked_against_the_scene():
         config.MOCK_MODE, llm.chat = original_mock, original_chat
 
 
+def test_rules_planner_treats_short_change_requests_as_edits():
+    import asyncio
+
+    from simgate.director import Director
+    from simgate.orchestrator import Session
+
+    rover = agents.plan("A rover on Mars hills")
+    building = agents.plan("A 5-story building in an earthquake")
+    for text, current in [
+        ("use six wheels", rover), ("six wheels", rover), ("on the moon instead", rover), ("ice", rover),
+        ("make the slope steeper and use ice", rover), ("add a wall", rover), ("make it stiffer", building),
+    ]:
+        plan = Director().plan(text, current)
+        assert plan.workflow == "edit", (text, plan.workflow, plan.reply)
+    for question in ("what's the gravity on Mars?", "can you explain the slip?", "why did it stop"):
+        assert Director().plan(question, rover).workflow == "answer", question
+
+    async def readme_flow():
+        events = []
+
+        async def emit(event):
+            events.append(event)
+
+        session = Session(emit)
+        await session.handle("A rover on Mars hills")
+        await session.handle("use six wheels")
+        assert [entry.robot.wheels for entry in session.spec.robots] == [6]
+        await session.handle("make the slope steeper and use ice")
+        assert session.spec.terrain.kind == "slope" and session.spec.environment.surface == "ice"
+        await session.handle("add a wall")
+        assert [obstacle.kind for obstacle in session.spec.obstacles] == ["wall"]
+        assert session.spec.robots[0].robot.wheels == 6 and session.spec.environment.surface == "ice"
+        return events
+
+    events = asyncio.run(readme_flow())
+    assert not any(event["type"] == "error" for event in events)
+
+
 def test_template_repair_uses_registered_physics_presets():
     from simgate import presets, workflows
     from simgate.backends.base import Check
