@@ -19,14 +19,21 @@ class InferenceModel(Protocol):
 
     def run(self, observation: np.ndarray) -> np.ndarray: ...
 
+    def reset(self) -> None: ...
+
 
 class _OnnxModel:
-    def __init__(self, path: Path) -> None:
+    def __init__(self, path: Path, recurrent_state_size: int | None) -> None:
         ort = importlib.import_module("onnxruntime")
         self.session = ort.InferenceSession(str(path), providers=["CPUExecutionProvider"])
         inputs, outputs = self.session.get_inputs(), self.session.get_outputs()
-        if len(inputs) != 1 or len(outputs) != 1:
-            raise ValueError("policy ONNX model must have exactly one input and one output")
+        is_recurrent = recurrent_state_size is not None
+        expected_count = 3 if is_recurrent else 1
+        if len(inputs) != expected_count or len(outputs) != expected_count:
+            raise ValueError(
+                f"policy ONNX model must have {expected_count} input(s) and output(s) "
+                "according to its recurrent_state_size"
+            )
         input_shape, output_shape = inputs[0].shape, outputs[0].shape
         if len(input_shape) != 2 or len(output_shape) != 2:
             raise ValueError("policy ONNX input and output must be rank-2 batches")
@@ -36,20 +43,50 @@ class _OnnxModel:
         self.output_name = outputs[0].name
         self.input_size = input_shape[1]
         self.output_size = output_shape[1]
+        self.state_inputs = [item.name for item in inputs[1:]]
+        self.state_outputs = [item.name for item in outputs[1:]]
+        self.state_size = recurrent_state_size
+        if is_recurrent:
+            for item in inputs[1:]:
+                if item.shape != [1, 1, recurrent_state_size]:
+                    raise ValueError(f"invalid recurrent state shape for ONNX input {item.name}")
+            for item in outputs[1:]:
+                if item.shape != [1, 1, recurrent_state_size]:
+                    raise ValueError(f"invalid recurrent state shape for ONNX output {item.name}")
+        self.reset()
 
     def run(self, observation: np.ndarray) -> np.ndarray:
-        return np.asarray(
-            self.session.run([self.output_name], {self.input_name: observation})[0],
-            dtype=np.float64,
+        feeds = {self.input_name: observation}
+        feeds.update(
+            {name: state for name, state in zip(self.state_inputs, self.states)}
         )
+        outputs = self.session.run(
+            [self.output_name, *self.state_outputs],
+            feeds,
+        )
+        self.states = [np.asarray(state, dtype=np.float32) for state in outputs[1:]]
+        if any(not np.isfinite(state).all() for state in self.states):
+            raise ValueError("policy recurrent state contains non-finite values")
+        return np.asarray(outputs[0], dtype=np.float64)
+
+    def reset(self) -> None:
+        if self.state_size is None:
+            self.states = []
+        else:
+            self.states = [
+                np.zeros((1, 1, self.state_size), dtype=np.float32)
+                for _ in self.state_inputs
+            ]
 
 
 class _TorchScriptModel:
     def __init__(self, path: Path, input_size: int) -> None:
         torch = importlib.import_module("torch")
         self.torch = torch
-        self.model = torch.jit.load(str(path), map_location="cpu")
+        self.model = torch.jit.load(str(path), map_location="cpu").eval()
         self.input_size = input_size
+        self.is_recurrent = hasattr(self.model, "hidden_state") and hasattr(self.model, "cell_state")
+        self.reset()
         try:
             output = self.model(torch.zeros((1, input_size), dtype=torch.float32))
         except RuntimeError as exc:
@@ -57,6 +94,7 @@ class _TorchScriptModel:
         if not isinstance(output, torch.Tensor) or output.ndim != 2:
             raise ValueError("TorchScript policy must return one rank-2 tensor")
         self.output_size = int(output.shape[1])
+        self.reset()
 
     def run(self, observation: np.ndarray) -> np.ndarray:
         tensor = self.torch.from_numpy(observation.astype(np.float32, copy=False))
@@ -64,6 +102,11 @@ class _TorchScriptModel:
         if not isinstance(output, self.torch.Tensor) or output.ndim != 2:
             raise ValueError("TorchScript policy must return one rank-2 tensor")
         return output.detach().cpu().numpy().astype(np.float64, copy=False)
+
+    def reset(self) -> None:
+        if self.is_recurrent:
+            self.model.hidden_state.zero_()
+            self.model.cell_state.zero_()
 
 
 class PolicyRunner:
@@ -117,6 +160,7 @@ class PolicyRunner:
         initial_action = self.policy.run(zero_observation)
         self._validate_action(initial_action)
         self._validate_joint_targets(self._targets_for(initial_action[0]))
+        self.policy.reset()
 
     @staticmethod
     def _load_model(card: PolicyCard) -> InferenceModel:
@@ -126,7 +170,7 @@ class PolicyRunner:
         if card.format == "torchscript":
             return _TorchScriptModel(path, card.observation_size)
         try:
-            return _OnnxModel(path)
+            return _OnnxModel(path, card.recurrent_state_size)
         except ImportError as exc:
             torchscript_path = path.with_suffix(".pt")
             if not torchscript_path.is_file():
@@ -196,6 +240,15 @@ class PolicyRunner:
         torque -= self._kds * self.data.qvel[self.dof_addresses]
         if not np.isfinite(torque).all():
             raise ValueError("policy produced non-finite PD torques")
+        self.data.ctrl[self.actuator_ids] = torque
+        return torque.copy()
+
+    def hold_default(self) -> np.ndarray:
+        self._target = self._default_angles.copy()
+        torque = self._kps * (self._target - self.data.qpos[self.qpos_addresses])
+        torque -= self._kds * self.data.qvel[self.dof_addresses]
+        if not np.isfinite(torque).all():
+            raise ValueError("policy produced non-finite standing torques")
         self.data.ctrl[self.actuator_ids] = torque
         return torque.copy()
 
@@ -292,7 +345,12 @@ class PolicyRunner:
         return values * scale
 
     def _targets_for(self, action: np.ndarray) -> np.ndarray:
-        return self._default_angles + action * self._action_scale
+        targets = self._default_angles + action * self._action_scale
+        for index, joint_id in enumerate(self.joint_ids):
+            if bool(self.model.jnt_limited[joint_id]):
+                minimum, maximum = self.model.jnt_range[joint_id]
+                targets[index] = np.clip(targets[index], minimum, maximum)
+        return targets
 
     def _validate_action(self, action: np.ndarray) -> None:
         if action.shape != (1, len(self.card.joint_order)):

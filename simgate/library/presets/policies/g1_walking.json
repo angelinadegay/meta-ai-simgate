@@ -35,10 +35,10 @@
   "command": {
     "names": ["vx", "vy", "yaw_rate"],
     "ranges": [[-1.0, 1.0], [-1.0, 1.0], [-1.0, 1.0]],
-    "default": [0.5, 0.0, 0.0],
-    "scales": [2.0, 2.0, 0.25]
+    "default": [0.5, 0.0, 0.0]
   },
   "clock_period_s": 0.8,
+  "recurrent_state_size": 64,
   "training_notes": [
     "The upstream deployment configuration uses a 50 Hz policy and a 500 Hz physics step.",
     "Validate transfer to non-Earth gravity, rough terrain, and obstacles before relying on results."

@@ -20,7 +20,7 @@
     "right_ankle_roll_joint"
   ],
   "actuator_type": "torque",
-  "standing_height_m": 1.28,
+  "standing_height_m": 0.793,
   "mass_kg": 32.1069,
   "forward_axis": [1.0, 0.0, 0.0],
   "license": "BSD-3-Clause",

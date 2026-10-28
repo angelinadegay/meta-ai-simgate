@@ -1,16 +1,22 @@
 """MuJoCo backend: robots on generated terrain."""
 import math
+import xml.etree.ElementTree as ET
+from functools import lru_cache
+from pathlib import Path
 from typing import Iterator
 
 import mujoco
 import numpy as np
 
 from .. import presets
+from ..library import LibraryRegistry
+from ..policy_runtime import PolicyRunner
 from ..spec import SceneSpec
 from ..terrain_data import load_preset, resample
 from . import obstacles as course
 from .base import BuildResult, Check, Simulator
 
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 GRID = 160         # heightfield resolution (GRID x GRID): 0.13 m cells on the default 20 m terrain
 FPS = 30           # recorded frames per simulated second
 
@@ -339,13 +345,103 @@ def instability_count(data: mujoco.MjData) -> int:
     return int(data.warning[mujoco.mjtWarning.mjWARN_BADQACC].number)
 
 
+@lru_cache(maxsize=128)
+def _read_model_asset(relative_path: str) -> bytes:
+    path = (PROJECT_ROOT / relative_path).resolve()
+    try:
+        path.relative_to(PROJECT_ROOT)
+    except ValueError as exc:
+        raise ValueError(f"MuJoCo asset path escapes the project root: {relative_path}") from exc
+    if not path.is_file():
+        raise FileNotFoundError(f"MuJoCo asset file does not exist: {relative_path}")
+    return path.read_bytes()
+
+
+def _model_from_xml(xml: str) -> mujoco.MjModel:
+    root = ET.fromstring(xml)
+    compiler = root.find("compiler")
+    asset_root = compiler.get("meshdir", "") if compiler is not None else ""
+    assets = {}
+    if asset_root:
+        for mesh in root.findall("./asset/mesh"):
+            filename = mesh.get("file")
+            if filename is None:
+                continue
+            relative = (Path(asset_root) / filename).as_posix()
+            assets[relative] = _read_model_asset(relative)
+    return mujoco.MjModel.from_xml_string(xml, assets) if assets else mujoco.MjModel.from_xml_string(xml)
+
+
+def _library_robot_parts(
+    spec: SceneSpec,
+    start: tuple[float, float, float],
+    heading_deg: float,
+) -> tuple[str, str, str, str, str]:
+    robot = spec.robot
+    registry = LibraryRegistry()
+    robot_card = registry.robot(robot.robot_id)
+    policy_card = registry.policy(robot.policy_id)
+    if policy_card.id not in {card.id for card in registry.compatible_policies(robot_card.id)}:
+        raise ValueError(f"Policy {policy_card.id!r} is not compatible with robot {robot_card.id!r}.")
+    if robot_card.mjcf_path is None:
+        raise ValueError(f"Library robot {robot_card.id!r} does not provide an MJCF file.")
+
+    source_path = (PROJECT_ROOT / robot_card.mjcf_path).resolve()
+    try:
+        source_path.relative_to(PROJECT_ROOT)
+    except ValueError as exc:
+        raise ValueError("Library MJCF path escapes the project root.") from exc
+    source = ET.fromstring(source_path.read_text(encoding="utf-8"))
+    source_compiler = source.find("compiler")
+    meshdir = source_compiler.get("meshdir", "") if source_compiler is not None else ""
+    asset_root = (Path(robot_card.mjcf_path).parent / meshdir).as_posix()
+    asset_xml = source.find("asset")
+    mesh_xml = "".join(
+        ET.tostring(item, encoding="unicode") for item in asset_xml
+    ) if asset_xml is not None else ""
+    source_defaults = source.find("default")
+    defaults_xml = "".join(
+        ET.tostring(item, encoding="unicode") for item in source_defaults
+    ) if source_defaults is not None else ""
+    source_body = next(
+        (
+            body
+            for body in source.findall("./worldbody/body")
+            if body.get("name") == robot_card.root_body
+        ),
+        None,
+    )
+    if source_body is None:
+        raise ValueError(f"Library MJCF does not contain root body {robot_card.root_body!r}.")
+    x, y, z = start
+    source_body.set("name", "rover")
+    source_body.set("pos", f"{x:.4f} {y:.4f} {z:.4f}")
+    source_body.set("quat", yaw_quat(heading_deg))
+    actuator_root = source.find("actuator")
+    actuators_xml = "".join(
+        ET.tostring(item, encoding="unicode") for item in actuator_root
+    ) if actuator_root is not None else ""
+    return (
+        ET.tostring(source_body, encoding="unicode"),
+        actuators_xml,
+        mesh_xml,
+        defaults_xml,
+        asset_root,
+    )
+
+
 def contact_parts(model: mujoco.MjModel) -> set[int]:
     """Geoms that are meant to touch the ground: walker feet and rover wheels."""
     parts = set()
     for g in range(model.ngeom):
         gname = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_GEOM, g) or ""
         bname = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_BODY, int(model.geom_bodyid[g])) or ""
-        if gname.endswith("_foot") or bname.startswith("wheel_"):
+        if (
+            gname.endswith("_foot")
+            or bname.startswith("wheel_")
+            or bname.endswith("ankle_roll_link")
+            or bname.endswith("_foot")
+        ):
             parts.add(g)
     return parts
 
@@ -507,9 +603,18 @@ class MuJoCoSimulator(Simulator):
             obstacle_xml += "\n" if obstacle_xml else ""
         half = t.size_m / 2
         (sx, sy), yaw = mission["start"], mission["heading_deg"]
+        mesh_xml, defaults_xml, compiler_xml = "", "", ""
         if spec.robot.kind == "walker":
             sz = height_at(H, t.size_m, sx, sy, footprint_radius(spec.robot)) + walker_stand_height(spec.robot) + 0.05
             robot, actuators = walker_xml(spec, (sx, sy, sz), yaw)
+        elif spec.robot.kind == "library":
+            robot_card = LibraryRegistry().robot(spec.robot.robot_id)
+            ground_z = height_at(H, t.size_m, sx, sy, footprint_radius(spec.robot))
+            sz = ground_z + robot_card.standing_height_m
+            robot, actuators, mesh_xml, defaults_xml, asset_root = _library_robot_parts(
+                spec, (sx, sy, sz), yaw
+            )
+            compiler_xml = f'<compiler angle="radian" meshdir="{asset_root}/"/>'
         else:
             sz = height_at(H, t.size_m, sx, sy, footprint_radius(spec.robot)) + spec.robot.wheel_radius + 0.1
             robot, actuators = rover_xml(spec, (sx, sy, sz), yaw)
@@ -524,10 +629,12 @@ class MuJoCoSimulator(Simulator):
         elevation = " ".join(f"{v:.4f}" for v in np.flipud(H / zmax).ravel())  # MuJoCo reads top row first
         f = env.friction
         xml = f'''<mujoco model="{spec.title}">
+  {compiler_xml}
   <option timestep="0.002" gravity="0 0 {-env.gravity:.4f}"/>
-  <default><geom friction="{f:.3f} 0.005 0.0001"/></default>
+  <default><geom friction="{f:.3f} 0.005 0.0001"/>{defaults_xml}</default>
   <asset>
     <hfield name="terrain" nrow="{GRID}" ncol="{GRID}" size="{half:.3f} {half:.3f} {zmax:.4f} 0.5" elevation="{elevation}"/>
+{mesh_xml}
   </asset>
   <worldbody>
     <light pos="0 0 20" dir="0 0 -1"/>
@@ -543,7 +650,7 @@ class MuJoCoSimulator(Simulator):
     def build(self, spec: SceneSpec, code: str | None = None) -> BuildResult:
         template_xml, _, _ = self.template(spec)      # also resolves the start and goal
         xml = template_xml if code is None else code
-        model = mujoco.MjModel.from_xml_string(xml)   # raises with a readable error if invalid
+        model = _model_from_xml(xml)                  # raises with a readable error if invalid
         scene = self._scene(model, spec)
         scene["mission"] = self.mission
         scene["terrain_size_m"] = spec.terrain.size_m
@@ -575,7 +682,23 @@ class MuJoCoSimulator(Simulator):
         data = mujoco.MjData(model)
         mujoco.mj_forward(model, data)
         follow = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, "chassis")
-        return {"backend": self.name, "kind": "mujoco", "geoms": geoms, "follow_geom": int(follow), "poses": self._poses(model, data)}
+        root_body = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "rover")
+        if follow < 0 and root_body >= 0:
+            root_geoms = [
+                g for g in range(model.ngeom)
+                if int(model.geom_bodyid[g]) == root_body and model.geom_contype[g] != 0
+            ]
+            if not root_geoms:
+                root_geoms = [g for g in range(model.ngeom) if int(model.geom_bodyid[g]) == root_body]
+            follow = root_geoms[0] if root_geoms else -1
+        return {
+            "backend": self.name,
+            "kind": "mujoco",
+            "geoms": geoms,
+            "follow_geom": int(follow),
+            "robot_root_body": int(root_body),
+            "poses": self._poses(model, data),
+        }
 
     @staticmethod
     def _poses(model: mujoco.MjModel, data: mujoco.MjData) -> list[list[float]]:
@@ -586,13 +709,20 @@ class MuJoCoSimulator(Simulator):
         return poses
 
     def _make(self, build: BuildResult):
-        model = mujoco.MjModel.from_xml_string(build.code)
+        model = _model_from_xml(build.code)
         return model, mujoco.MjData(model)
+
+    def _policy_runner(self, spec: SceneSpec, model: mujoco.MjModel, data: mujoco.MjData) -> PolicyRunner:
+        if spec.robot.kind != "library":
+            raise ValueError("A library policy can only control a library robot.")
+        return PolicyRunner(LibraryRegistry().policy(spec.robot.policy_id), model, data)
 
     def _ctrl(self, spec: SceneSpec, model: mujoco.MjModel, t_active: float, turn: float = 0.0, go: float = 1.0) -> np.ndarray:
         """Controller for the robot. t_active < 0 means standing still (settling).
         `turn` steers (> 0 = left); `go` (0..1) fades the gait out once the goal is reached."""
         rb = spec.robot
+        if rb.kind == "library":
+            raise ValueError("Library robots must be controlled by their selected policy.")
         scale = float(np.clip(t_active / 1.0, 0.0, 1.0)) * go
         if rb.kind == "walker":
             c = walker_ctrl(rb, max(t_active, 0.0), scale, turn)
@@ -610,6 +740,19 @@ class MuJoCoSimulator(Simulator):
         checks = [Check("Model compiles", True, "MuJoCo accepted the scene.")]
         env = spec.environment
         model, data = self._make(build)
+        policy_runner = None
+        if spec.robot.kind == "library":
+            try:
+                policy_runner = self._policy_runner(spec, model, data)
+                checks.append(
+                    Check(
+                        "Library policy loads and validates",
+                        True,
+                        f"Loaded {spec.robot.policy_id} with named joints and finite policy output.",
+                    )
+                )
+            except (FileNotFoundError, RuntimeError, ValueError) as exc:
+                checks.append(Check("Library policy loads and validates", False, str(exc)))
 
         ref = presets.gravity_for(env.body)
         g = -float(model.opt.gravity[2])
@@ -671,22 +814,75 @@ class MuJoCoSimulator(Simulator):
                                 + (f"crosses gaps up to about {lim['gap_m']} m. " if lim["gap_m"] else "can't cross gaps. ")
                                 + "A warning, not a ban: run it to find out."))
 
+        if spec.robot.kind == "library" and policy_runner is None:
+            checks.append(
+                Check("Library robot stands for 1 s at zero command", False, "The selected policy did not load.")
+            )
+            return checks
+
         # Short settle test: does the robot land on the ground and stay finite?
         ground = ground_geoms(model)
         touched_late = 0                     # most ground contacts seen in the last 0.3 s (robots may still bounce a little)
         n_steps = int(1.0 / model.opt.timestep)
-        for i in range(n_steps):
-            data.ctrl[:] = self._ctrl(spec, model, -1.0)
-            mujoco.mj_step(model, data)
-            if i >= n_steps - int(0.3 / model.opt.timestep):
-                touched_late = max(touched_late, sum(1 for k in range(data.ncon)
-                                                     if {int(data.contact[k].geom1), int(data.contact[k].geom2)} & ground))
+        if policy_runner is not None:
+            command = policy_runner.card.command
+            policy_runner.set_command({name: 0.0 for name in command.names})
+            settle_steps = int(0.5 / model.opt.timestep)
+            for _ in range(settle_steps):
+                policy_runner.hold_default()
+                mujoco.mj_step(model, data)
+            robot_body = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "rover")
+            start_height = float(data.xpos[robot_body][2])
+            tilt_peak = 0.0
+            for i in range(n_steps):
+                policy_runner.step(i * model.opt.timestep)
+                mujoco.mj_step(model, data)
+                if i >= n_steps - int(0.3 / model.opt.timestep):
+                    touched_late = max(
+                        touched_late,
+                        sum(
+                            1
+                            for k in range(data.ncon)
+                            if {int(data.contact[k].geom1), int(data.contact[k].geom2)} & ground
+                        ),
+                    )
+                up_z = data.xmat[robot_body].reshape(3, 3)[2, 2]
+                tilt_peak = max(tilt_peak, math.degrees(math.acos(np.clip(up_z, -1.0, 1.0))))
+            robot_card = LibraryRegistry().robot(spec.robot.robot_id)
+            height_delta = abs(float(data.xpos[robot_body][2]) - start_height)
+            stands = (
+                bool(np.all(np.isfinite(data.qpos)))
+                and instability_count(data) == 0
+                and tilt_peak < FALL_TILT_DEG
+                and height_delta <= 0.1 * robot_card.standing_height_m
+            )
+            checks.append(
+                Check(
+                    "Library robot stands for 1 s at zero command",
+                    stands,
+                    f"Peak tilt {tilt_peak:.1f}°, pelvis height changed {height_delta:.3f} m "
+                    f"(limit {0.1 * robot_card.standing_height_m:.3f} m).",
+                )
+            )
+        else:
+            for i in range(n_steps):
+                data.ctrl[:] = self._ctrl(spec, model, -1.0)
+                mujoco.mj_step(model, data)
+                if i >= n_steps - int(0.3 / model.opt.timestep):
+                    touched_late = max(touched_late, sum(1 for k in range(data.ncon)
+                                                         if {int(data.contact[k].geom1), int(data.contact[k].geom2)} & ground))
         blowups = instability_count(data)
         finite = bool(np.all(np.isfinite(data.qpos))) and blowups == 0
         checks.append(Check("Simulation is stable", finite, "No NaN or blow-up in a 1 s settle test." if finite
                             else f"The physics became unstable {blowups or 1} time(s) in a 1 s settle test."))
         if finite and model.nbody > 1:
-            part = "foot" if spec.robot.kind == "walker" else "wheel"
+            part = (
+                "ankle/foot"
+                if spec.robot.kind == "library"
+                else "foot"
+                if spec.robot.kind == "walker"
+                else "wheel"
+            )
             checks.append(Check("Robot rests on terrain", touched_late > 0,
                                 f"Up to {touched_late} {part}/ground contacts in the last 0.3 s of settling."))
         return checks
@@ -695,6 +891,7 @@ class MuJoCoSimulator(Simulator):
         model, data = self._make(build)
         rover = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "rover")
         mujoco.mj_forward(model, data)
+        policy_runner = self._policy_runner(spec, model, data) if spec.robot.kind == "library" else None
         start = data.xpos[rover].copy() if rover >= 0 else np.zeros(3)
         steps_per_frame = max(1, int(round(1.0 / (FPS * model.opt.timestep))))
         n_frames = int(spec.duration_s * FPS)
@@ -728,7 +925,27 @@ class MuJoCoSimulator(Simulator):
                     if xm[8] > 0.8:                      # only trust the heading while roughly upright
                         nav_heading = heading_of(xm)
                     turn, go = nav.command(data.xpos[rover][:2].copy(), nav_heading, data.time - settle_s)
-                data.ctrl[:] = self._ctrl(spec, model, data.time - settle_s, turn, go)
+                if policy_runner is not None:
+                    if data.time <= settle_s:
+                        policy_runner.hold_default()
+                    else:
+                        command_card = policy_runner.card.command
+                        if nav.goal is None:
+                            command_values = dict(zip(command_card.names, command_card.default))
+                        elif nav.reached_at is not None:
+                            command_values = {name: 0.0 for name in command_card.names}
+                        else:
+                            speed_limit = command_card.ranges[command_card.names.index("vx")][1]
+                            yaw_limits = command_card.ranges[command_card.names.index("yaw_rate")]
+                            command_values = {
+                                "vx": float(np.clip(0.6 * math.cos(turn), 0.0, speed_limit)),
+                                "vy": 0.0,
+                                "yaw_rate": float(np.clip(turn, yaw_limits[0], yaw_limits[1])),
+                            }
+                        policy_runner.set_command(command_values)
+                        policy_runner.step(data.time - settle_s)
+                else:
+                    data.ctrl[:] = self._ctrl(spec, model, data.time - settle_s, turn, go)
                 if rover >= 0 and spec.disturbance is not None:
                     data.xfrc_applied[rover, 3:5] = 0
                     active_time = data.time - settle_s

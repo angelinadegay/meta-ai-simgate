@@ -55,13 +55,12 @@ class CommandSpec(BaseModel):
     names: list[str]
     ranges: list[tuple[float, float]]
     default: list[float]
-    scales: list[float]
 
     @model_validator(mode="after")
     def validate_axes(self) -> "CommandSpec":
         count = len(self.names)
-        if not count or any(len(values) != count for values in (self.ranges, self.default, self.scales)):
-            raise ValueError("command names, ranges, default, and scales must have equal non-zero lengths")
+        if not count or any(len(values) != count for values in (self.ranges, self.default)):
+            raise ValueError("command names, ranges, and default must have equal non-zero lengths")
         if len(set(self.names)) != count:
             raise ValueError("command names must be unique")
         for name, (minimum, maximum), default in zip(self.names, self.ranges, self.default):
@@ -83,6 +82,7 @@ class PolicyCard(Card):
     kds: list[float] = []
     command: CommandSpec | None = None
     clock_period_s: float | None = Field(None, gt=0)
+    recurrent_state_size: int | None = Field(None, gt=0)
     training_notes: list[str] = []
 
     @model_validator(mode="after")

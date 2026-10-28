@@ -33,10 +33,7 @@ class LibraryRegistry:
         return self._cards(PolicyCard, "policies")
 
     def compatible_policies(self, robot_id: str) -> list[PolicyCard]:
-        robots = {card.id: card for card in self.robots()}
-        robot = robots.get(robot_id)
-        if robot is None:
-            raise ValueError(f"Unknown robot library id: {robot_id}")
+        robot = self.robot(robot_id)
         return [
             policy
             for policy in self.policies()
@@ -46,6 +43,18 @@ class LibraryRegistry:
                 and all(name in robot.joint_names for name in policy.joint_order)
             )
         ]
+
+    def robot(self, robot_id: str) -> RobotCard:
+        for card in self.robots():
+            if card.id == robot_id:
+                return card
+        raise ValueError(f"Unknown robot library id: {robot_id}")
+
+    def policy(self, policy_id: str) -> PolicyCard:
+        for card in self.policies():
+            if card.id == policy_id:
+                return card
+        raise ValueError(f"Unknown policy library id: {policy_id}")
 
     def worlds(self) -> list[WorldCard]:
         surfaces = presets.SURFACE_FRICTION

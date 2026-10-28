@@ -28,7 +28,9 @@ class Terrain(BaseModel):
 
 
 class Robot(BaseModel):
-    kind: Literal["rover", "walker"] = "rover"
+    kind: Literal["rover", "walker", "library"] = "rover"
+    robot_id: Optional[str] = None
+    policy_id: Optional[str] = None
     # rover
     wheels: Literal[4, 6] = 4
     wheel_radius: float = 0.15
@@ -142,6 +144,19 @@ class SceneSpec(BaseModel):
         if self.domain == "robot_terrain":
             self.terrain = self.terrain or Terrain()
             self.robot = self.robot or Robot()
+            if self.robot.kind == "library":
+                if not self.robot.robot_id or not self.robot.policy_id:
+                    raise ValueError("Library robots require robot_id and policy_id.")
+                from .library import LibraryRegistry
+
+                registry = LibraryRegistry()
+                robot_card = registry.robot(self.robot.robot_id)
+                compatible = {card.id for card in registry.compatible_policies(robot_card.id)}
+                if self.robot.policy_id not in compatible:
+                    raise ValueError(
+                        f"Policy {self.robot.policy_id!r} is not compatible with robot {robot_card.id!r}."
+                    )
+                self.robot.mass_kg = robot_card.mass_kg
             if self.obstacles and self.terrain.kind != "real":
                 from .backends.obstacles import course_length_needed   # local import: avoids a cycle
                 path = 0.73 * self.terrain.size_m                         # default start to the far-side goal
