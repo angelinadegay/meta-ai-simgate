@@ -7,6 +7,7 @@ from typing import TypeVar
 from pydantic import ValidationError
 
 from .. import presets
+from ..terrain_data import list_presets
 from .cards import PolicyCard, RobotCard, WorldCard
 
 CardType = TypeVar("CardType", RobotCard, PolicyCard)
@@ -58,7 +59,7 @@ class LibraryRegistry:
 
     def worlds(self) -> list[WorldCard]:
         surfaces = presets.SURFACE_FRICTION
-        return [
+        worlds = [
             WorldCard(
                 id=f"{body}-{surface}",
                 name=f"{body.title()} · {surface.title()}",
@@ -66,11 +67,30 @@ class LibraryRegistry:
                 gravity_m_s2=gravity,
                 surface=surface,
                 friction=friction,
+                license="SimGate reference data",
                 credit="Reference values in simgate/presets.py; friction values are engineering estimates.",
             )
             for body, gravity in presets.GRAVITY.items()
             for surface, friction in surfaces.items()
         ]
+        for name, meta in list_presets().items():
+            body = meta.get("body", "earth")
+            surface = meta.get("surface", "rock")
+            worlds.append(
+                WorldCard(
+                    id=f"real-{name}",
+                    name=f"{meta['label']} · real terrain",
+                    body=body,
+                    gravity_m_s2=presets.gravity_for(body) or 9.81,
+                    surface=surface,
+                    friction=presets.friction_for(surface) or 0.8,
+                    terrain_kind="real",
+                    terrain_preset=name,
+                    license=meta.get("license", "See source terms"),
+                    credit=meta.get("credit", meta.get("source", "Terrain preset metadata")),
+                )
+            )
+        return worlds
 
     def _cards(self, card_type: type[CardType], category: str) -> list[CardType]:
         cards: dict[str, CardType] = {}

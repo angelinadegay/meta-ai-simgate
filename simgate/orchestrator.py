@@ -19,6 +19,7 @@ class Session:
         self.sim: Simulator | None = None
         self.build: BuildResult | None = None
         self.awaiting_approval = False
+        self.library_selection: tuple[str, str, str] | None = None
 
     async def agent(self, name: str, status: str, message: str) -> None:
         await self.emit({"type": "agent", "agent": name, "status": status, "message": message})
@@ -50,8 +51,68 @@ class Session:
         mode = "MOCK planner (no model configured)" if config.MOCK_MODE else config.PLANNER_MODEL
         await self.agent("Planner", "working", f"{'Updating the plan' if editing else 'Reading your request'} with {mode}…")
         spec = await asyncio.to_thread(agents.edit if editing else agents.plan, *( (self.spec, text) if editing else (text,) ))
+        if self.library_selection and spec.domain == "robot_terrain":
+            self._apply_library_selection(spec)
         await self.agent("Planner", "done", spec.title + (" — " + " ".join(spec.assumptions) if spec.assumptions else ""))
         await self.build_and_check(spec)
+
+    def _apply_library_selection(self, spec: SceneSpec) -> None:
+        from .library import LibraryRegistry
+        from .spec import Robot, Terrain
+
+        assert self.library_selection is not None
+        robot_id, policy_id, world_id = self.library_selection
+        registry = LibraryRegistry()
+        robot_card = registry.robot(robot_id)
+        policy = registry.policy(policy_id)
+        world = next((item for item in registry.worlds() if item.id == world_id), None)
+        if world is None:
+            raise ValueError(f"Unknown world library id: {world_id}")
+        if policy not in registry.compatible_policies(robot_id):
+            raise ValueError(f"Policy {policy_id!r} is not compatible with robot {robot_id!r}.")
+
+        if robot_card.source == "builtin":
+            kind = "rover" if robot_card.id == "rover" else "walker"
+            spec.robot = Robot(kind=kind, mass_kg=robot_card.mass_kg)
+        else:
+            spec.robot = Robot(
+                kind="library",
+                robot_id=robot_card.id,
+                policy_id=policy.id,
+                mass_kg=robot_card.mass_kg,
+            )
+        spec.environment.body = world.body
+        spec.environment.gravity = world.gravity_m_s2
+        spec.environment.surface = world.surface
+        spec.environment.friction = world.friction
+        if world.terrain_kind == "real":
+            spec.terrain = Terrain(kind="real", preset=world.terrain_preset)
+        spec.title = f"{robot_card.name} on {spec.terrain.kind if spec.terrain else 'generated'} terrain, {world.body.title()}"
+        spec.fill_defaults()
+
+    async def select_library(self, robot_id: str, policy_id: str, world_id: str) -> None:
+        from .library import LibraryRegistry
+
+        registry = LibraryRegistry()
+        robot = registry.robot(robot_id)
+        policy = registry.policy(policy_id)
+        world = next((item for item in registry.worlds() if item.id == world_id), None)
+        if world is None:
+            raise ValueError(f"Unknown world library id: {world_id}")
+        if policy not in registry.compatible_policies(robot_id):
+            raise ValueError(f"Policy {policy_id!r} is not compatible with robot {robot_id!r}.")
+        self.library_selection = (robot.id, policy.id, world.id)
+        await self.emit({
+            "type": "library_selected",
+            "robot": robot.name,
+            "policy": policy.name,
+            "world": world.name,
+        })
+        if self.spec is not None and self.spec.domain == "robot_terrain":
+            spec = self.spec.model_copy(deep=True)
+            spec.assumptions = []
+            self._apply_library_selection(spec)
+            await self.build_and_check(spec)
 
     async def set_point(self, which: str, x: float, y: float) -> None:
         """Start or goal picked by clicking on the terrain: changes the spec directly, no model call needed."""

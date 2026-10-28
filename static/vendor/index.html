@@ -33,6 +33,16 @@
   .agent.working .dot { animation: pulse 1s infinite; }
   .agent.warning span { color: var(--warn); }
   @keyframes pulse { 50% { opacity: .25; } }
+  #libraryPanel { flex: none; padding: 8px 14px; border-bottom: 1px solid var(--line); }
+  #libraryPanel summary { cursor: pointer; font-weight: 600; }
+  .library-tabs, .library-actions { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
+  .library-tabs .chip.selected { border-color: var(--accent); color: var(--accent); }
+  #libraryItems { display: flex; flex-direction: column; gap: 5px; max-height: 23vh; overflow-y: auto; margin-top: 8px; }
+  .library-item { width: 100%; padding: 7px 9px; border: 1px solid var(--line); border-radius: 7px; background: var(--panel-2); color: var(--text); font: inherit; text-align: left; cursor: pointer; }
+  .library-item.selected { border-color: var(--accent); }
+  .library-item strong, .library-item span { display: block; }
+  .library-item span { color: var(--muted); font-size: 11px; }
+  .library-status { margin-top: 7px; color: var(--muted); font-size: 11px; }
   .quick { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
   .chip { font: inherit; font-size: 12px; padding: 5px 10px; border-radius: 99px; border: 1px solid var(--line); background: transparent; color: var(--text); cursor: pointer; }
   .chip:hover { border-color: var(--accent); }
@@ -92,6 +102,22 @@
       <p>Describe a physical scenario. Agents pick the simulator, build it, check it and run it.</p>
       <span class="mode" id="mode">connecting…</span>
     </header>
+    <details id="libraryPanel">
+      <summary>Library</summary>
+      <div class="library-tabs" id="libraryTabs">
+        <button type="button" class="chip selected" data-library-tab="robots">Robots</button>
+        <button type="button" class="chip" data-library-tab="policies">Policies</button>
+        <button type="button" class="chip" data-library-tab="worlds">Worlds</button>
+      </div>
+      <div id="libraryItems"></div>
+      <div class="library-actions">
+        <button type="button" class="chip primary" id="applyLibrary" disabled>Use selected setup</button>
+        <button type="button" class="chip" id="uploadRobot">Upload robot</button>
+        <button type="button" class="chip" id="uploadPolicy">Upload policy</button>
+        <button type="button" class="chip" id="uploadWorld">Upload world</button>
+      </div>
+      <div class="library-status" id="libraryStatus">Connect to load library cards.</div>
+    </details>
     <div id="log">
       <div class="msg bot">Hi! Describe a world to simulate, or try one of these:
         <div class="quick" id="examples"></div>
@@ -144,6 +170,11 @@ const EXAMPLES = [
 const batchResults = new Map();
 let batchDecodeTasks = [];
 let batchIsActive = false;
+let libraryData = { robots: [], policies: [], worlds: [] };
+let libraryTab = "robots";
+let selectedRobotId = "";
+let selectedPolicyId = "";
+let selectedWorldId = "";
 
 // ── Chat timeline ───────────────────────────────────────────────────────
 const log = $("log");
@@ -179,6 +210,75 @@ const ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${l
 function send(text) { addMsg(text, "user"); ws.send(JSON.stringify({ text })); }
 $("form").onsubmit = (e) => { e.preventDefault(); const t = $("input").value.trim(); if (t) { send(t); $("input").value = ""; } };
 
+function compatiblePolicies(robot) {
+  return libraryData.policies.filter((policy) => policy.robot_id === robot.id ||
+    (policy.joint_order.length === robot.joint_names.length && policy.joint_order.every((name) => robot.joint_names.includes(name))));
+}
+function libraryCard(title, detail, license, credit, selected, onClick) {
+  const button = document.createElement("button"); button.type = "button";
+  button.className = `library-item${selected ? " selected" : ""}`;
+  button.setAttribute("aria-pressed", String(selected));
+  const name = document.createElement("strong"); name.textContent = title;
+  const info = document.createElement("span"); info.textContent = detail;
+  const terms = document.createElement("span"); terms.textContent = `License: ${license}`;
+  const attribution = document.createElement("span"); attribution.textContent = `Credit: ${credit}`;
+  button.append(name, info, terms, attribution); button.onclick = onClick;
+  return button;
+}
+function renderLibrary() {
+  const container = $("libraryItems"); container.replaceChildren();
+  for (const tab of document.querySelectorAll("[data-library-tab]")) {
+    tab.classList.toggle("selected", tab.dataset.libraryTab === libraryTab);
+    tab.setAttribute("aria-selected", String(tab.dataset.libraryTab === libraryTab));
+  }
+  if (!libraryData.robots.length) {
+    $("libraryStatus").textContent = "No library cards were provided by the server.";
+    $("applyLibrary").disabled = true; return;
+  }
+  if (libraryTab === "robots") {
+    for (const robot of libraryData.robots) {
+      container.appendChild(libraryCard(robot.name, `${robot.kind} · ${robot.mass_kg} kg · ${robot.actuator_type}`,
+        robot.license, robot.credit, robot.id === selectedRobotId, () => {
+          selectedRobotId = robot.id;
+          selectedPolicyId = compatiblePolicies(robot)[0]?.id || "";
+          renderLibrary();
+        }));
+    }
+  } else if (libraryTab === "policies") {
+    const robot = libraryData.robots.find((item) => item.id === selectedRobotId);
+    for (const policy of robot ? compatiblePolicies(robot) : []) {
+      container.appendChild(libraryCard(policy.name, `${policy.format} · ${policy.control_dt} s · ${policy.robot_id} · joints: ${policy.joint_order.join(", ")}`,
+        policy.license, policy.credit, policy.id === selectedPolicyId, () => {
+          selectedPolicyId = policy.id; renderLibrary();
+        }));
+    }
+  } else {
+    for (const world of libraryData.worlds) {
+      const terrain = world.terrain_kind === "real" ? `real terrain · ${world.terrain_preset}` : "condition preset · terrain from request";
+      container.appendChild(libraryCard(world.name, `${terrain} · ${world.gravity_m_s2} m/s² · ${world.surface} · friction ${world.friction}`,
+        world.license, world.credit, world.id === selectedWorldId, () => {
+          selectedWorldId = world.id; renderLibrary();
+        }));
+    }
+  }
+  const ready = selectedRobotId && selectedPolicyId && selectedWorldId;
+  $("applyLibrary").disabled = !ready;
+  $("libraryStatus").textContent = ready
+    ? "Choose a robot, compatible policy, and world, then apply the setup."
+    : "Select a robot, one of its compatible policies, and a world.";
+}
+document.querySelectorAll("[data-library-tab]").forEach((button) => {
+  button.onclick = () => { libraryTab = button.dataset.libraryTab; renderLibrary(); };
+});
+$("applyLibrary").onclick = () => {
+  if (!$("applyLibrary").disabled) ws.send(JSON.stringify({
+    type: "library_select", robot_id: selectedRobotId, policy_id: selectedPolicyId, world_id: selectedWorldId
+  }));
+};
+$("uploadRobot").onclick = () => addMsg("Robot uploads are placeholders and are not available yet.");
+$("uploadPolicy").onclick = () => addMsg("Policy uploads are placeholders and are not available yet.");
+$("uploadWorld").onclick = () => addMsg("World uploads are placeholders and are not available yet.");
+
 ws.onmessage = (m) => {
   const ev = JSON.parse(m.data);
   switch (ev.type) {
@@ -186,6 +286,11 @@ ws.onmessage = (m) => {
       $("mode").textContent = ev.mock_mode ? "Mock mode · no model configured" : `Model · ${ev.model}`;
       // Installed real-terrain presets become one-tap examples.
       chips($("examples"), (ev.terrains || []).map((t) => `A robot dog walking on real terrain: ${t.label}`));
+      libraryData = ev.library || libraryData;
+      selectedRobotId = libraryData.robots[0]?.id || "";
+      selectedPolicyId = selectedRobotId ? compatiblePolicies(libraryData.robots[0])[0]?.id || "" : "";
+      selectedWorldId = libraryData.worlds.find((world) => world.id === "earth-rock")?.id || libraryData.worlds[0]?.id || "";
+      renderLibrary();
       break;
     case "agent": addAgent(ev); break;
     case "scene": loadScene(ev.scene); $("code").textContent = ev.code; $("codeBtn").hidden = false;
@@ -215,6 +320,10 @@ ws.onmessage = (m) => {
       if (batchIsActive) $("stressExplanation").textContent = ev.message;
       break;
     case "error": addMsg(ev.message, "err"); break;
+    case "library_selected":
+      $("libraryStatus").textContent = `Selected ${ev.robot} · ${ev.policy} · ${ev.world}.`;
+      addMsg(`Library setup selected: ${ev.robot}, ${ev.policy}, ${ev.world}.`);
+      break;
   }
 };
 ws.onclose = () => { $("mode").textContent = "Disconnected · reload the page"; };

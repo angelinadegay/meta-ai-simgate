@@ -26,7 +26,10 @@ Rules:
 - Use realistic values. If the user doesn't say something, pick a sensible default and add a short plain-English line to "assumptions".
 - environment.body is one of earth, moon, mars, titan, europa, enceladus. Saturn and Jupiter have no solid surface: use titan or europa and note it in assumptions.
 - Leave environment.gravity and environment.friction null unless the user gives numbers; the system fills real reference values.
-- robot.kind is "rover" (wheels) or "walker" (legs). Use "walker" for anything that walks: legs, dog, quadruped, insect, spider, hexapod. legs is 4 or 6.
+- robot.kind is "rover" (wheels), "walker" (built-in gait), or "library" (a registered library robot).
+  Use "walker" for built-in walkers: legs, dog, quadruped, insect, spider, hexapod. legs is 4 or 6.
+- For G1, a humanoid, or a Unitree robot, select robot_id "g1" and policy_id "g1_walking".
+  Only use robot and policy IDs from the library list below; never invent IDs.
 - Keep the walker's gait_freq_hz and stride_deg at their defaults unless the user asks to walk faster/slower or take bigger steps; large changes can make it fall.
 - Real terrain: when the user asks for a real place or "real terrain", set terrain.kind to "real" and terrain.preset to one of the available presets below. Never invent a preset name; if none fits, use generated terrain and say so in assumptions.
 - Start and goal: when the user wants the robot to get somewhere ("reach", "get to", "go to", "from X to Y",
@@ -47,6 +50,9 @@ Rules:
 
 Available real-terrain presets:
 {{presets}}
+
+Available robot library:
+{{library}}
 
 JSON schema:
 {SCHEMA_HINT}"""
@@ -130,8 +136,23 @@ def presets_text() -> str:
 
 
 def planner_system() -> str:
-    """Built per request, so newly added terrain presets show up without a restart."""
-    return PLANNER_SYSTEM.replace("{presets}", presets_text())
+    """Build per request so newly installed terrains and library cards are available."""
+    from .library import LibraryRegistry
+
+    registry = LibraryRegistry()
+    library = []
+    for robot in registry.robots():
+        policies = ", ".join(
+            f"{policy.id} ({policy.name})"
+            for policy in registry.compatible_policies(robot.id)
+        ) or "none"
+        library.append(
+            f"- robot_id={robot.id}: {robot.name} ({robot.kind}); compatible policies: {policies}"
+        )
+    return (
+        PLANNER_SYSTEM.replace("{presets}", presets_text())
+        .replace("{library}", "\n".join(library) if library else "(none installed)")
+    )
 
 
 AFFIRM = re.compile(r"^\s*(y|yes|yep|yeah|ok|okay|sure|go|run|run it|looks good|looks right|correct|perfect|do it)\b", re.I)
@@ -143,7 +164,7 @@ def _mock_plan(text: str, current: SceneSpec | None = None) -> SceneSpec:
     t = text.lower()
     spec = current.model_copy(deep=True) if current else None
     is_structure = any(w in t for w in ("building", "house", "tower", "frame", "story", "storey", "earthquake", "quake"))
-    is_robot = any(w in t for w in ("robot", "rover", "walk", "leg", "dog", "quadruped", "hexapod", "spider", "insect"))
+    is_robot = any(w in t for w in ("robot", "rover", "walk", "leg", "dog", "quadruped", "hexapod", "spider", "insect", "humanoid", "unitree")) or bool(re.search(r"\bg1\b", t))
     if spec is None or (is_structure and spec.domain != "structure") or (is_robot and spec.domain != "robot_terrain"):
         spec = SceneSpec(domain="structure" if is_structure else "robot_terrain")
     spec.assumptions = []
@@ -190,6 +211,8 @@ def _mock_plan(text: str, current: SceneSpec | None = None) -> SceneSpec:
             rb.kind = "walker"
         if "wheel" in t or "rover" in t:
             rb.kind = "rover"
+        if re.search(r"\bg1\b", t) or "humanoid" in t or "unitree" in t:
+            rb.kind, rb.robot_id, rb.policy_id = "library", "g1", "g1_walking"
         six = "six" in t or re.search(r"\b6[\s-]*(?:leg|wheel)", t) or any(w in t for w in ("hexapod", "insect", "spider"))
         if six:
             rb.legs, rb.wheels = 6, 6
@@ -207,7 +230,9 @@ def _mock_plan(text: str, current: SceneSpec | None = None) -> SceneSpec:
         if "slower" in t:
             rb.drive_speed /= 1.5
             rb.gait_freq_hz = round(max(rb.gait_freq_hz / 1.25, 0.8), 2)
-        what = f"{rb.legs}-legged walker" if rb.kind == "walker" else f"{rb.wheels}-wheel rover"
+        what = "G1 humanoid" if rb.kind == "library" else (
+            f"{rb.legs}-legged walker" if rb.kind == "walker" else f"{rb.wheels}-wheel rover"
+        )
         if spec.terrain.kind == "real":
             spec.title = f"{what.capitalize()} on real terrain: {list_presets()[spec.terrain.preset]['label']}"
         else:
@@ -453,7 +478,12 @@ def _mock_explain(spec: SceneSpec, m: dict) -> str:
     if m.get("simulator") == "MuJoCo":
         g, f = m["gravity"], m["friction"]
         walker = spec.robot.kind == "walker"
-        who, moved, grip = ("The walker", "walked", "feet") if walker else ("The rover", "drove", "wheels")
+        humanoid = spec.robot.kind == "library"
+        who, moved, grip = (
+            ("The humanoid", "walked", "feet") if humanoid else
+            ("The walker", "walked", "feet") if walker else
+            ("The rover", "drove", "wheels")
+        )
         slope, along, down = m.get("local_slope_deg"), m.get("slope_along_heading_deg"), m.get("downhill_side")
         slip, slip_late = m.get("slip_ratio"), m.get("slip_ratio_last_1s_before_fall")
         goal = ""

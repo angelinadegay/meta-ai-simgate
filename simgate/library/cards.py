@@ -118,6 +118,9 @@ class WorldCard(BaseModel):
     gravity_m_s2: float
     surface: str
     friction: float
+    terrain_kind: Literal["generated", "real"] = "generated"
+    terrain_preset: str | None = None
+    license: str
     credit: str
 
 

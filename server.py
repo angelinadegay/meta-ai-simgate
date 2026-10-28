@@ -10,6 +10,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from simgate import config
+from simgate.library import LibraryRegistry
 from simgate.orchestrator import Session
 from simgate.terrain_data import list_presets
 
@@ -36,9 +37,15 @@ async def ws(socket: WebSocket):
         await socket.send_text(json.dumps(event))
 
     session = Session(emit)
+    library = LibraryRegistry()
     terrains = [{"name": n, "label": m["label"], "body": m.get("body")} for n, m in list_presets().items()]
     await emit({"type": "hello", "mock_mode": config.MOCK_MODE, "model": None if config.MOCK_MODE else config.PLANNER_MODEL,
-                "terrains": terrains})
+                "terrains": terrains,
+                "library": {
+                    "robots": [card.model_dump(mode="json") for card in library.robots()],
+                    "policies": [card.model_dump(mode="json") for card in library.policies()],
+                    "worlds": [card.model_dump(mode="json") for card in library.worlds()],
+                }})
     try:
         while True:
             msg = json.loads(await socket.receive_text())
@@ -47,6 +54,8 @@ async def ws(socket: WebSocket):
                 await emit({"type": "reset"})
             elif msg.get("type") in ("set_start", "set_goal"):
                 await session.set_point(msg["type"][4:], float(msg["x"]), float(msg["y"]))
+            elif msg.get("type") == "library_select":
+                await session.select_library(msg["robot_id"], msg["policy_id"], msg["world_id"])
             elif text := (msg.get("text") or "").strip():
                 await session.handle(text)
     except WebSocketDisconnect:
