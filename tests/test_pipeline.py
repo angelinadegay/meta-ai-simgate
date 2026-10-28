@@ -84,6 +84,33 @@ def test_legacy_robot_spec_becomes_single_entry():
     assert spec.robots[0].mission().goal_xy == [3, 1]
 
 
+def test_director_plan_schema_validates_ids_and_expanded_robot_limit():
+    import pytest
+    from pydantic import ValidationError
+
+    from simgate.plan import Plan
+
+    race = Plan.model_validate({
+        "workflow": "race",
+        "summary": "Race three rovers to the east.",
+        "robots": [{"kind": "rover", "count": 3}],
+        "goal": {"place": "east"},
+    })
+    assert race.robots[0].count == 3
+    with pytest.raises(ValidationError, match="robot_id 'go3' doesn't exist"):
+        Plan.model_validate({
+            "workflow": "build",
+            "summary": "Build a robot scene.",
+            "robots": [{"robot_id": "go3"}],
+        })
+    with pytest.raises(ValidationError, match="at most six robots"):
+        Plan.model_validate({
+            "workflow": "build",
+            "summary": "Build a robot scene.",
+            "robots": [{"kind": "rover", "count": 6}, {"kind": "walker"}],
+        })
+
+
 def test_director_tools_validate_and_update_world():
     import pytest
     from pydantic import ValidationError
