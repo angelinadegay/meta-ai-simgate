@@ -29,6 +29,7 @@ async def execute(plan: Plan, current: SceneSpec | None, director: "Director") -
     if plan.domain == "structure":
         world = World(SceneSpec(
             domain="structure",
+            title=_title(plan),
             structure=plan.structure.model_copy(deep=True) if plan.structure else Structure(),
             load=plan.load.model_copy(deep=True) if plan.load else Load(),
         ))
@@ -83,7 +84,7 @@ async def _prepare_robot_world(
     world = World(
         current.model_copy(deep=True)
         if current is not None
-        else SceneSpec(domain="robot_terrain")
+        else SceneSpec(domain="robot_terrain", title=_title(plan))
     )
     if current is None or plan.world.model_dump(exclude_none=True):
         await director._mock_call(
@@ -152,6 +153,10 @@ async def _prepare_robot_world(
                     "Assigning the shared goal.",
                 )
     return world
+
+
+def _title(plan: Plan) -> str:
+    return plan.summary.rstrip(".")
 
 
 async def _build_and_finish(world: World, plan: Plan, director: "Director") -> WorkflowResult:

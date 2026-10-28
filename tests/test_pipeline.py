@@ -359,6 +359,16 @@ def test_answer_first_does_not_leave_an_empty_scene():
     assert events[-1]["type"] == "question" and events[-1]["message"] == "Run it?"
 
 
+def test_new_plan_scenes_keep_the_planned_title():
+    import asyncio
+
+    from simgate.director import Director
+
+    for prompt in ("A rover on Mars hills", "a 3-story building in an earthquake"):
+        world, _ = asyncio.run(Director().execute_plan(prompt))
+        assert world.spec.title == agents.plan(prompt).title
+
+
 def test_plan_workflow_preserves_structural_scene_support():
     import asyncio
 
