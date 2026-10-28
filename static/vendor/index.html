@@ -705,13 +705,6 @@ function applyFrame(f) {
     current.geoms.forEach((g, k) => {
       const m = meshes[g.id]; if (!m || g.type === "hfield") return;
       const p = f.poses[k]; m.position.set(p[0], p[1], p[2]); m.quaternion.set(p[4], p[5], p[6], p[3]);
-      if (g.type === "mesh") {
-        const asset = current.mesh_assets?.[g.mesh_id];
-        if (asset) {
-          m.position.add(new THREE.Vector3(...asset.pos).applyQuaternion(m.quaternion));
-          m.quaternion.multiply(new THREE.Quaternion(asset.quat[1], asset.quat[2], asset.quat[3], asset.quat[0]));
-        }
-      }
     });
     trail.geometry.setDrawRange(0, Math.min(idx + 1, trailCount));
     // Follow cam: move the camera with the robot so it stays the same size on screen.

@@ -177,7 +177,8 @@ prompt ─► Planner ─► SceneSpec ─► Router ─► Builder ─► Check
   asset paths must remain inside the project.
 - G1 inference uses the shipped ONNX model and named MuJoCo joints/actuators, not fixed qpos offsets.
   A 0.5 s default-angle settle precedes policy control; the Navigator supplies walking commands. The
-  browser sends shared mesh assets once and draws the G1 meshes as BufferGeometry.
+  browser sends shared mesh assets once and draws the G1 meshes as BufferGeometry, positioned from
+  MuJoCo geom poses so asset offsets are not applied a second time.
 
 ### 9. Stress test (robots)
 

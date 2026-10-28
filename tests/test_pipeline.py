@@ -510,6 +510,22 @@ def test_g1_named_mapping_policy_validation_and_mesh_budget():
     assert mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, "goal_zone") >= 0
     assert mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, "goal_flag") >= 0
     assert build.scene["course"]
+    head_mesh_id = next(
+        int(geom["mesh_id"])
+        for geom in build.scene["geoms"]
+        if geom["type"] == "mesh" and build.scene["mesh_assets"][str(geom["mesh_id"])]["name"] == "head_link"
+    )
+    head_geom_id = next(
+        geom["id"] for geom in build.scene["geoms"]
+        if geom["type"] == "mesh" and geom["mesh_id"] == head_mesh_id
+    )
+    pelvis_geom_id = next(
+        geom["id"] for geom in build.scene["geoms"]
+        if geom["type"] == "mesh" and build.scene["mesh_assets"][str(geom["mesh_id"])]["name"] == "pelvis"
+    )
+    assert 0.4 < build.scene["poses"][head_geom_id][2] - build.scene["poses"][pelvis_geom_id][2] < 0.6
+    assert "pos" not in build.scene["mesh_assets"][str(head_mesh_id)]
+    assert "quat" not in build.scene["mesh_assets"][str(head_mesh_id)]
     checks = {check.name: check for check in sim.validate(spec, build)}
     for name in ("Library policy loads and validates", "Library robot stands for 1 s at zero command"):
         assert checks[name].passed, checks[name]

@@ -804,8 +804,6 @@ class MuJoCoSimulator(Simulator):
                 "name": mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_MESH, mesh_id) or "",
                 "vertices": np.round(vertices, 3).reshape(-1).tolist(),
                 "faces": faces.reshape(-1).tolist(),
-                "pos": np.round(model.mesh_pos[mesh_id], 4).tolist(),
-                "quat": np.round(model.mesh_quat[mesh_id], 5).tolist(),
             }
         return meshes
 
