@@ -1,14 +1,24 @@
 """Validated single-response plans produced by the Director."""
 
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, model_validator
 
 from . import presets
 from .batch import Variation
 from .library import LibraryRegistry
 from .spec import Load, Mission, Obstacle, Place, Robot, Structure
 from .terrain_data import list_presets
+
+
+def _far_side_to_place(value: Any) -> Any:
+    """Models often say "far side"; the far side of the default course is the east edge."""
+    if isinstance(value, str) and value.strip().lower().replace("_", " ") in ("far side", "the far side"):
+        return "east"
+    return value
+
+
+PlanPlace = Annotated[Place, BeforeValidator(_far_side_to_place)]
 
 Workflow = Literal["build", "race", "compare", "stress_test", "edit", "custom", "answer"]
 TerrainKind = Literal["flat", "hills", "rocky", "slope", "craters", "real"]
@@ -59,8 +69,8 @@ class RobotPlan(BaseModel):
     count: int = Field(default=1, ge=1, le=6)
     legs: Literal[4, 6] | None = None
     wheels: Literal[4, 6] | None = None
-    start_place: Place | None = None
-    goal_place: Place | None = None
+    start_place: PlanPlace | None = None
+    goal_place: PlanPlace | None = None
 
     @model_validator(mode="after")
     def validate_library_selection(self) -> "RobotPlan":
@@ -95,7 +105,7 @@ class RobotPlan(BaseModel):
 class GoalPlan(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    place: Place | None = None
+    place: PlanPlace | None = None
     xy: list[float] | None = None
 
     @model_validator(mode="after")

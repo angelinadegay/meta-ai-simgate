@@ -344,7 +344,7 @@ def _rule_plan(text: str, world_state: World | SceneSpec | dict[str, Any] | None
             summary=planned.title.rstrip(".") + ".",
             structure=planned.structure,
             load=planned.load,
-            run_now=bool(re.search(r"\b(run|simulate|start|go ahead|test now)\b", source)),
+            run_now=_asks_to_run(source),
         )
     if is_custom:
         return Plan(workflow="custom", summary="Build the requested custom world element.", custom_request=text)
@@ -383,7 +383,7 @@ def _rule_plan(text: str, world_state: World | SceneSpec | dict[str, Any] | None
 
     robots = _rule_robot_plans(text, planned.robot)
     race = bool(re.search(r"\brace\b", source)) and sum(robot["count"] for robot in robots) > 1
-    requested_run = bool(re.search(r"\b(run|simulate|start|go ahead|test now)\b", source))
+    requested_run = _asks_to_run(source)
     if current is not None and race:
         return Plan(
             workflow="race",
@@ -466,6 +466,12 @@ def _check_edit(plan: Plan, text: str, world_state: World | SceneSpec | dict[str
             f"this edit changes nothing: {json.dumps(plan.changes.given(), default=str)} leaves the scene as it is. "
             "Set the fields that should change to new values."
         )
+
+
+def _asks_to_run(source: str) -> bool:
+    """An explicit run request: a run verb anywhere, or "go", "start" or "run it" closing the request."""
+    return bool(re.search(r"\b(run|simulate|start|go ahead|test now)\b", source)
+                or re.search(r"\b(go|start|run it)\s*[.!]*\s*$", source))
 
 
 def _has_robot_scene(world_state: World | SceneSpec | dict[str, Any] | None) -> bool:

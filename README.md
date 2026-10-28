@@ -256,7 +256,7 @@ Without a key, it runs in mock mode.
 
 ### 11. Tests
 
-`python tests/test_pipeline.py` runs 48 offline tests. The optional real-terrain integration test skips when
+`python tests/test_pipeline.py` runs 49 offline tests. The optional real-terrain integration test skips when
 `rasterio` is unavailable.
 
 | Test | Checks that |
@@ -267,6 +267,7 @@ Without a key, it runs in mock mode.
 | `legacy_robot_spec_becomes_single_entry` | The single-robot format remains backward compatible |
 | `director_plan_schema_validates_ids_and_expanded_robot_limit` | Plan IDs are registered and expanded robot counts stay within six |
 | `director_planning_uses_one_call_retries_validation_and_falls_back` | A valid plan uses one call; a validation error gets one retry that shows the model its own reply and the exact error; then rules fallback |
+| `race_goals_and_run_cues_in_plans` | "Race … to the summit/top/bottom/far side" sets the shared goal, a closing "go"/"start"/"run it" asks to run, and a model's "far side" maps to the east goal |
 | `stress_plan_requires_an_existing_robot_scene` | Stress plans without a robot scene fall back to a safe answer |
 | `plan_workflow_expands_race_and_runs_only_when_requested` | A 3-rover race asks before running, and a requested run is handed to the session to stream |
 | `run_now_race_streams_frames_before_metrics` | A race the user asked to run streams run_start and frames before metrics, then the leaderboard and explanation, like an approved run |

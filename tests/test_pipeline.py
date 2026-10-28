@@ -161,6 +161,38 @@ def test_director_planning_uses_one_call_retries_validation_and_falls_back():
         llm.chat = original_chat
 
 
+def test_race_goals_and_run_cues_in_plans():
+    from simgate import config
+    from simgate.director import Director
+    from simgate.plan import Plan
+
+    original_mock = config.MOCK_MODE
+    try:
+        config.MOCK_MODE = True
+        for prompt, place, run_now in [
+            ("race a rover and a six-legged walker to the summit on Mars hills, go", "highest", True),
+            ("race two rovers to the top", "highest", False),
+            ("race three walkers to the bottom, start", "lowest", True),
+            ("race two rovers to the far side and run it", "east", True),
+        ]:
+            plan = Director().plan(prompt)
+            assert plan.workflow == "race", prompt
+            assert plan.goal is not None and plan.goal.place == place, (prompt, plan.goal)
+            assert plan.run_now is run_now, prompt
+        assert Director().plan("A rover on Mars hills").run_now is False
+        assert Director().plan("A rover on Mars hills, go").run_now is True
+    finally:
+        config.MOCK_MODE = original_mock
+
+    plan = Plan.model_validate({
+        "workflow": "race",
+        "summary": "Two rovers race to the far side.",
+        "robots": [{"kind": "rover", "count": 2, "goal_place": "far side"}],
+        "goal": {"place": "far side"},
+    })
+    assert plan.goal.place == "east" and plan.robots[0].goal_place == "east"
+
+
 def test_stress_plan_requires_an_existing_robot_scene():
     from simgate import config, llm
     from simgate.director import Director
