@@ -311,6 +311,29 @@ def set_goal(world: World, args: dict[str, Any]) -> ToolResult:
     )
 
 
+def set_start(world: World, args: dict[str, Any]) -> ToolResult:
+    parsed = _validate(SetGoalArgs, args)
+    assert isinstance(parsed, SetGoalArgs)
+    spec = world.spec.model_copy(deep=True)
+    if not spec.robots:
+        raise ValueError("There is no robot scene to assign a start to.")
+    if parsed.robot_id == "all":
+        entries = spec.robots[:1]
+    else:
+        entries = [entry for entry in spec.robots if entry.id == parsed.robot_id]
+    if not entries:
+        raise ValueError(f"Unknown robot id: {parsed.robot_id}")
+    target: Place | list[float] = parsed.place if parsed.place is not None else parsed.xy
+    for entry in entries:
+        _apply_place(entry, "start", target)
+    _refresh_spec(spec)
+    world.spec = spec
+    return _result(
+        f"Set the start for {len(entries)} robot(s).",
+        starts={entry.id: {"start_xy": entry.start_xy, "start_place": entry.start_place} for entry in entries},
+    )
+
+
 def build_and_check(world: World, args: dict[str, Any] | None = None) -> ToolResult:
     if args:
         raise ValueError("build_and_check takes no arguments.")
@@ -516,6 +539,7 @@ TOOL_FUNCTIONS = {
     "add_obstacles": add_obstacles,
     "clear_obstacles": clear_obstacles,
     "set_goal": set_goal,
+    "set_start": set_start,
     "build_and_check": build_and_check,
     "run": run,
     "compare": compare,
@@ -548,6 +572,7 @@ def tool_catalog() -> dict[str, str]:
         "add_obstacles": "Add validated shared obstacles; placement is computed by the simulator.",
         "clear_obstacles": "Remove all obstacles.",
         "set_goal": "Set a named or coordinate goal for one robot or all robots.",
+        "set_start": "Set a named or coordinate start for one robot.",
         "build_and_check": "Build the world and return all checks, including failures.",
         "run": "Run the checked world and return metrics and leaderboard.",
         "compare": "Compare the same world under a list of supported condition variations.",

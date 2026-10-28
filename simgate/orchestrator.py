@@ -8,7 +8,7 @@ from typing import Awaitable, Callable
 from . import agents
 from .backends.base import BuildResult, Simulator
 from .director import Director
-from .spec import Mission, SceneSpec
+from .spec import SceneSpec
 
 Emit = Callable[[dict], Awaitable[None]]
 
@@ -140,22 +140,34 @@ class Session:
             if self.spec is None or self.spec.domain != "robot_terrain":
                 await self.emit({"type": "question", "message": "Describe a robot scene first, then click the terrain to set its start or goal."})
                 return
-            spec = self.spec.model_copy(deep=True)
-            spec.mission = spec.mission or Mission()
+            from .tools import World
+
+            world = World(self.spec.model_copy(deep=True))
+            director = Director(self.emit)
+            director._root_id = director._id()
+            await self.emit({
+                "type": "step", "id": director._root_id, "parent_id": None,
+                "agent": "Director", "model": "rules", "tool": None, "args": {},
+                "thought": f"Applying the map click as a {which} position.",
+                "result": "", "status": "working", "ms": 0,
+            })
             if which == "start":
-                spec.mission.start_xy, spec.mission.start_place, spec.mission.start_heading_deg = [x, y], None, None
-                if spec.robots:
-                    spec.robots[0].start_xy, spec.robots[0].start_place = [x, y], None
-                    spec.robots[0].start_heading_deg = None
+                name = "set_start"
+                args = {"robot_id": world.spec.robots[0].id, "xy": [x, y]}
             else:
-                spec.mission.goal_xy, spec.mission.goal_place = [x, y], None
-                for entry in spec.robots:
-                    entry.goal_xy, entry.goal_place = [x, y], None
-            spec.assumptions = []
-            spec.fill_defaults()
-            await self.agent("Planner", "done", f"{which.capitalize()} set to ({x:.1f}, {y:.1f}) m."
-                             + (" " + " ".join(spec.assumptions) if spec.assumptions else ""))
-            await self.build_and_check(spec)
+                name = "set_goal"
+                args = {"robot_id": "all", "xy": [x, y]}
+            await director._mock_call(world, name, args, f"Setting the {which} from the map.")
+            await director._mock_call(world, "build_and_check", {}, "Rebuilding and checking the clicked position.")
+            await director._finish_root(f"{which.capitalize()} set to ({x:.1f}, {y:.1f}) m.")
+            self.spec, self.sim, self.build = world.spec, world.simulator, world.build
+            await self.emit({"type": "spec", "spec": self.spec.model_dump()})
+            if self.build is not None:
+                await self.emit({"type": "scene", "scene": self.build.scene, "code": self.build.code, "language": self.build.language})
+                await self.emit({"type": "checks", "checks": [check.__dict__ for check in world.checks]})
+            self.awaiting_approval = True
+            await self.emit({"type": "question", "message": "Does this look right? Say \"run\" to start, or tell me what to change.",
+                             "stress_test_available": True})
         except Exception as e:  # noqa: BLE001
             await self.emit({"type": "error", "message": f"{type(e).__name__}: {e}"})
 

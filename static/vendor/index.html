@@ -10,7 +10,7 @@
   :root {
     --bg: #0d1015; --panel: #151a21; --panel-2: #1b212a; --line: #262e39;
     --text: #e6e9ee; --muted: #8b95a3; --accent: #f59e0b; --ok: #34d399; --warn: #fbbf24; --bad: #f87171;
-    --planner: #a78bfa; --router: #60a5fa; --builder: #f59e0b; --checker: #34d399; --simulator: #f472b6; --explainer: #22d3ee;
+    --planner: #a78bfa; --router: #60a5fa; --builder: #f59e0b; --checker: #34d399; --simulator: #f472b6; --explainer: #22d3ee; --director: #c4b5fd;
   }
   * { box-sizing: border-box; }
   [hidden] { display: none !important; }
@@ -32,6 +32,20 @@
   .agent .dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-right: 6px; background: currentColor; }
   .agent.working .dot { animation: pulse 1s infinite; }
   .agent.warning span { color: var(--warn); }
+  .step-row { border: 1px solid var(--line); border-radius: 7px; background: var(--panel-2); font-size: 11.5px; overflow: hidden; }
+  .step-row summary { padding: 6px 8px; cursor: pointer; color: var(--text); }
+  .step-row.working { border-color: var(--accent); }
+  .step-row.warning { border-color: var(--warn); }
+  .step-row.error { border-color: var(--bad); }
+  .step-row .step-meta { padding: 0 8px 7px 22px; color: var(--muted); white-space: pre-wrap; overflow-wrap: anywhere; }
+  #agentGraph { width: 100%; height: auto; display: block; }
+  .agent-node rect { fill: var(--panel-2); stroke: var(--line); stroke-width: 1.5; rx: 7; }
+  .agent-node.active rect { stroke: var(--accent); filter: drop-shadow(0 0 4px var(--accent)); }
+  .agent-node text { fill: var(--text); font: 10px Inter, sans-serif; text-anchor: middle; }
+  .agent-node .agent-model { fill: var(--muted); font-size: 8px; }
+  .agent-edge { stroke: var(--line); stroke-width: 1.5; fill: none; }
+  .agent-edge.active { stroke: var(--accent); stroke-dasharray: 4 3; animation: edge-flow .6s linear infinite; }
+  @keyframes edge-flow { to { stroke-dashoffset: -14; } }
   @keyframes pulse { 50% { opacity: .25; } }
   #libraryPanel { flex: none; padding: 8px 14px; border-bottom: 1px solid var(--line); }
   #libraryPanel summary { cursor: pointer; font-weight: 600; }
@@ -136,6 +150,7 @@
     <div id="pickHint" hidden></div>
     <pre class="card" id="code"></pre>
     <div class="hud" id="topright">
+      <div class="card" id="agentsCard"><h3>Agents</h3><svg id="agentGraph" viewBox="0 0 360 160" aria-label="Live agent graph"></svg></div>
       <div class="card" id="checksCard" hidden><h3>Physics checks</h3><div id="checks"></div></div>
       <div class="card" id="metricsCard" hidden><h3>Results</h3><div id="badge" hidden></div><div class="kv" id="metrics"></div></div>
       <div class="card" id="reportCard" hidden><h3>Report card</h3><div id="reportCounts"></div><div id="reportRows"></div><div id="stressExplanation"></div></div>
@@ -156,7 +171,7 @@ import * as THREE from "three";
 import { OrbitControls } from "/static/vendor/OrbitControls.js";
 
 const $ = (id) => document.getElementById(id);
-const AGENT_COLORS = { Planner: "--planner", Router: "--router", Builder: "--builder", Checker: "--checker", Simulator: "--simulator", Explainer: "--explainer", "Stress planner": "--planner", "Batch runner": "--simulator" };
+const AGENT_COLORS = { Director: "--director", Planner: "--planner", Router: "--router", Builder: "--builder", Checker: "--checker", Simulator: "--simulator", Explainer: "--explainer", "Stress planner": "--planner", "Batch runner": "--simulator" };
 const EXAMPLES = [
   "Can a small rover climb a rocky hill on Mars?",
   "Rover obstacle course: 10 small rocks, a step, stairs and a gap",
@@ -181,6 +196,62 @@ const log = $("log");
 function scroll() { log.scrollTop = log.scrollHeight; }
 function addMsg(text, cls = "bot") { const d = document.createElement("div"); d.className = `msg ${cls}`; d.textContent = text; log.appendChild(d); scroll(); return d; }
 let lastAgentRow = {};
+const stepRows = new Map(), agentNodes = new Map(), countedSteps = new Set();
+const agentPositions = {
+  Director: [55, 38], Builder: [175, 38], Checker: [295, 38],
+  Simulator: [295, 115], Explainer: [175, 115], "Stress planner": [55, 115],
+};
+function initAgentGraph() {
+  const svg = $("agentGraph"), ns = "http://www.w3.org/2000/svg";
+  svg.replaceChildren();
+  for (const [from, to] of [["Director", "Builder"], ["Builder", "Checker"], ["Checker", "Simulator"], ["Simulator", "Explainer"], ["Director", "Stress planner"]]) {
+    const [x1, y1] = agentPositions[from], [x2, y2] = agentPositions[to];
+    const edge = document.createElementNS(ns, "path");
+    edge.setAttribute("d", `M${x1 + 40},${y1 + 4} L${x2 - 40},${y2 - 4}`);
+    edge.classList.add("agent-edge"); edge.dataset.to = to; svg.appendChild(edge);
+  }
+  for (const [name, [x, y]] of Object.entries(agentPositions)) {
+    const group = document.createElementNS(ns, "g"); group.classList.add("agent-node");
+    const rect = document.createElementNS(ns, "rect"); rect.setAttribute("x", x - 42); rect.setAttribute("y", y - 17); rect.setAttribute("width", "84"); rect.setAttribute("height", "34");
+    const title = document.createElementNS(ns, "text"); title.setAttribute("x", x); title.setAttribute("y", y - 3); title.textContent = name;
+    const status = document.createElementNS(ns, "text"); status.setAttribute("x", x); status.setAttribute("y", y + 10); status.classList.add("agent-model"); status.textContent = "idle · 0";
+    group.append(rect, title, status);
+    if (name === "Stress planner") group.style.display = "none";
+    svg.appendChild(group); agentNodes.set(name, { group, status });
+  }
+}
+initAgentGraph();
+function renderStep(ev) {
+  let row = stepRows.get(ev.id);
+  if (!row) {
+    row = document.createElement("details"); row.className = "step-row";
+    const summary = document.createElement("summary"), detail = document.createElement("div");
+    detail.className = "step-meta"; row.append(summary, detail); log.appendChild(row); stepRows.set(ev.id, row);
+  }
+  row.className = `step-row ${ev.status || "done"}`;
+  const summary = row.querySelector("summary"), detail = row.querySelector(".step-meta");
+  summary.textContent = `${ev.agent}${ev.tool ? ` · ${ev.tool}` : ""}: ${ev.thought || "Working…"}`;
+  detail.textContent = [
+    ev.args && Object.keys(ev.args).length ? `Args: ${JSON.stringify(ev.args)}` : "",
+    ev.result ? `Result: ${ev.result}` : "",
+    ev.model ? `Model: ${ev.model}` : "",
+    ev.ms ? `${ev.ms} ms` : "",
+  ].filter(Boolean).join("\n");
+  const node = agentNodes.get(ev.agent);
+  if (node) {
+    node.group.style.display = "";
+    if (!countedSteps.has(ev.id)) {
+      countedSteps.add(ev.id);
+      const current = Number(node.status.dataset.count || 0) + 1;
+      node.status.dataset.count = String(current);
+    }
+    node.status.textContent = `${ev.model || "rules"} · ${node.status.dataset.count || "0"}`;
+    node.group.classList.toggle("active", ev.status === "working");
+    const edge = $("agentGraph").querySelector(`.agent-edge[data-to="${CSS.escape(ev.agent)}"]`);
+    if (edge) edge.classList.toggle("active", ev.status === "working");
+  }
+  scroll();
+}
 function addAgent(ev) {
   const row = document.createElement("div");
   row.className = `agent ${ev.status}`;
@@ -293,6 +364,7 @@ ws.onmessage = (m) => {
       renderLibrary();
       break;
     case "agent": addAgent(ev); break;
+    case "step": renderStep(ev); break;
     case "scene": loadScene(ev.scene); $("code").textContent = ev.code; $("codeBtn").hidden = false;
       $("startBtn").hidden = $("goalBtn").hidden = ev.scene.kind !== "mujoco"; break;
     case "checks": renderChecks(ev.checks); break;
@@ -320,6 +392,10 @@ ws.onmessage = (m) => {
       if (batchIsActive) $("stressExplanation").textContent = ev.message;
       break;
     case "error": addMsg(ev.message, "err"); break;
+    case "reset":
+      log.replaceChildren(); stepRows.clear(); countedSteps.clear(); agentNodes.clear(); initAgentGraph();
+      current = null; frames = []; $("empty").hidden = false; $("checksCard").hidden = true; $("metricsCard").hidden = true;
+      break;
     case "library_selected":
       $("libraryStatus").textContent = `Selected ${ev.robot} · ${ev.policy} · ${ev.world}.`;
       addMsg(`Library setup selected: ${ev.robot}, ${ev.policy}, ${ev.world}.`);

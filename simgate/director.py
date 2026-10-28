@@ -2,6 +2,7 @@
 
 import asyncio
 import re
+import time
 import uuid
 from typing import Any, Awaitable, Callable
 
@@ -72,6 +73,7 @@ class Director:
         ]
         recovery_used = False
         root_id = self._id()
+        self._root_id = root_id
         await self._emit_step(
             id=root_id, parent_id=None, agent="Director", model=config.PLANNER_MODEL,
             tool=None, args={}, thought="Planning the next simulation actions.", result="",
@@ -91,7 +93,9 @@ class Director:
                     status="warning", ms=0,
                 )
                 if recovery_used:
-                    return world, f"I couldn't continue because the Director returned invalid instructions: {exc}"
+                    message = f"I couldn't continue because the Director returned invalid instructions: {exc}"
+                    await self._finish_root(message)
+                    return world, message
                 recovery_used = True
                 messages.append({"role": "user", "content": f"Invalid Director reply: {exc}. Return one corrected JSON object."})
                 continue
@@ -100,9 +104,11 @@ class Director:
                     id=self._id(), parent_id=root_id, agent="Director", model=config.PLANNER_MODEL,
                     tool=None, args={}, thought=turn.thought, result=turn.final, status="done", ms=0,
                 )
+                await self._finish_root(turn.final)
                 return world, turn.final
             assert turn.tool is not None
             tool_step = self._id()
+            started = time.perf_counter()
             await self._emit_step(
                 id=tool_step, parent_id=root_id, agent="Director", model=config.PLANNER_MODEL,
                 tool=turn.tool, args=turn.args, thought=turn.thought, result="",
@@ -118,22 +124,28 @@ class Director:
                     status="warning", ms=0,
                 )
                 if recovery_used:
-                    return world, f"I stopped after the tool failed: {message}"
+                    message = f"I stopped after the tool failed: {message}"
+                    await self._finish_root(message)
+                    return world, message
                 recovery_used = True
                 messages.append({"role": "user", "content": f"Tool {turn.tool} failed: {message}. Correct the plan once."})
                 continue
+            await self._emit_handoffs(turn.tool, result, tool_step)
             await self._emit_step(
                 id=tool_step, parent_id=root_id, agent="Director", model=config.PLANNER_MODEL,
                 tool=turn.tool, args=turn.args, thought=turn.thought, result=result.text,
-                status="done", ms=0,
+                status="done", ms=round((time.perf_counter() - started) * 1000),
             )
             messages.append({
                 "role": "user",
                 "content": f"Tool result: {result.text}\nStructured data: {result.data}\nUpdated world: {world.state()}",
             })
             if turn.tool == "ask_user":
+                await self._finish_root(result.text)
                 return world, result.text
-        return world, "The Director reached the 12-tool limit before finishing. Please narrow the request."
+        message = "The Director reached the 12-tool limit before finishing. Please narrow the request."
+        await self._finish_root(message)
+        return world, message
 
     async def _mock_execute(self, text: str, current: SceneSpec | None) -> tuple[World, str]:
         planned = await asyncio.to_thread(agents.edit, current, text) if current is not None else await asyncio.to_thread(agents.plan, text)
@@ -147,7 +159,9 @@ class Director:
             world = World(planned)
             await self._mock_call(world, "build_and_check", {}, "Building and checking the planned structure.")
             await self._mock_call(world, "ask_user", {"question": "Run it?"}, "Asking before starting the simulation.")
-            return world, world.question or "Run it?"
+            message = world.question or "Run it?"
+            await self._finish_root(message)
+            return world, message
         if current is not None:
             world = World(planned)
             terrain = planned.terrain
@@ -161,7 +175,9 @@ class Director:
             }, "Applying the requested changes to the existing world.")
             await self._mock_call(world, "build_and_check", {}, "Building and checking the updated scene.")
             await self._mock_call(world, "ask_user", {"question": "Run it?"}, "Waiting for approval to run.")
-            return world, world.question or "Run it?"
+            message = world.question or "Run it?"
+            await self._finish_root(message)
+            return world, message
 
         requests = _requested_robots(text, planned.robot)
         world_spec = planned.model_copy(deep=True)
@@ -199,24 +215,107 @@ class Director:
             await self._mock_call(world, "set_goal", goal_args, "Assigning the goal.")
         await self._mock_call(world, "build_and_check", {}, "Building and checking the robot scene.")
         await self._mock_call(world, "ask_user", {"question": "Run it?"}, "Waiting for approval to run.")
-        return world, world.question or "Run it?"
+        message = world.question or "Run it?"
+        await self._finish_root(message)
+        return world, message
 
     async def _mock_call(self, world: World, name: str, args: dict[str, Any], thought: str) -> ToolResult:
         step_id = self._id()
+        started = time.perf_counter()
         await self._emit_step(
             id=step_id, parent_id=self._root_id, agent="Director", model="rules",
             tool=name, args=args, thought=thought, result="", status="working", ms=0,
         )
         result = await asyncio.to_thread(invoke_tool, world, name, args)
+        await self._emit_handoffs(name, result, step_id)
         await self._emit_step(
             id=step_id, parent_id=self._root_id, agent="Director", model="rules",
-            tool=name, args=args, thought=thought, result=result.text, status="done", ms=0,
+            tool=name, args=args, thought=thought, result=result.text, status="done",
+            ms=round((time.perf_counter() - started) * 1000),
         )
         return result
+
+    async def _emit_handoffs(self, tool: str, result: ToolResult, parent_id: str) -> None:
+        handoffs = []
+        if tool == "build_and_check":
+            failed = [
+                check for check in result.data.get("checks", [])
+                if not check.get("passed", False)
+            ]
+            handoffs = [
+                ("Builder", config.BUILDER_MODEL if config.BUILDER_MODE == "llm" else "template", "Build finished."),
+                (
+                    "Checker",
+                    "rules",
+                    "All checks passed." if result.data.get("passed") else "; ".join(
+                        f"{check.get('name')}: {check.get('detail')}" for check in failed
+                    ) or "Some physics checks need attention.",
+                ),
+            ]
+        elif tool == "build_custom":
+            errors = result.data.get("errors", [])
+            attempts = result.data.get("attempts", 1)
+            for attempt in range(1, attempts + 1):
+                detail = errors[attempt - 1] if attempt <= len(errors) else result.text
+                status = "warning" if attempt <= len(errors) else "done"
+                await self._emit_agent_step(
+                    "Builder",
+                    config.BUILDER_MODEL,
+                    tool,
+                    parent_id,
+                    f"Custom fragment attempt {attempt}.",
+                    detail,
+                    status,
+                )
+            return
+        elif tool == "run":
+            handoffs = [("Simulator", "MuJoCo", "Simulation completed and metrics were measured.")]
+        elif tool == "explain":
+            handoffs = [("Explainer", config.PLANNER_MODEL if not config.MOCK_MODE else "rules", result.text)]
+        elif tool == "stress_test":
+            handoffs = [
+                ("Stress planner", config.PLANNER_MODEL if not config.MOCK_MODE else "rules", "Selected condition variations."),
+                ("Batch runner", "ProcessPoolExecutor", result.text),
+                ("Explainer", config.PLANNER_MODEL if not config.MOCK_MODE else "rules", "Summarized the measured pattern."),
+            ]
+        for agent, model, message in handoffs:
+            status = "warning" if agent == "Checker" and not result.data.get("passed") else "done"
+            await self._emit_agent_step(
+                agent, model, tool, parent_id, f"{agent} hand-off.", message, status,
+            )
+
+    async def _emit_agent_step(
+        self,
+        agent: str,
+        model: str,
+        tool: str,
+        parent_id: str,
+        thought: str,
+        result: str,
+        status: str,
+    ) -> None:
+        step_id = self._id()
+        await self._emit_step(
+            id=step_id, parent_id=parent_id, agent=agent, model=model, tool=tool,
+            args={}, thought=thought, result="", status="working", ms=0,
+        )
+        await self._emit_step(
+            id=step_id, parent_id=parent_id, agent=agent, model=model, tool=tool,
+            args={}, thought=thought, result=result, status=status, ms=0,
+        )
 
     async def _emit_step(self, **payload: Any) -> None:
         if self.step_callback is not None:
             await self.step_callback({"type": "step", **payload})
+
+    async def _finish_root(self, message: str) -> None:
+        if self._root_id is not None:
+            await self._emit_step(
+                id=self._root_id, parent_id=None, agent="Director",
+                model=config.PLANNER_MODEL if not config.MOCK_MODE else "rules",
+                tool=None, args={}, thought="Director finished this request.",
+                result=message, status="done", ms=0,
+            )
 
     def _id(self) -> str:
         self._counter += 1

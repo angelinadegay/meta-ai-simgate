@@ -125,7 +125,8 @@ def test_mock_director_turns_race_into_ordered_tool_calls():
         world, message = await Director(emit).execute(text)
         done_tools = [
             event["tool"] for event in events
-            if event.get("type") == "step" and event.get("status") == "done" and event.get("tool")
+            if event.get("type") == "step" and event.get("status") == "done"
+            and event.get("agent") == "Director" and event.get("tool")
         ]
         return world, message, done_tools, events
 
@@ -133,7 +134,10 @@ def test_mock_director_turns_race_into_ordered_tool_calls():
     assert tools == ["set_world", "spawn_robot", "spawn_robot", "spawn_robot", "set_goal", "build_and_check", "ask_user"]
     assert len(world.spec.robots) == 3 and all(entry.goal_place == "east" for entry in world.spec.robots)
     assert message == "Run it?" and all(check.passed for check in world.checks)
-    assert all(event.get("parent_id") in {None, events[0]["id"]} for event in events if event["type"] == "step")
+    assert {"Builder", "Checker"} <= {event["agent"] for event in events if event["type"] == "step"}
+    step_ids = {event["id"] for event in events if event["type"] == "step"}
+    assert all(event.get("parent_id") is None or event["parent_id"] in step_ids
+               for event in events if event["type"] == "step")
 
     mixed, _, mixed_tools, _ = asyncio.run(
         scenario("a rover and a 6-legged walker on Mars hills, race to the summit")
