@@ -6,6 +6,7 @@ uvicorn[standard]>=0.29
 openai>=1.30
 pydantic>=2.6
 pytest>=8
+onnxruntime>=1.17
 
 # Optional: importing real terrain (scripts/hirise_to_simgate.py)
 # rasterio>=1.3

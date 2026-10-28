@@ -2,8 +2,8 @@
   "id": "g1_walking",
   "name": "G1 Walking Policy",
   "robot_id": "g1",
-  "format": "torchscript",
-  "file": "third_party/unitree_rl_gym/deploy/pre_train/g1/motion.pt",
+  "format": "onnx",
+  "file": "third_party/unitree_rl_gym/deploy/pre_train/g1/motion.onnx",
   "control_dt": 0.02,
   "joint_order": [
     "left_hip_pitch_joint",
