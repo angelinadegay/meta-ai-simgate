@@ -91,7 +91,9 @@ Evidence rules:
   path_efficiency is progress toward the goal divided by the distance travelled (1.0 = a straight line).
   The robot steers itself straight at the goal; it does not plan a route around steep ground.
 - Multi-robot runs: use leaderboard rank and per-robot measurements. Lead with who won or arrived, then explain
-  why the others did not, using only their reported outcomes, distances, tilt, and contacts.
+  why the others did not, using only their reported outcomes, distances, tilt, and contacts. Each robot's kind is
+  given and its "robot" lists only the properties that robot has. Never compare a property one robot doesn't
+  have (a walker has no wheels or wheel speed; a rover has no legs or gait).
 - Obstacles: obstacles lists each one in course order with its height (gap: width_m is the opening, height_m its
   depth), whether the robot touched it (touched_at_s) and got past it (cleared). stopped_by is the first obstacle it
   didn't get past. robot_rough_limits are measured limits for this robot (climb_m: tallest step it usually
@@ -105,6 +107,9 @@ baseline with the variations, and identify the clearest pattern across the runs:
 condition aligns with failures and any measured threshold supported by the data. Treat association
 as an inference and say "likely"; do not claim causation or invent thresholds. Use only reported
 metrics, and finish with one concrete suggestion to type next. No markdown headings or bullet lists.
+In a race each robot's kind is given and its "robot" lists only the properties it has: never compare a property
+one robot doesn't have (a walker has no wheels or wheel speed; a rover has no legs or gait). Walker gaits were
+tested only at 2.0 Hz and a 15° stride; call any other gait setting untested.
 """
 
 
@@ -632,14 +637,64 @@ def _mock_explain(spec: SceneSpec, m: dict) -> str:
             f"Try: \"make it stiffer\" or \"make the quake harder\".")
 
 
+ROBOT_FIELDS = {   # the design properties each kind of robot actually has
+    "rover": ("kind", "wheels", "wheel_radius", "wheel_width", "drive_speed", "chassis_length", "chassis_width", "mass_kg"),
+    "walker": ("kind", "legs", "leg_length", "gait_freq_hz", "stride_deg", "chassis_length", "chassis_width", "mass_kg"),
+    "library": ("kind", "robot_id", "policy_id", "command_speed_m_s", "mass_kg"),
+}
+
+
+def robot_view(robot: dict) -> dict:
+    """A robot's design with only the properties its kind has (no drive_speed for a walker, no gait for a rover)."""
+    return {key: robot[key] for key in ROBOT_FIELDS.get(robot.get("kind"), tuple(robot)) if key in robot}
+
+
+def explainer_metrics(metrics: dict) -> dict:
+    """Run metrics for the Explainer: each robot's kind, and only the design properties that apply to it."""
+    view = dict(metrics)
+    if isinstance(view.get("robot"), dict):
+        view["robot"] = robot_view(view["robot"])
+    if isinstance(view.get("robots"), dict):
+        view["robots"] = {
+            robot_id: {**m, "kind": m["robot"].get("kind"), "robot": robot_view(m["robot"])} if isinstance(m.get("robot"), dict) else m
+            for robot_id, m in view["robots"].items()
+        }
+    return view
+
+
+TESTED_GAIT_HZ, TESTED_STRIDE_DEG = 2.0, 15.0
+_GAIT_NUMBERS = [
+    re.compile(r"(\d+(?:\.\d+)?)\s*hz\b", re.I),
+    re.compile(r"gait[ _]freq(?:uency)?(?:_hz)?\D{0,20}?(\d+(?:\.\d+)?)", re.I),
+]
+_STRIDE_NUMBERS = [
+    re.compile(r"stride(?:_deg)?\D{0,30}?(\d+(?:\.\d+)?)\s*(?:°|deg)", re.I),
+    re.compile(r"(\d+(?:\.\d+)?)\s*(?:°|degrees?)\s+(?:of\s+)?stride", re.I),
+]
+
+
+def mark_untested_gait(text: str, spec: SceneSpec) -> str:
+    """Walker gaits were tested only at 2.0 Hz / 15°: if the text suggests other gait numbers without saying
+    "untested", append "(untested settings)"."""
+    if not any(entry.robot.kind == "walker" for entry in spec.robots) or "untested" in text.lower():
+        return text
+    hz = [float(value) for pattern in _GAIT_NUMBERS for value in pattern.findall(text)]
+    strides = [float(value) for pattern in _STRIDE_NUMBERS for value in pattern.findall(text)]
+    if any(abs(value - TESTED_GAIT_HZ) > 1e-6 for value in hz) or any(abs(value - TESTED_STRIDE_DEG) > 1e-6 for value in strides):
+        return text.rstrip() + " (untested settings)"
+    return text
+
+
 def explain(spec: SceneSpec, metrics: dict) -> str:
     if config.MOCK_MODE:
         return _mock_explain(spec, metrics)
-    return llm.chat(
+    text = llm.chat(
         [{"role": "system", "content": EXPLAIN_SYSTEM},
-         {"role": "user", "content": f"Scene: {spec.title}\nAssumptions: {spec.assumptions}\nMetrics: {json.dumps(metrics)}"}],
+         {"role": "user", "content": f"Scene: {spec.title}\nAssumptions: {spec.assumptions}\n"
+                                    f"Metrics: {json.dumps(explainer_metrics(metrics))}"}],
         temperature=0.4,
     ).strip()
+    return mark_untested_gait(text, spec)
 
 
 def _mock_explain_stress(results: list[dict]) -> str:
@@ -704,11 +759,12 @@ def explain_stress(spec: SceneSpec, results: list[dict]) -> str:
     if config.MOCK_MODE:
         text = _mock_explain_stress(results)
     else:
-        evidence = [{key: value for key, value in result.items() if key != "ghost"} for result in results]
-        text = llm.chat(
+        evidence = [{**{key: value for key, value in result.items() if key != "ghost"},
+                     "summary": explainer_metrics(result.get("summary") or {})} for result in results]
+        text = mark_untested_gait(llm.chat(
             [{"role": "system", "content": EXPLAIN_STRESS_SYSTEM},
              {"role": "user", "content": f"Scene: {spec.title}\nAssumptions: {spec.assumptions}\n"
                                         f"Stress-test results: {json.dumps(evidence)}"}],
             temperature=0.4,
-        ).strip()
+        ).strip(), spec)
     return f"{crashed}. {CRASH_NOTE}, so those runs are left out. {text}" if crashed else text

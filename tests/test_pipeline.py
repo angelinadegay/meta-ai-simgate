@@ -1978,6 +1978,51 @@ def test_mixed_race_time_limit_uses_the_slowest_robot():
     assert rovers.spec.duration_s == 30.0
 
 
+def test_explainers_get_each_robots_kind_and_mark_untested_gaits():
+    import json
+
+    from simgate import config, llm
+
+    plan = {"workflow": "race", "summary": "Rover and walker race to the summit", "world": {"body": "mars", "terrain_kind": "hills"},
+            "robots": [{"kind": "rover"}, {"kind": "walker", "legs": 6}], "goal": {"place": "highest"}, "run_now": False}
+    chat, calls = scripted_models({
+        "Plan JSON schema:": [json.dumps(plan)],
+        "You are the Explainer in a physics sandbox": ["The walker ran out of time. Try a gait of 1.5 Hz."],
+        "You are the Stress planner": ["{}", "{}"],   # invalid twice: the compatible defaults are used
+        "You are the Stress-test Explainer": ["The walker missed most runs. Try a 20° stride at 2.0 Hz."],
+    })
+    original_mock, original_chat = config.MOCK_MODE, llm.chat
+    try:
+        config.MOCK_MODE, llm.chat = False, chat
+        _, (_, run, stress) = session_turns("race a rover and a walker to the summit", "run", "stress test")
+    finally:
+        config.MOCK_MODE, llm.chat = original_mock, original_chat
+
+    explained = [e for e in run if e["type"] == "explanation"][-1]["message"]
+    assert explained == "The walker ran out of time. Try a gait of 1.5 Hz. (untested settings)"
+    assert stress[-1]["message"].endswith("Try a 20° stride at 2.0 Hz. (untested settings)")
+
+    system, user = next(messages for role, _, messages in calls if role == "You are the Explainer in a physics sandbox")
+    assert "Never compare a property one robot doesn't" in system["content"]
+    robots = json.loads(user["content"].split("Metrics: ", 1)[1])["robots"]
+    rover, walker = (next(m for m in robots.values() if m["kind"] == kind) for kind in ("rover", "walker"))
+    assert "drive_speed" in rover["robot"] and not {"gait_freq_hz", "stride_deg", "legs"} & set(rover["robot"])
+    assert "gait_freq_hz" in walker["robot"] and not {"drive_speed", "wheels", "wheel_radius"} & set(walker["robot"])
+
+    system, user = next(messages for role, _, messages in calls if role == "You are the Stress-test Explainer")
+    assert "never compare a property" in system["content"]
+    for result in json.loads(user["content"].split("Stress-test results: ", 1)[1]):
+        for m in result["summary"]["robots"].values():
+            assert m["kind"] in ("rover", "walker")
+            assert not ({"drive_speed", "wheels"} if m["kind"] == "walker" else {"gait_freq_hz", "legs"}) & set(m["robot"])
+
+    from simgate.agents import mark_untested_gait
+    from simgate.spec import SceneSpec
+    walker_scene = SceneSpec(domain="robot_terrain", robots=[RobotEntry(id="r1", label="W", robot=Robot(kind="walker"))]).fill_defaults()
+    for text in ("Keep the 2.0 Hz gait and 15° stride.", "A 1.5 Hz gait is untested but may help.", "It tilted 13° on a 12° slope."):
+        assert mark_untested_gait(text, walker_scene) == text
+
+
 def test_stress_trigger_requires_robot_scene():
     import asyncio
     from unittest.mock import patch
