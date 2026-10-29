@@ -429,6 +429,7 @@ Without a key, it runs in mock mode.
 | `g1_named_mapping_policy_validation_and_mesh_budget` | Checker validates the policy and 1 s stand, joint-name mapping survives obstacles/goal markers, bad observation sizes are rejected, and the mesh scene stays under 5 MiB |
 | `policy_with_out_of_range_targets_is_rejected_on_load` | A policy whose first targets leave the joint ranges is rejected on load with the joint named, not silently clipped |
 | `g1_planner_and_library_selection_use_registered_cards` | G1 prompts and UI selections resolve to registered robot, policy and world cards |
+| `rules_planner_reads_a_unitree_robot_in_a_race_as_the_g1` | "Race a Unitree robot against a rover" plans a G1 and a rover; "Unitree G1 humanoid" is one G1 |
 | `library_lists_only_each_robots_own_compatible_policies` | The rover and walker controllers, which name no joints, are offered only for their own robot (server and browser) |
 
 ---

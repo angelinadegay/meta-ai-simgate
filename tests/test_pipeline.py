@@ -2532,6 +2532,18 @@ def test_g1_planner_and_library_selection_use_registered_cards():
     asyncio.run(select())
 
 
+def test_rules_planner_reads_a_unitree_robot_in_a_race_as_the_g1():
+    from simgate.director import Director
+
+    async def emit(event):
+        pass
+
+    for text, expected in (("race a unitree robot against a rover", [("g1", None, 1), (None, "rover", 1)]),
+                           ("Unitree G1 humanoid on Mars", [("g1", None, 1)])):
+        plan = Director(emit).plan(text, None)
+        assert [(robot.robot_id, robot.kind, robot.count) for robot in plan.robots] == expected, (text, plan.robots)
+
+
 def test_library_lists_only_each_robots_own_compatible_policies():
     from pathlib import Path
 

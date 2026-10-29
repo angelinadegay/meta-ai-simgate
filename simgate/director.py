@@ -766,7 +766,7 @@ def _rule_title(planned: SceneSpec, robots: list[dict[str, Any]]) -> str:
 
 def _requested_robots(text: str, fallback: Robot | None) -> list[dict[str, Any]]:
     source = text.lower()
-    pattern = re.compile(r"(?:(\d+|one|two|three|four|five|six)\s+)?(g1s?|humanoids?|rovers?|walkers?|hexapods?)")
+    pattern = re.compile(r"(?:(\d+|one|two|three|four|five|six)\s+)?(unitree(?:[\s-]+(?:g1|humanoid|robot)s?)?|g1s?|humanoids?|rovers?|walkers?|hexapods?)")
     matches = list(pattern.finditer(source))
     if re.search(r"\bg1\s+humanoid\b", source):
         matches = [match for match in matches if not match.group(2).startswith("humanoid")]
@@ -775,7 +775,7 @@ def _requested_robots(text: str, fallback: Robot | None) -> list[dict[str, Any]]
         amount = match.group(1)
         count = int(amount) if amount and amount.isdigit() else _NUMBER_WORDS.get(amount, 1)
         name = match.group(2)
-        if name.startswith(("g1", "humanoid")):
+        if name.startswith(("g1", "humanoid", "unitree")):
             item = {"robot_id": "g1", "policy_id": "g1_walking", "label": "G1"}
         elif name.startswith("walker") or name.startswith("hexapod"):
             item = {"kind": "walker", "label": "Walker"}
