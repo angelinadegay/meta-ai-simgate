@@ -56,6 +56,7 @@ class Director:
                 if plan.workflow == "edit":
                     _check_edit(plan, text, world_state)
                 self.guard_notes = _apply_text_guards(plan, text)
+                self.guard_notes += [note for robot in [*plan.robots, *(plan.changes.robots or [])] for note in robot._notes]
                 guarded = _analysis_plan(text, world_state, state, only_after_failure=True)
                 if guarded is not None and guarded.workflow != plan.workflow:
                     self.guard_notes.append(f"You asked {'how to make it pass' if guarded.workflow == 'redesign' else 'why it failed'} "

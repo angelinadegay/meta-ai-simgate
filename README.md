@@ -356,6 +356,7 @@ Without a key, it runs in mock mode.
 | `legacy_robot_spec_becomes_single_entry` | The single-robot format remains backward compatible |
 | `director_plan_schema_validates_ids_and_expanded_robot_limit` | Plan IDs are registered and expanded robot counts stay within six |
 | `director_planning_uses_one_call_retries_validation_and_falls_back` | A valid plan uses one call; a validation error gets one retry that shows the model its own reply and the exact error; then rules fallback |
+| `model_library_robot_entries_validate_first_time` | The model's own G1 entries (`"kind": "library"` with `robot_id`) validate on the first call with the robots, world, goal and run it asked for; a redundant kind is dropped, a missing policy is the robot's default, an unknown one becomes its only policy with a note, and kind "rover" with g1 says to omit kind |
 | `race_goals_and_run_cues_in_plans` | "Race … to the summit/top/bottom/far side" sets the shared goal, a closing "go"/"start"/"run it" asks to run, and a model's "far side" maps to the east goal |
 | `model_plans_are_corrected_from_the_request_words` | Model plans are corrected from the request's words (named world or real place, unrequested preset dropped, course obstacles on the path, closing run words), with a note the user sees |
 | `stress_plan_requires_an_existing_robot_scene` | Stress plans without a robot scene fall back to a safe answer |

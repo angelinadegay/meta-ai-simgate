@@ -169,6 +169,52 @@ def test_director_planning_uses_one_call_retries_validation_and_falls_back():
         llm.chat = original_chat
 
 
+# gpt-4o-mini's first replies to "G1 humanoid walking on Mars hills to the summit, go" and
+# "race a G1 against a rover on Jezero, go"; both used to fail validation on "kind".
+G1_SUMMIT_REPLY = ('{"workflow":"build","summary":"G1 Humanoid walking on Mars hills to the summit","world":{"body":"mars",'
+                   '"terrain_kind":"hills"},"robots":[{"kind":"library","robot_id":"g1","policy_id":"g1_walking"}],'
+                   '"goal":{"place":"highest"},"run_now":true}')
+G1_JEZERO_REPLY = ('{"workflow":"race","summary":"G1 Humanoid vs Rover on Jezero","world":{"preset":"real-jezero"},'
+                   '"robots":[{"kind":"library","robot_id":"g1","policy_id":"g1_walking"},{"kind":"rover"}],"run_now":true}')
+
+
+def test_model_library_robot_entries_validate_first_time():
+    import json
+
+    import pytest
+
+    from simgate import config, llm
+    from simgate.director import Director
+    from simgate.plan import RobotPlan
+
+    original_mock, original_chat = config.MOCK_MODE, llm.chat
+    try:
+        config.MOCK_MODE = False
+        for text, reply in (("G1 humanoid walking on Mars hills to the summit, go", G1_SUMMIT_REPLY),
+                            ("race a G1 against a rover on Jezero, go", G1_JEZERO_REPLY)):
+            calls = []
+            llm.chat = lambda messages, *args, reply=reply, **kwargs: calls.append(messages) or reply
+            director = Director()
+            plan = director.plan(text)
+            assert len(calls) == 1 and not director.used_rule_planner, text
+            asked = json.loads(reply)
+            expected = [(None, "g1", "g1_walking")] + [(robot["kind"], None, None) for robot in asked["robots"][1:]]
+            assert [(robot.kind, robot.robot_id, robot.policy_id) for robot in plan.robots] == expected
+            assert plan.workflow == asked["workflow"] and plan.run_now == asked["run_now"]
+            assert plan.world.model_dump(exclude_none=True) == asked["world"]
+            assert (plan.goal.model_dump(exclude_none=True) if plan.goal else None) == asked.get("goal")
+    finally:
+        config.MOCK_MODE, llm.chat = original_mock, original_chat
+
+    for kind in ("library", "humanoid", "walker"):
+        assert RobotPlan.model_validate({"kind": kind, "robot_id": "g1"}).kind is None
+    assert RobotPlan.model_validate({"robot_id": "g1"}).policy_id == "g1_walking"
+    guessed = RobotPlan.model_validate({"robot_id": "g1", "policy_id": "g1_walk"})
+    assert guessed.policy_id == "g1_walking" and "g1_walk" in guessed._notes[0]
+    with pytest.raises(ValueError, match="omit kind when you give robot_id"):
+        RobotPlan.model_validate({"kind": "rover", "robot_id": "g1"})
+
+
 def test_race_goals_and_run_cues_in_plans():
     from simgate import config
     from simgate.director import Director

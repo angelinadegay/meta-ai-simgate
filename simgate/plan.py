@@ -2,7 +2,7 @@
 
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, model_validator
+from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, PrivateAttr, model_validator
 
 from . import presets
 from .batch import Variation
@@ -71,6 +71,26 @@ class RobotPlan(BaseModel):
     wheels: Literal[4, 6] | None = None
     start_place: PlanPlace | None = None
     goal_place: PlanPlace | None = None
+    _notes: list[str] = PrivateAttr(default_factory=list)   # assumptions to show the user
+
+    @model_validator(mode="before")
+    @classmethod
+    def drop_kind_given_robot_id(cls, data: Any) -> Any:
+        """Models often add a kind ("library", "humanoid", "walker") to a library robot_id; the robot_id decides.
+        Only a built-in kind of the other sort (a rover for a legged robot) is a real conflict."""
+        if not isinstance(data, dict) or data.get("robot_id") is None or data.get("kind") is None:
+            return data
+        data = dict(data)
+        kind = data.pop("kind")
+        try:
+            card = LibraryRegistry().robot(data["robot_id"])
+        except ValueError:
+            return data   # the robot_id check below names the problem
+        if kind in ("rover", "walker") and (kind == "rover") != (card.kind == "wheeled"):
+            raise ValueError(
+                f"kind {kind!r} conflicts with robot_id {card.id!r} ({card.kind}): omit kind when you give robot_id."
+            )
+        return data
 
     @model_validator(mode="after")
     def validate_library_selection(self) -> "RobotPlan":
@@ -86,11 +106,21 @@ class RobotPlan(BaseModel):
         except ValueError as exc:
             available = ", ".join(card.id for card in registry.robots())
             raise ValueError(f"robot_id {self.robot_id!r} doesn't exist; available: {available}") from exc
-        if self.policy_id is not None:
+        compatible = registry.compatible_policies(robot.id)
+        if self.policy_id is None:   # the robot's default policy, as spawn_robot would pick
+            if not compatible:
+                raise ValueError(f"robot_id {robot.id!r} has no compatible policy installed.")
+            self.policy_id = compatible[0].id
+        else:
             try:
                 policy = registry.policy(self.policy_id)
             except ValueError as exc:
-                available = ", ".join(card.id for card in registry.compatible_policies(robot.id))
+                if len(compatible) == 1:
+                    self._notes.append(f"There is no policy {self.policy_id!r}, so {robot.id} uses its only "
+                                       f"policy, {compatible[0].id}.")
+                    self.policy_id = compatible[0].id
+                    return self
+                available = ", ".join(card.id for card in compatible)
                 raise ValueError(
                     f"policy_id {self.policy_id!r} doesn't exist for robot {robot.id!r}; available: {available}"
                 ) from exc
