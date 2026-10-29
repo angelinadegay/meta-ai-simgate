@@ -320,6 +320,7 @@ candidates; each changes one or a few knobs. Allowed knobs and ranges (never out
 appear): {bounds}
 What the knobs do (measured on this simulator): {effects}
 The user message gives the robot's measured rough limits ("robot_limits"); compare them with what stopped it.
+"facts" describes the terrain and tilt in plain words: in your reasons, describe them only with those words.
 Prefer the smallest change that could work, and don't repeat a design already tried. Reply with JSON only, in this shape (the values are placeholders
 showing the format, not suggestions):
 {{"strategy":"<one of the four>","reason":"<why>","candidates":[{{"changes":{{"<knob>":<value>}},"why":"<reason>"}}]}}"""
@@ -446,6 +447,9 @@ def redesign(spec: SceneSpec, summary: dict, constraints: str | None = None, dia
         report["message"] = "The failure didn't reproduce, so there is nothing to fix."
         return report
     world = pin_task(spec, summary)
+    from .facts import facts, facts_block
+
+    facts_text = facts_block(facts(world, summary))   # plain-language terrain and tilt labels, built in code
     base = diagnosis.get("reproduced_metrics") or original_metrics
     report["before"] = (f"{base.get('outcome') or 'failed'}" + (f", {base['final_distance_m']:.1f} m from the goal"
                         if base.get("final_distance_m") is not None else ""))
@@ -463,7 +467,7 @@ def redesign(spec: SceneSpec, summary: dict, constraints: str | None = None, dia
     for number in range(1, MAX_ROUNDS + 1):
         context = {
             "round": number, "original_design": space.original(), "fixed_by_user": space.fixed,
-            "robot_limits": limits,
+            "facts": facts_text, "robot_limits": limits,
             "failure": {k: base.get(k) for k in ("outcome", "final_distance_m", "forward_progress_m", "flipped",
                                                    "slip_ratio", "stopped_by")},
             "diagnosis": [{"cause": h["cause"], "verdict": h.get("verdict")} for h in diagnosis.get("hypotheses", [])],

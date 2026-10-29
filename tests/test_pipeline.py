@@ -2036,6 +2036,58 @@ def test_mock_stress_explainer_reads_each_racer():
     assert "0 m forward progress" not in message
 
 
+def model_explainer_only(replies):
+    """Plan and edit with the rules, but explain runs with a scripted model; returns (restore, calls)."""
+    from simgate import config, llm
+
+    chat, calls = scripted_models(replies)
+    original_explain, original_chat = agents.explain, llm.chat
+
+    def explain(spec, metrics):
+        config.MOCK_MODE = False
+        try:
+            return original_explain(spec, metrics)
+        finally:
+            config.MOCK_MODE = True
+
+    agents.explain, llm.chat = explain, chat
+
+    def restore():
+        agents.explain, llm.chat = original_explain, original_chat
+
+    return restore, calls
+
+
+def test_explainer_uses_code_facts_and_retries_contradictions():
+    restore, calls = model_explainer_only({"You are the Explainer in a physics sandbox": [
+        "On flat ground the rover won and the walker ran out of time.",
+        "On the hills the rover won and the walker ran out of time."]})
+    try:   # "flat" for hills: one retry with the exact problem, and the corrected reply is used
+        _, (race,) = session_turns(MIXED_RACE)
+    finally:
+        restore()
+    assert [e for e in race if e["type"] == "explanation"][-1]["message"] == "On the hills the rover won and the walker ran out of time."
+    messages = calls[-1][2]
+    assert "Describe the terrain and tilt only with the words given in FACTS" in messages[0]["content"]
+    assert "- terrain: hills" in messages[1]["content"] and "tilt: steady" in messages[1]["content"]
+    assert 'calls the terrain flat, but FACTS say the terrain is "hills"' in messages[-1]["content"]
+
+    restore, calls = model_explainer_only({"You are the Explainer in a physics sandbox": [
+        "The rover crossed the step and stayed stable at 56.9°.", "It stayed steady, tilting 56.9 degrees."]})
+    try:   # a 56.9° tilt called stable twice: the rules text is used instead
+        _, (_, _, run) = session_turns("Rover obstacle course with a big step", "use six wheels", "run")
+    finally:
+        restore()
+    from simgate.facts import tilt_label
+
+    assert [tilt_label(t) for t in (8, 20, 40, 70)] == ["steady", "leaning", "nearly tipped", "tipped over"]
+    tilt = next(e["metrics"] for e in run if e["type"] == "metrics")["max_tilt_deg"]
+    assert tilt > 35 and len(calls) == 2
+    assert f'calls a {tilt:g}° tilt stable or steady; FACTS label it "{tilt_label(tilt)}"' in calls[-1][2][-1]["content"]
+    message = [e for e in run if e["type"] == "explanation"][-1]["message"]
+    assert message.startswith("The rover reached the goal") and "stable" not in message and "steady" not in message
+
+
 def test_stress_trigger_requires_robot_scene():
     import asyncio
     from unittest.mock import patch

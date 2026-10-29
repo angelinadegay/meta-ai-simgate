@@ -685,16 +685,34 @@ def mark_untested_gait(text: str, spec: SceneSpec) -> str:
     return text
 
 
+def _explain_with_facts(system: str, user: str, spec: SceneSpec, metrics: dict, fallback) -> str:
+    """Ask the Explainer with a FACTS block built in code; a reply that contradicts FACTS gets one retry with the
+    exact problem, then the rules text is used."""
+    from .facts import FACTS_RULE, checked, facts, facts_block
+
+    found = facts(spec, metrics)
+    messages = [{"role": "system", "content": f"{system}\n- {FACTS_RULE}"},
+                {"role": "user", "content": f"{facts_block(found)}\n\n{user}"}]
+
+    def ask(feedback: str | None) -> str:
+        if feedback is not None:
+            messages.extend([{"role": "assistant", "content": reply[0]}, {"role": "user", "content": feedback}])
+        reply[0] = llm.chat(messages, temperature=0.4).strip()
+        return reply[0]
+
+    reply = [""]
+    text, _ = checked(ask, found, fallback)
+    return mark_untested_gait(text, spec)
+
+
 def explain(spec: SceneSpec, metrics: dict) -> str:
     if config.MOCK_MODE:
         return _mock_explain(spec, metrics)
-    text = llm.chat(
-        [{"role": "system", "content": EXPLAIN_SYSTEM},
-         {"role": "user", "content": f"Scene: {spec.title}\nAssumptions: {spec.assumptions}\n"
-                                    f"Metrics: {json.dumps(explainer_metrics(metrics))}"}],
-        temperature=0.4,
-    ).strip()
-    return mark_untested_gait(text, spec)
+    user = f"Scene: {spec.title}\nAssumptions: {spec.assumptions}\nMetrics: {json.dumps(explainer_metrics(metrics))}"
+    if spec.domain != "robot_terrain":
+        return llm.chat([{"role": "system", "content": EXPLAIN_SYSTEM}, {"role": "user", "content": user}],
+                        temperature=0.4).strip()
+    return _explain_with_facts(EXPLAIN_SYSTEM, user, spec, metrics, lambda: _mock_explain(spec, metrics))
 
 
 def _mock_explain_stress(results: list[dict]) -> str:
@@ -792,10 +810,9 @@ def explain_stress(spec: SceneSpec, results: list[dict]) -> str:
     else:
         evidence = [{**{key: value for key, value in result.items() if key != "ghost"},
                      "summary": explainer_metrics(result.get("summary") or {})} for result in results]
-        text = mark_untested_gait(llm.chat(
-            [{"role": "system", "content": EXPLAIN_STRESS_SYSTEM},
-             {"role": "user", "content": f"Scene: {spec.title}\nAssumptions: {spec.assumptions}\n"
-                                        f"Stress-test results: {json.dumps(evidence)}"}],
-            temperature=0.4,
-        ).strip(), spec)
+        baseline = next((result for result in results if result.get("label") == "Baseline"), results[0])
+        text = _explain_with_facts(   # FACTS describe the scene and the baseline run
+            EXPLAIN_STRESS_SYSTEM, f"Scene: {spec.title}\nAssumptions: {spec.assumptions}\n"
+                                   f"Stress-test results: {json.dumps(evidence)}",
+            spec, baseline.get("summary") or {}, lambda: _mock_explain_stress(results))
     return f"{crashed}. {CRASH_NOTE}, so those runs are left out. {text}" if crashed else text

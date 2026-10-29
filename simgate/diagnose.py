@@ -305,11 +305,12 @@ def _evidence(spec: SceneSpec, m: dict) -> str:
     }, default=str)
 
 
-def model_hypotheses(spec: SceneSpec, m: dict, decisions: list[dict], calls: list[dict]) -> list[dict] | None:
+def model_hypotheses(spec: SceneSpec, m: dict, decisions: list[dict], calls: list[dict],
+                     facts_text: str = "") -> list[dict] | None:
     knobs = "\n".join(f"- {name}: {meaning}" for name, meaning in ALLOWED_KNOBS.items())
     messages = [
         {"role": "system", "content": HYPOTHESES_SYSTEM.format(knobs=knobs)},
-        {"role": "user", "content": f"Evidence from the failed run:\n{_evidence(spec, m)}"},
+        {"role": "user", "content": f"{facts_text}\n\nEvidence from the failed run:\n{_evidence(spec, m)}".lstrip()},
     ]
     reply, attempts = llm.chat_json(messages, config.PLANNER_MODEL, HypothesesReply.model_validate)
     calls.append({"agent": "Explainer", "purpose": "hypotheses", "attempts": attempts})
@@ -457,12 +458,12 @@ def rule_decision(spec: SceneSpec, hypotheses: list[dict], remaining: int) -> di
 
 
 def model_decision(spec: SceneSpec, hypotheses: list[dict], remaining: int, decisions: list[dict],
-                   calls: list[dict]) -> dict | None:
+                   calls: list[dict], facts_text: str = "") -> dict | None:
     knobs = ", ".join(ALLOWED_KNOBS)
     results = [{"cause": h["cause"], "change": h["intervention"], "verdict": h["verdict"],
                 "numbers": describe_numbers(h["key_numbers"])} for h in hypotheses]
     messages = [{"role": "system", "content": DECISION_SYSTEM.format(knobs=knobs, remaining=remaining)},
-                {"role": "user", "content": json.dumps(results)}]
+                {"role": "user", "content": (facts_text + "\n\n" if facts_text else "") + json.dumps(results)}]
     reply, attempts = llm.chat_json(messages, config.PLANNER_MODEL, DecisionReply.model_validate)
     calls.append({"agent": "Explainer", "purpose": "decision", "attempts": attempts})
     if reply is None:
@@ -523,15 +524,30 @@ cause was tested on its own, so causes that only matter together could be missed
 listed. No headings or lists."""
 
 
-def conclusion(hypotheses: list[dict], calls: list[dict], outcome: str = "conclude") -> str:
+def conclusion(hypotheses: list[dict], calls: list[dict], outcome: str = "conclude", found: dict | None = None) -> str:
+    """The model's conclusion from the verdicts, checked against FACTS (one retry, then the rules text)."""
+    from .facts import FACTS_RULE, checked, facts_block
+
     if config.MOCK_MODE:
         return mock_conclusion(hypotheses, outcome)
     verdicts = {"outcome": outcome, "results": [
         {"cause": h["cause"], "change_tested": describe_change(h["intervention"]), "verdict": h["verdict"],
          "numbers": describe_numbers(h["key_numbers"])} for h in hypotheses]}
-    text = llm.chat([{"role": "system", "content": CONCLUSION_SYSTEM},
-                     {"role": "user", "content": json.dumps(verdicts)}], temperature=0.3).strip()
-    calls.append({"agent": "Explainer", "purpose": "conclusion", "attempts": [{"attempt": 1, "valid": bool(text)}]})
+    found = found or {"terrain": "", "robots": []}
+    messages = [{"role": "system", "content": f"{CONCLUSION_SYSTEM} {FACTS_RULE}"},
+                {"role": "user", "content": (facts_block(found) + "\n\n" if found.get("terrain") else "") + json.dumps(verdicts)}]
+    attempts: list[dict] = []
+
+    def ask(feedback: str | None) -> str:
+        if feedback is not None:
+            messages.extend([{"role": "assistant", "content": attempts[-1]["text"]}, {"role": "user", "content": feedback}])
+        text = llm.chat(messages, temperature=0.3).strip()
+        attempts.append({"attempt": len(attempts) + 1, "text": text})
+        return text
+
+    text, issues = checked(ask, found, lambda: mock_conclusion(hypotheses, outcome)) if found.get("terrain") else (ask(None), [])
+    calls.append({"agent": "Explainer", "purpose": "conclusion",
+                  "attempts": [{"attempt": a["attempt"], "valid": bool(a["text"])} for a in attempts], "problems": issues})
     return text or mock_conclusion(hypotheses, outcome)
 
 
@@ -594,7 +610,11 @@ def diagnose(spec: SceneSpec, summary: dict, robot_id: str | None = None,
     _emit(on_step, "Batch runner", "reproduce", "Rerunning the unchanged scene.",
           f"The failure reproduced ({base.get('outcome') or 'failed'}).")
 
-    hypotheses = None if config.MOCK_MODE else model_hypotheses(spec, base, report["decisions"], report["model_calls"])
+    from .facts import facts, facts_block
+
+    found = facts(spec, summary)   # plain-language terrain and tilt labels, built in code
+    hypotheses = None if config.MOCK_MODE else model_hypotheses(spec, base, report["decisions"], report["model_calls"],
+                                                                facts_block(found))
     for dropped in report["decisions"]:
         _emit(on_step, dropped["agent"], "hypotheses", "Checking the proposed experiments.",
               f"{dropped['decision'].capitalize()}: {dropped['reason']}", "warning")
@@ -619,7 +639,7 @@ def diagnose(spec: SceneSpec, summary: dict, robot_id: str | None = None,
         remaining = MAX_RERUNS - report["runs"]
         recorded = len(report["decisions"])
         decided = None if config.MOCK_MODE else model_decision(
-            spec, _tested(report["hypotheses"]), remaining, report["decisions"], report["model_calls"])
+            spec, _tested(report["hypotheses"]), remaining, report["decisions"], report["model_calls"], facts_block(found))
         for dropped in report["decisions"][recorded:]:
             _emit(on_step, dropped["agent"], "decision", "Checking the follow-up experiments.",
                   f"{dropped['decision'].capitalize()}: {dropped['reason']}", "warning")
@@ -640,7 +660,7 @@ def diagnose(spec: SceneSpec, summary: dict, robot_id: str | None = None,
             item["follow_up"] = True
         _experiment(spec, follow, base, robot_id, report, on_step, "Running {n} follow-up experiment(s).")
     report["outcome"] = outcome
-    report["conclusion"] = conclusion(_tested(report["hypotheses"]), report["model_calls"], outcome)
+    report["conclusion"] = conclusion(_tested(report["hypotheses"]), report["model_calls"], outcome, found)
     if report.get("crashed"):
         report["conclusion"] += f" ({report['crashed']}; left out of the verdicts.)"
     _emit(on_step, "Explainer", "conclusion", "Writing the conclusion from the verdicts only.", report["conclusion"])
