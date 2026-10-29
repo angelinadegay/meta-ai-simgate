@@ -276,6 +276,14 @@ SLIP_SPEED = 0.3         # m/s: touching point faster than this = sliding. The w
                          # (median) even on firm rock with its simple gait, and ~0.75 m/s on ice, so 0.3 separates them.
 FALL_TILT_DEG = 45.0     # tilt where a fall "starts" (used for its direction)
 FLIP_TILT_DEG = 100.0    # tilt that counts as tipped over
+HUMANOID_FLIP_TILT_DEG = 60.0   # a fallen humanoid lies near 80-90°, below FLIP_TILT_DEG; walking it stays under ~15°
+
+
+def flip_tilt_deg(rb) -> float:
+    """The tilt at which this robot counts as fallen over."""
+    if rb.kind == "library" and LibraryRegistry().robot(rb.robot_id).kind == "humanoid":
+        return HUMANOID_FLIP_TILT_DEG
+    return FLIP_TILT_DEG
 
 
 class TerrainProbe:
@@ -1083,6 +1091,7 @@ class MuJoCoSimulator(Simulator):
                 "start": data.xpos[root].copy(),
                 "max_tilt": 0.0,
                 "flipped_at": None,
+                "flip_tilt": flip_tilt_deg(robot),
                 "path_len": 0.0,
                 "last_xy": None,
                 "distances": [],
@@ -1425,7 +1434,7 @@ class MuJoCoSimulator(Simulator):
                 xmat = data.xmat[root]
                 tilt = math.degrees(math.acos(np.clip(xmat.reshape(3, 3)[2, 2], -1.0, 1.0)))
                 state["max_tilt"] = max(state["max_tilt"], tilt)
-                if tilt >= FLIP_TILT_DEG and state["flipped_at"] is None:
+                if tilt >= state["flip_tilt"] and state["flipped_at"] is None:
                     state["flipped_at"] = round(data.time - settle_s, 2)
                 xy = data.xpos[root][:2].copy()
                 if state["last_xy"] is not None:
@@ -1536,6 +1545,7 @@ class MuJoCoSimulator(Simulator):
         settle_s = 0.5
         settle_steps = int(settle_s / model.opt.timestep)
         max_tilt, max_z, flipped_at = 0.0, start[2], None
+        flip_tilt = flip_tilt_deg(spec.robot)
         frames = []
 
         # Evidence for "why did it fail?"
@@ -1620,7 +1630,7 @@ class MuJoCoSimulator(Simulator):
                     fall_ground = probe.describe(x, y, heading) if probe.ok else None
                 elif tilt < FALL_TILT_DEG * 0.6 and flipped_at is None:
                     fall_started_at, fall_dir, fall_ground = None, None, None    # it recovered; forget that wobble
-                if tilt > FLIP_TILT_DEG and flipped_at is None:
+                if tilt > flip_tilt and flipped_at is None:
                     flipped_at = t_now
                 xy = np.array([x, y])
                 track.update(data, xy, t_now, fallen=fall_started_at is not None or flipped_at is not None)

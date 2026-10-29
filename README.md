@@ -424,6 +424,7 @@ Without a key, it runs in mock mode.
 | `g1_stands_for_two_seconds_at_zero_command` | G1 stays upright with pelvis height within 10% of its standing height |
 | `g1_walks_two_metres_in_ten_seconds` | G1 makes at least 2 m of forward progress on flat Earth terrain without falling |
 | `g1_reaches_diagonal_five_metre_goal` | G1's Navigator reaches a 5 m goal at 45° to its starting heading |
+| `g1_lying_on_the_ground_counts_as_fallen` | A G1 that falls on a 10° slope and lies near 90° is reported as fell, with fall time and direction (humanoids count as fallen past 60°, not the rovers' 100°) |
 | `g1_named_mapping_policy_validation_and_mesh_budget` | Checker validates the policy and 1 s stand, joint-name mapping survives obstacles/goal markers, bad observation sizes are rejected, and the mesh scene stays under 5 MiB |
 | `policy_with_out_of_range_targets_is_rejected_on_load` | A policy whose first targets leave the joint ranges is rejected on load with the joint named, not silently clipped |
 | `g1_planner_and_library_selection_use_registered_cards` | G1 prompts and UI selections resolve to registered robot, policy and world cards |

@@ -2378,6 +2378,23 @@ def test_g1_reaches_diagonal_five_metre_goal():
     assert summary["goal_reached"] and summary["outcome"] == "reached", summary
 
 
+def test_g1_lying_on_the_ground_counts_as_fallen():
+    spec = SceneSpec(
+        domain="robot_terrain",
+        terrain=Terrain(kind="slope", slope_deg=10),
+        robot=Robot(kind="library", robot_id="g1", policy_id="g1_walking"),
+        mission=Mission(start_xy=[-3.0, 0.0], start_heading_deg=0.0,
+                        goal_xy=[-3.0 + 5.0 / math.sqrt(2), 5.0 / math.sqrt(2)]),
+        duration_s=5.0,
+    ).fill_defaults()
+    sim = MuJoCoSimulator()
+    list(sim.run(spec, sim.build(spec)))
+    summary = sim.summary()
+    assert summary["max_tilt_deg"] < 100, "this scene checks a fall that ends lying down, below the rover's 100°"
+    assert summary["flipped"] and summary["outcome"] == "fell", summary
+    assert summary["fall_started_at_s"] is not None and summary["fall_direction"], summary
+
+
 def test_g1_named_mapping_policy_validation_and_mesh_budget():
     import json
     import mujoco
