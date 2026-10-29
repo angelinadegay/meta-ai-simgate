@@ -375,7 +375,7 @@ def _mock_mission(spec: SceneSpec, t: str) -> None:
     places = "|".join(w for _, ws in PLACE_WORDS for w in ws)
     wants = goal_xy or any(w in t for w in ("reach", "get to", "go to", "goal", "destination", "make it to", "drive to", "walk to", "climb to", "far side")) \
         or re.search(r"\bfrom (?:the )?.+? to (?:the )?(?:" + places + ")", t) \
-        or re.search(r"\brace\b.*?\bto (?:the )?(?:" + places + ")", t)
+        or re.search(r"(?<!next )\bto (?:the )?(?:" + places + r")\b", t)   # "walking ... to the summit", "race ... to the bottom"
     if not wants:
         return
     ms = spec.mission or Mission()

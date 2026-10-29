@@ -432,6 +432,8 @@ def _rule_plan(text: str, world_state: World | SceneSpec | dict[str, Any] | None
 
     robots = _rule_robot_plans(text, planned.robot)
     race = bool(re.search(r"\brace\b", source)) and sum(robot["count"] for robot in robots) > 1
+    if race and goal is None:
+        goal = {"place": "east"}   # a race always has a finish line: the far side of the course
     requested_run = _asks_to_run(source)
     if current is not None and race:
         return Plan(

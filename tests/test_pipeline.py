@@ -215,6 +215,34 @@ def test_model_library_robot_entries_validate_first_time():
         RobotPlan.model_validate({"kind": "rover", "robot_id": "g1"})
 
 
+def test_rules_planner_keeps_goals_and_races_have_a_finish_line():
+    import asyncio
+
+    from simgate.director import Director
+
+    async def emit(event):
+        pass
+
+    def built(text):
+        world, _ = asyncio.run(Director(emit).execute_plan(text))
+        assert world.build is not None, text
+        missions = world.build.scene.get("robots") or {"r1": {"mission": world.build.scene["mission"]}}
+        return world.spec, [info["mission"]["goal"] for info in missions.values()]
+
+    summit, goals = built("G1 humanoid walking on Mars hills to the summit, go")
+    assert summit.robots[0].robot.robot_id == "g1" and summit.robots[0].goal_place == "highest"
+    assert goals[0] is not None
+    jezero, goals = built("race a G1 against a rover on Jezero, go")
+    assert [entry.goal_place for entry in jezero.robots] == ["east", "east"] and all(goals)
+    assert jezero.terrain.preset == "jezero"
+
+    for text, place in (("a rover driving on the moon to the bottom", "lowest"), ("race two rovers", "east"),
+                        ("race three rovers to the far side", "east"), ("a rover on Mars hills", None),
+                        ("put a rock next to the rim", None)):
+        plan = Director(emit).plan(text, None)
+        assert (plan.goal.place if plan.goal else None) == place, text
+
+
 def test_robot_entry_errors_list_kinds_and_library_ids():
     import pytest
 
