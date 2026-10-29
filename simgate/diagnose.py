@@ -2,6 +2,7 @@
 confirmed or ruled out. Every rerun goes through the batch runner."""
 
 import json
+import re
 from typing import Any, Callable, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -492,17 +493,25 @@ def _passed_how(summary: dict, robot_id: str | None) -> str:
     return "passed"
 
 
+def opening(hypotheses: list[dict]) -> str:
+    """The conclusion's first sentence, written in code from the verdicts so the model can't contradict them."""
+    confirmed = [h["cause"] for h in hypotheses if h["verdict"] == "confirmed"]
+    return f"Confirmed: {_join(confirmed)}." if confirmed else "No single tested cause explains it."
+
+
 def mock_conclusion(hypotheses: list[dict], outcome: str = "conclude") -> str:
+    return f"{opening(hypotheses)} {mock_explanation(hypotheses, outcome)}"
+
+
+def mock_explanation(hypotheses: list[dict], outcome: str = "conclude") -> str:
+    """The rules text after the opening sentence."""
     confirmed = [h["cause"] for h in hypotheses if h["verdict"] == "confirmed"]
     partly = [h["cause"] for h in hypotheses if h["verdict"] == "partly"]
     ruled_out = [h["cause"] for h in hypotheses if h["verdict"] == "ruled out"]
     combined = any("+" in h["cause"] for h in hypotheses)
     sentences = ["The results contradict each other, so I can't tell for sure."] if outcome == "can't tell" else []
     if confirmed:
-        sentences.append(f"Confirmed: {_join(confirmed)} — removing {'it' if len(confirmed) == 1 else 'each one'} "
-                         "alone was enough for the run to pass.")
-    else:
-        sentences.append("None of the tested causes explains it on its own.")
+        sentences.append(f"Removing {'it' if len(confirmed) == 1 else 'each one'} alone was enough for the run to pass.")
     if partly:
         sentences.append(f"{_join(partly).capitalize()} partly explain{'s' if len(partly) == 1 else ''} it: the run "
                          "got clearly better but still failed.")
@@ -517,38 +526,58 @@ def _join(items: list[str]) -> str:
     return items[0] if len(items) == 1 else ", ".join(items[:-1]) + " and " + items[-1]
 
 
-CONCLUSION_SYSTEM = """You are the Explainer. Write 3 to 5 plain sentences for a non-expert, using ONLY the verdicts
-given. Name the confirmed causes; say what was ruled out; mention causes that only partly explain it. If nothing
-is confirmed, say "none of the tested causes explains it on its own" and do not invent a cause. Say that each
-cause was tested on its own, so causes that only matter together could be missed, unless a combined test is
-listed. No headings or lists."""
+CONCLUSION_SYSTEM = """You are the Explainer. The conclusion's opening sentence is already written from the verdicts:
+"{opening}"
+Write only what comes after it: 2 to 4 plain sentences for a non-expert, using ONLY the verdicts given. Explain why
+the tested changes did or didn't help; say what was ruled out; mention causes that only partly explain it. Do not
+repeat the opening, do not name any other cause as confirmed or as the cause, and do not say that nothing or no
+single cause explains it when a cause is confirmed. Say that each cause was tested on its own, so causes that only
+matter together could be missed, unless a combined test is listed. No headings or lists."""
+
+_NONE_EXPLAINS = re.compile(r"\bnone of the (?:tested )?causes\b|\bno (?:single )?(?:tested )?cause\b|"
+                            r"\bnothing (?:tested )?(?:fully )?explains\b|\bnot (?:fully )?explained by any\b", re.I)
+_CLAIMS_CAUSE = re.compile(r"(?<!not )(?<!n't )\b(?:is|was|are|were) (?:the )?confirmed\b|\bconfirmed (?:cause|as)\b|"
+                           r"\bthe (?:main |real |confirmed )?cause (?:is|was)\b|\bconfirmed that\b", re.I)
+
+
+def contradictions(text: str, hypotheses: list[dict]) -> list[str]:
+    """A conclusion can't say a cause is confirmed AND that none explains it, in either order."""
+    confirmed = [h["cause"] for h in hypotheses if h["verdict"] == "confirmed"]
+    if confirmed and (match := _NONE_EXPLAINS.search(text)):
+        return [f'It says "{match.group(0)}", but {_join(confirmed)} is confirmed: it passed with only that change.']
+    if not confirmed and (match := _CLAIMS_CAUSE.search(text)):
+        return [f'It says "{match.group(0)}", but no tested cause is confirmed: none passed on its own.']
+    return []
 
 
 def conclusion(hypotheses: list[dict], calls: list[dict], outcome: str = "conclude", found: dict | None = None) -> str:
-    """The model's conclusion from the verdicts, checked against FACTS (one retry, then the rules text)."""
+    """The opening sentence from the verdicts (code), then the model's explanation, checked against the verdicts
+    and FACTS (one retry with the exact problem, then the rules text)."""
     from .facts import FACTS_RULE, checked, facts_block
 
+    first = opening(hypotheses)
     if config.MOCK_MODE:
         return mock_conclusion(hypotheses, outcome)
     verdicts = {"outcome": outcome, "results": [
         {"cause": h["cause"], "change_tested": describe_change(h["intervention"]), "verdict": h["verdict"],
          "numbers": describe_numbers(h["key_numbers"])} for h in hypotheses]}
     found = found or {"terrain": "", "robots": []}
-    messages = [{"role": "system", "content": f"{CONCLUSION_SYSTEM} {FACTS_RULE}"},
+    messages = [{"role": "system", "content": f"{CONCLUSION_SYSTEM.format(opening=first)} {FACTS_RULE}"},
                 {"role": "user", "content": (facts_block(found) + "\n\n" if found.get("terrain") else "") + json.dumps(verdicts)}]
     attempts: list[dict] = []
 
     def ask(feedback: str | None) -> str:
         if feedback is not None:
             messages.extend([{"role": "assistant", "content": attempts[-1]["text"]}, {"role": "user", "content": feedback}])
-        text = llm.chat(messages, temperature=0.3).strip()
+        text = llm.chat(messages, temperature=0.3).strip().removeprefix(first).strip()
         attempts.append({"attempt": len(attempts) + 1, "text": text})
         return text
 
-    text, issues = checked(ask, found, lambda: mock_conclusion(hypotheses, outcome)) if found.get("terrain") else (ask(None), [])
+    text, issues = checked(ask, found, lambda: mock_explanation(hypotheses, outcome),
+                           extra=lambda reply: contradictions(reply, hypotheses))
     calls.append({"agent": "Explainer", "purpose": "conclusion",
                   "attempts": [{"attempt": a["attempt"], "valid": bool(a["text"])} for a in attempts], "problems": issues})
-    return text or mock_conclusion(hypotheses, outcome)
+    return f"{first} {text or mock_explanation(hypotheses, outcome)}"
 
 
 SYSTEM_PROBLEM = "That's a problem running the simulation, not a physics result"

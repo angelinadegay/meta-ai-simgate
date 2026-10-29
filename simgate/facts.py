@@ -101,8 +101,8 @@ _DEGREES = re.compile(r"(\d+(?:\.\d+)?)\s*(?:°|degrees?)", re.I)
 def problems(text: str, found: dict) -> list[str]:
     """Where a reply contradicts FACTS: a terrain word for different ground, or a tilt above 35° called stable."""
     issues = []
-    terrain = found["terrain"]
-    if terrain != "flat ground" and _FLAT.search(text):
+    terrain = found.get("terrain")
+    if terrain and terrain != "flat ground" and _FLAT.search(text):
         issues.append(f'It calls the terrain flat, but FACTS say the terrain is "{terrain}".')
     if terrain == "flat ground" and (match := _RELIEF.search(text)):
         issues.append(f'It says "{match.group(0)}", but FACTS say the terrain is "flat ground".')
@@ -120,13 +120,17 @@ def problems(text: str, found: dict) -> list[str]:
     return issues
 
 
-def checked(ask, found: dict, fallback) -> tuple[str, list[str]]:
-    """ask(feedback) returns the model's text; one retry with the exact problems, then the rules text."""
+def checked(ask, found: dict, fallback, extra=None) -> tuple[str, list[str]]:
+    """ask(feedback) returns the model's text; one retry with the exact problems, then the rules text.
+    ``extra(text)`` adds caller-specific problems (e.g. a conclusion contradicting its verdicts)."""
+    def issues_of(text: str) -> list[str]:
+        return problems(text, found) + (extra(text) if extra else [])
+
     text = ask(None)
-    issues = problems(text, found)
+    issues = issues_of(text)
     if not issues:
         return text, []
-    retry = ask("Your reply contradicts FACTS: " + " ".join(issues) + " Rewrite it using the FACTS words.")
-    if not problems(retry, found):
+    retry = ask("Your reply has problems: " + " ".join(issues) + " Rewrite it so none of these remain.")
+    if not issues_of(retry):
         return retry, issues
-    return fallback(), issues + problems(retry, found)
+    return fallback(), issues + issues_of(retry)

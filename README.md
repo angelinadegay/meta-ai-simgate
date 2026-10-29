@@ -278,9 +278,11 @@ of guessing:
    top two causes together or a stronger version of one) or say it *can't tell* (results contradict). At most two
    decision rounds; mock mode tests more only when the best result is "partly". A follow-up that only adds to a
    change that already passed on its own is dropped, with the reason shown.
-6. **Conclusion:** 3–5 plain sentences from the verdicts only. If nothing is confirmed it says "none of the tested
-   causes explains it on its own" and never invents a cause; unless a combination was tested, it notes that causes
-   which only matter together could be missed.
+6. **Conclusion:** the opening sentence is written in code from the verdicts ("Confirmed: X." or "No single tested
+   cause explains it."); the Explainer adds 2–4 plain sentences after it, from the verdicts only. A reply that
+   contradicts the opening (a cause confirmed AND "none explains it", or a cause claimed when none is confirmed) gets
+   one retry with the exact problem, then the rules text is used. Unless a combination was tested, it notes that
+   causes which only matter together could be missed.
 
 **Budget:** at most 5 reruns in total, including the reproduction. In a multi-robot scene one robot is diagnosed
 (the first that failed, or the one named), with the others unchanged.

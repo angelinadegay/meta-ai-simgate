@@ -1501,7 +1501,7 @@ def test_model_explainer_decisions_are_validated_bounded_and_visible():
                         "next": [{"cause": "step height (stronger)", "intervention": {"obstacle_scale": 0.25}},
                                  {"cause": "bad", "intervention": {"mass_kg": 5}}]}),
             json.dumps({"decision": "conclude", "reason": "The lower step passed, so the evidence is enough."})],
-        "Write 3 to 5": ["The step height explains it."],
+        "opening sentence is already written": ["The step height explains it."],
     })
     steps = []
     original_mock, original_chat = config.MOCK_MODE, llm.chat
@@ -1519,7 +1519,8 @@ def test_model_explainer_decisions_are_validated_bounded_and_visible():
                for d in report["decisions"])
     assert sum(1 for h in report["hypotheses"] if h.get("follow_up")) == 1
     assert report["runs"] <= MAX_RERUNS and report["hypotheses"][-1]["verdict"] == "confirmed"
-    assert [role for role, _, _ in calls] == ["candidate\ncauses", "deciding what to do", "deciding what to do", "Write 3 to 5"]
+    assert [role for role, _, _ in calls] == ["candidate\ncauses", "deciding what to do", "deciding what to do",
+                                          "opening sentence is already written"]
     reasons = [step["result"] for step in steps if step["status"] != "working"]
     for decision in report["decisions"]:
         assert any(decision["reason"] in reason for reason in reasons), decision
@@ -1529,7 +1530,7 @@ def test_model_explainer_decisions_are_validated_bounded_and_visible():
     assert "Test more: The step only partly explains it" in " ".join(reasons)
     assert "Adjusted: step height: obstacle_scale 0.9 isn't an allowed experiment; testing 0.5 instead." in reasons
     assert "Dropped: wheels too small: wheel_radius is not an allowed experiment." in reasons
-    assert report["conclusion"] == "The step height explains it."
+    assert report["conclusion"] == "Confirmed: step height and step height (stronger). The step height explains it."
 
 
 def test_model_designer_candidates_are_clamped_and_stop_ends_early():
@@ -2086,6 +2087,42 @@ def test_explainer_uses_code_facts_and_retries_contradictions():
     assert f'calls a {tilt:g}° tilt stable or steady; FACTS label it "{tilt_label(tilt)}"' in calls[-1][2][-1]["content"]
     message = [e for e in run if e["type"] == "explanation"][-1]["message"]
     assert message.startswith("The rover reached the goal") and "stable" not in message and "steady" not in message
+
+
+def test_diagnose_conclusion_opening_is_code_and_contradictions_are_rejected():
+    from simgate import config, llm
+    from simgate.diagnose import conclusion
+
+    def tested(cause, verdict, numbers):
+        return {"cause": cause, "intervention": {"gravity": 9.81}, "verdict": verdict, "key_numbers": numbers}
+
+    obstacle = tested("obstacle", "confirmed", {"passed": [False, True], "distance_left_m": [8.1, 0.8]})
+    friction = tested("friction", "partly", {"passed": [False, False], "distance_left_m": [8.1, 5.0]})
+    gravity = tested("low gravity", "ruled out", {"passed": [False, False], "distance_left_m": [8.1, 8.0]})
+    key = "opening sentence is already written"
+
+    def run(hypotheses, replies):
+        chat, calls = scripted_models({key: replies})
+        original_mock, original_chat = config.MOCK_MODE, llm.chat
+        try:
+            config.MOCK_MODE, llm.chat = False, chat
+            return conclusion(hypotheses, []), calls
+        finally:
+            config.MOCK_MODE, llm.chat = original_mock, original_chat
+
+    # Confirmed, then "none explains it": one retry with the exact problem; the corrected text follows the opening.
+    text, calls = run([obstacle, gravity], ["None of the tested causes explains it on its own.",
+                                            "Confirmed: obstacle. Without the step it reached the goal; gravity made no difference."])
+    assert text == "Confirmed: obstacle. Without the step it reached the goal; gravity made no difference."
+    assert '"Confirmed: obstacle."' in calls[0][2][0]["content"]
+    assert 'It says "None of the tested causes", but obstacle is confirmed' in calls[-1][2][-1]["content"]
+
+    # Nothing confirmed, then a cause claimed as confirmed (twice): the rules text follows the opening.
+    text, calls = run([friction, gravity], ["Friction was confirmed as the cause of the failure.",
+                                            "The cause is friction, which is confirmed."])
+    assert len(calls) == 2 and 'no tested cause is confirmed' in calls[-1][2][-1]["content"]
+    assert text.startswith("No single tested cause explains it. Friction partly explains it")
+    assert "confirmed" not in text.lower()
 
 
 def test_stress_trigger_requires_robot_scene():
