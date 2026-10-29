@@ -101,6 +101,7 @@
   .stress-row { display: grid; grid-template-columns: 12px 1fr; gap: 0 7px; width: 100%; padding: 6px 7px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel-2); color: var(--text); font: inherit; text-align: left; }
   .stress-row .dot { grid-row: span 2; padding-top: 1px; color: var(--bad); }
   .stress-row.pass .dot { color: var(--ok); }
+  .stress-row.race .dot { visibility: hidden; }
   .stress-row small { color: var(--muted); }
   .stress-row .robot-cells { grid-column: 2; display: grid; grid-template-columns: repeat(var(--robots), minmax(0, 1fr)); gap: 6px; }
   .stress-row .robot-cells span { font-size: 0.85em; }
@@ -545,11 +546,11 @@ function stressMetricText(metrics) {
 }
 function renderReport(report) {
   $("metricsCard").hidden = true; $("reportCard").hidden = false;
-  $("reportCounts").textContent = `${report.passed} of ${report.total} runs passed`;
+  $("reportCounts").textContent = report.overall || `${report.passed} of ${report.total} runs passed`;   // a race: per robot
   $("reportRows").replaceChildren();
   for (const row of report.rows) {
     const button = document.createElement("button"); button.type = "button";
-    button.className = `stress-row ${row.passed ? "pass" : "fail"}`;
+    button.className = `stress-row ${report.robots && row.robots ? "race" : row.passed ? "pass" : "fail"}`;
     const dot = document.createElement("i"); dot.className = "dot"; dot.textContent = "●";
     const label = document.createElement("strong"); label.textContent = row.label;
     const reason = document.createElement("span"); reason.textContent = row.reason;

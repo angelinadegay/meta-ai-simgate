@@ -2183,6 +2183,21 @@ def test_robustness_decides_the_winner():
     assert not [e for e in use if e["type"] == "error"]
 
 
+def test_race_stress_report_counts_each_robot():
+    from pathlib import Path
+
+    _, (_, stress) = session_turns(MIXED_RACE, "stress test")
+    report = next(e for e in stress if e["type"] == "report")
+    rows = report["rows"]
+    rover = sum(row["robots"]["r1"]["passed"] for row in rows)
+    walker = sum(row["robots"]["r2"]["passed"] for row in rows)
+    assert rover > 0 and walker < len(rows)   # some runs had a robot pass and another fail
+    assert report["overall"] == f"Rover: {rover}/{len(rows)} · Walker: {walker}/{len(rows)}"
+    assert all(row["passed"] is None for row in rows)   # no row marked failed because one robot failed
+    page = (Path(__file__).resolve().parent.parent / "static" / "vendor" / "index.html").read_text(encoding="utf-8")
+    assert "report.overall ||" in page and '"race"' in page
+
+
 def test_stress_trigger_requires_robot_scene():
     import asyncio
     from unittest.mock import patch

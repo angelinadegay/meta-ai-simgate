@@ -378,13 +378,19 @@ class Session:
             row = {"id": result["id"], "label": result["label"], "passed": result["passed"],
                    "reason": result["reason"], "metrics": self._row_metrics(summary),
                    "ghost_status": result.get("ghost_status")}
-            if len(spec.robots) > 1:   # a race: one column per robot
+            if len(spec.robots) > 1:   # a race: one cell per robot, and no single pass/fail for the row
                 row["robots"] = {robot_id: {**robot, "metrics": self._row_metrics((summary.get("robots") or {}).get(robot_id) or {})}
                                  for robot_id, robot in (result.get("robots") or {}).items()}
+                row["passed"] = None
             rows.append(row)
         columns = [{"id": entry.id, "label": entry.label, "kind": entry.robot.kind} for entry in spec.robots]
-        await self.emit({"type": "report", "rows": rows, "passed": passed, "total": len(results),
-                         **({"robots": columns} if len(spec.robots) > 1 else {})})
+        race = {}
+        if len(spec.robots) > 1:   # "Rover: 8/8 · Walker: 0/8" over the runs that ran
+            ran = [row for row in rows if row.get("robots")]
+            counts = {column["id"]: sum(bool(row["robots"].get(column["id"], {}).get("passed")) for row in ran) for column in columns}
+            race = {"robots": columns, "robot_passed": counts,
+                    "overall": " · ".join(f"{column['label']}: {counts[column['id']]}/{len(ran)}" for column in columns)}
+        await self.emit({"type": "report", "rows": rows, "passed": passed, "total": len(results), **race})
         crashed = crash_report(results)
         if crashed:   # a system problem, not physics: shown as a warning and kept out of the analysis
             await self.emit({"type": "step", "id": f"crash-{uuid.uuid4().hex[:8]}", "parent_id": None,
