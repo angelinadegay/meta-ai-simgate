@@ -98,17 +98,29 @@ def result_metrics(result: dict, robot_id: str | None) -> dict:
 
 
 def verdict(base: dict, after: dict) -> str:
-    """"confirmed" passes with only this change; "partly" clearly improves the key metric; else "ruled out"."""
+    """"confirmed" passes with only this change; "partly" gets clearly closer (30% less distance left) or avoids a
+    fall; else "ruled out". Less slip alone is not progress: it is only noted (see key_numbers)."""
     if after.get("error"):
         return "not tested"
     if after["passed"]:
         return "confirmed"
-    closer = (base.get("final_distance_m") or 0) > 0 and after.get("final_distance_m") is not None \
+    return "partly" if _closer(base, after) or _fall_avoided(base, after) else "ruled out"
+
+
+def _closer(base: dict, after: dict) -> bool:
+    return (base.get("final_distance_m") or 0) > 0 and after.get("final_distance_m") is not None \
         and after["final_distance_m"] <= 0.7 * base["final_distance_m"]
-    fall_avoided = base.get("flipped") and not after.get("flipped")
+
+
+def _fall_avoided(base: dict, after: dict) -> bool:
+    return bool(base.get("flipped") and not after.get("flipped"))
+
+
+def _slip_only(base: dict, after: dict) -> bool:
+    """Slip at least halved, but the run got no clearly closer and no fall was avoided."""
     less_slip = (base.get("slip_ratio") or 0) > 0.05 and after.get("slip_ratio") is not None \
         and after["slip_ratio"] <= 0.5 * base["slip_ratio"]
-    return "partly" if closer or fall_avoided or less_slip else "ruled out"
+    return less_slip and not after.get("passed") and not _closer(base, after) and not _fall_avoided(base, after)
 
 
 def key_numbers(base: dict, after: dict) -> dict:
@@ -123,6 +135,8 @@ def key_numbers(base: dict, after: dict) -> dict:
         numbers["fell"] = [base["flipped"], after.get("flipped")]
     if base.get("slip_ratio") is not None:
         numbers["slip"] = [base["slip_ratio"], after.get("slip_ratio")]
+    if _slip_only(base, after):   # shown as a side note; it doesn't make the verdict "partly"
+        numbers["note"] = f"slip fell from {base['slip_ratio']:.0%} to {after['slip_ratio']:.0%}, but it got no closer"
     return numbers
 
 
@@ -139,6 +153,8 @@ def describe_numbers(numbers: dict) -> str:
     if "fell" in numbers:
         parts.append("fall avoided" if numbers["fell"][0] and not numbers["fell"][1] else
                      "still fell" if numbers["fell"][1] else "no fall")
+    if "note" in numbers:
+        return ", ".join(parts) + f"; {numbers['note']}"
     if "slip" in numbers and numbers["slip"][1] is not None and numbers["slip"][0] is not None:
         parts.append(f"slip {numbers['slip'][0]:.0%} → {numbers['slip'][1]:.0%}")
     return ", ".join(parts)

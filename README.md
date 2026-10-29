@@ -273,7 +273,9 @@ of guessing:
    original run's goal and time limit written in (so removing a course's only obstacle doesn't also remove its
    finish line).
 4. **Verdicts:** *confirmed* ✓ = passes with only this change; *partly* ~ = still fails but clearly better
-   (30% less distance left, a fall avoided, or half the slip); *ruled out* ✕ = no clear improvement.
+   (30% less distance left, or a fall avoided); *ruled out* ✕ = no clear improvement. Less slip alone isn't
+   progress: it is shown as a side note ("slip fell from 10% to 1%, but it got no closer") and the verdict stays
+   *ruled out*.
 5. **Decisions:** after each batch the Explainer decides to *conclude*, *test more* (up to 2 follow-ups, e.g. the
    top two causes together or a stronger version of one) or say it *can't tell* (results contradict). At most two
    decision rounds; mock mode tests more only when the best result is "partly". A follow-up that only adds to a

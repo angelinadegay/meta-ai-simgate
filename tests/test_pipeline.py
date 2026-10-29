@@ -2125,6 +2125,25 @@ def test_diagnose_conclusion_opening_is_code_and_contradictions_are_rejected():
     assert "confirmed" not in text.lower()
 
 
+def test_less_slip_without_getting_closer_is_ruled_out():
+    from simgate.diagnose import verdict
+
+    _, (_, why) = session_turns("Rover obstacle course with a big step, go", "why did it fail?")
+    report = next(e["report"] for e in why if e["type"] == "diagnosis")
+    slipping = next(h for h in report["hypotheses"] if h["cause"] == "slipping")
+    before, after = slipping["key_numbers"]["distance_left_m"]
+    assert after > 0.7 * before and slipping["key_numbers"]["slip"][1] <= 0.5 * slipping["key_numbers"]["slip"][0]
+    assert slipping["verdict"] == "ruled out"   # slip fell, but it got no closer
+    assert slipping["numbers_text"].endswith(
+        f"slip fell from {slipping['key_numbers']['slip'][0]:.0%} to {slipping['key_numbers']['slip'][1]:.0%}, but it got no closer")
+    assert "Ruled out: slipping" in report["conclusion"] and "partly" not in report["conclusion"]
+
+    base = {"passed": False, "final_distance_m": 10.0, "flipped": True, "slip_ratio": 0.4}
+    assert verdict(base, {"passed": False, "final_distance_m": 7.0, "flipped": True}) == "partly"     # 30% closer
+    assert verdict(base, {"passed": False, "final_distance_m": 9.9, "flipped": False}) == "partly"    # fall avoided
+    assert verdict(base, {"passed": False, "final_distance_m": 9.0, "flipped": True, "slip_ratio": 0.1}) == "ruled out"
+
+
 def test_stress_trigger_requires_robot_scene():
     import asyncio
     from unittest.mock import patch
