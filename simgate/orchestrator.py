@@ -80,6 +80,7 @@ class Session:
         unchanged = editing and world.build is not None and world.build is self.build   # answer or analysis
         if self.library_selection and spec.domain == "robot_terrain" and not unchanged:
             self._apply_library_selection(spec)
+            self.library_selection = None   # it sets up one scene; later requests are planned from their own words
             world.spec = spec
             if world.build is not None:   # it was built before the selection changed the robot: build and check that
                 world.simulator = agents.route(spec)
@@ -263,6 +264,7 @@ class Session:
             spec = self.spec.model_copy(deep=True)
             spec.assumptions = []
             self._apply_library_selection(spec)
+            self.library_selection = None
             await self.build_and_check(spec)
 
     async def set_point(self, which: str, x: float, y: float) -> None:

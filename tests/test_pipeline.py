@@ -2595,6 +2595,28 @@ def test_library_selection_builds_and_checks_the_selected_robot():
     assert any(check.name == "Library policy loads and validates" and check.passed for check in session.checks)
 
 
+def test_library_selection_sets_up_one_scene_only():
+    import asyncio
+
+    from simgate.orchestrator import Session
+
+    async def emit(event):
+        pass
+
+    async def scenario():
+        session = Session(emit)
+        await session.handle("a rover on flat ground")
+        await session.select_library("g1", "g1_walking", "moon-regolith")   # applied to the open scene
+        selected = (session.spec.robot.robot_id, session.spec.environment.body)
+        await session.handle("race three rovers on Mars to the far side")
+        return selected, session.spec
+
+    selected, spec = asyncio.run(scenario())
+    assert selected == ("g1", "moon")
+    assert [entry.robot.kind for entry in spec.robots] == ["rover"] * 3, spec.robots
+    assert spec.environment.body == "mars"
+
+
 def test_rules_planner_reads_a_unitree_robot_in_a_race_as_the_g1():
     from simgate.director import Director
 
