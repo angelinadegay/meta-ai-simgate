@@ -89,6 +89,8 @@ def _validate_variation(base_spec: SceneSpec, raw: dict) -> tuple[Variation, Sce
     if "friction" in knobs:
         spec.environment.friction = knobs["friction"]
     if "payload_kg" in knobs:
+        if any(entry.robot.kind == "library" for entry in _target_entries(spec, target)):
+            raise ValueError("payload_kg can't be applied to a library robot: its trained policy expects its exact body.")
         payload = knobs["payload_kg"]
         _update_robots(spec, target, lambda robot: robot.model_copy(update={"mass_kg": robot.mass_kg + payload}))
     if "slope_deg" in knobs:

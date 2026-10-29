@@ -432,9 +432,10 @@ def plan_stress(spec: SceneSpec, text: str) -> list[dict]:
         {"label": "Earth gravity", "gravity": 9.81},
         {"label": "Sand", "surface": "sand"},
         {"label": "Ice", "surface": "ice"},
-        {"label": "+5 kg payload", "payload_kg": 5},
         {"label": "30 N sideways push", "push_n": 30},
     ]
+    if not any(entry.robot.kind == "library" for entry in spec.robots):   # a library robot's body is fixed
+        fallback.insert(5, {"label": "+5 kg payload", "payload_kg": 5})
     if spec.obstacles:
         fallback.append({"label": "Obstacles ×1.3", "obstacle_scale": 1.3})
     if config.MOCK_MODE:

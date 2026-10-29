@@ -242,8 +242,8 @@ steps in the event tree.
 - The planner can vary gravity, surface, friction, added payload, slope angle (slope terrain only),
   obstacle scale (when obstacles exist), lateral push and terrain seed. Surface changes reset friction
   to the surface preset. Gravity changes the gravity value directly and does not change the body/world,
-  including for real terrain. Payload mass is added to the robot's mass; a push lasts 0.3 seconds near
-  the middle of the run.
+  including for real terrain. Payload mass is added to the robot's mass (not for library robots such as the G1, whose trained policy
+  expects its exact body); a push lasts 0.3 seconds near the middle of the run.
 - A run passes if it reaches its goal. Without a goal, it passes if it stays upright and makes at least
   1 m of forward progress. The report card lists each outcome and measured progress or goal distance,
   maximum tilt and slip, followed by a summary of the pattern across runs.
@@ -421,6 +421,7 @@ Without a key, it runs in mock mode.
 | `batch_stress_conditions_and_ghosts` | Baseline ordering, gravity/surface changes, icy-slope failure, push effect, invalid-knob errors, ghost eligibility and payload budget |
 | `stress_trigger_requires_robot_scene` | Stress-test phrases start a batch only when a robot scene is already active |
 | `stress_planner_falls_back_when_conditions_do_not_apply` | A repeated model suggestion for an inapplicable slope variation falls back to compatible conditions |
+| `stress_payload_is_never_claimed_for_a_library_robot` | A G1 stress test has no payload row (its body is fixed, so the payload could not be applied); a rover's payload still adds mass |
 | `g1_stands_for_two_seconds_at_zero_command` | G1 stays upright with pelvis height within 10% of its standing height |
 | `g1_walks_two_metres_in_ten_seconds` | G1 makes at least 2 m of forward progress on flat Earth terrain without falling |
 | `g1_reaches_diagonal_five_metre_goal` | G1's Navigator reaches a 5 m goal at 45° to its starting heading |

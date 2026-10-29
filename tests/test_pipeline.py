@@ -2302,6 +2302,21 @@ def test_stress_planner_falls_back_when_conditions_do_not_apply():
     assert all("slope_deg" not in variation for variation in variations)
 
 
+def test_stress_payload_is_never_claimed_for_a_library_robot():
+    import pytest
+
+    from simgate.batch import _validate_variation
+
+    g1 = g1_spec(duration_s=2.0)
+    assert all("payload_kg" not in variation for variation in agents.plan_stress(g1, "stress test"))
+    with pytest.raises(ValueError, match="library robot"):
+        _validate_variation(g1, {"label": "+20 kg payload", "payload_kg": 20})
+    rover = SceneSpec(domain="robot_terrain", terrain=Terrain(kind="flat")).fill_defaults()
+    assert any("payload_kg" in variation for variation in agents.plan_stress(rover, "stress test"))
+    _, heavier, _ = _validate_variation(rover, {"label": "+20 kg payload", "payload_kg": 20})
+    assert heavier.robot.mass_kg == rover.robot.mass_kg + 20
+
+
 _G1_BASE_BUILD = None
 
 
