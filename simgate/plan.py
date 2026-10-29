@@ -1,6 +1,6 @@
 """Validated single-response plans produced by the Director."""
 
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Literal, get_args
 
 from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, PrivateAttr, model_validator
 
@@ -59,6 +59,13 @@ class WorldPlan(BaseModel):
         return self
 
 
+def _robot_choices() -> str:
+    """What a robot entry may name, for validation errors the planner sees on its retry."""
+    library = [card.id for card in LibraryRegistry().robots() if card.source != "builtin"]
+    return (f"Built-in kinds: {', '.join(get_args(RobotKind))}. Library robot_ids: {', '.join(library) or 'none'}. "
+            "For library robots, give robot_id and omit kind.")
+
+
 class RobotPlan(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -75,10 +82,15 @@ class RobotPlan(BaseModel):
 
     @model_validator(mode="before")
     @classmethod
-    def drop_kind_given_robot_id(cls, data: Any) -> Any:
+    def check_kind(cls, data: Any) -> Any:
         """Models often add a kind ("library", "humanoid", "walker") to a library robot_id; the robot_id decides.
-        Only a built-in kind of the other sort (a rover for a legged robot) is a real conflict."""
-        if not isinstance(data, dict) or data.get("robot_id") is None or data.get("kind") is None:
+        Only a built-in kind of the other sort (a rover for a legged robot) is a real conflict. Without a
+        robot_id, an unknown kind gets an error that lists what can be used."""
+        if not isinstance(data, dict) or data.get("kind") is None:
+            return data
+        if data.get("robot_id") is None:
+            if data["kind"] not in get_args(RobotKind):
+                raise ValueError(f"kind {data['kind']!r} is not a built-in kind. {_robot_choices()}")
             return data
         data = dict(data)
         kind = data.pop("kind")
@@ -87,15 +99,14 @@ class RobotPlan(BaseModel):
         except ValueError:
             return data   # the robot_id check below names the problem
         if kind in ("rover", "walker") and (kind == "rover") != (card.kind == "wheeled"):
-            raise ValueError(
-                f"kind {kind!r} conflicts with robot_id {card.id!r} ({card.kind}): omit kind when you give robot_id."
-            )
+            raise ValueError(f"kind {kind!r} conflicts with robot_id {card.id!r} ({card.kind}): omit kind when you "
+                             f"give robot_id. {_robot_choices()}")
         return data
 
     @model_validator(mode="after")
     def validate_library_selection(self) -> "RobotPlan":
         if (self.kind is None) == (self.robot_id is None):
-            raise ValueError("Provide exactly one of kind or robot_id.")
+            raise ValueError(f"Provide exactly one of kind or robot_id. {_robot_choices()}")
         if self.robot_id is None:
             if self.policy_id is not None:
                 raise ValueError("policy_id requires robot_id.")
@@ -104,8 +115,7 @@ class RobotPlan(BaseModel):
         try:
             robot = registry.robot(self.robot_id)
         except ValueError as exc:
-            available = ", ".join(card.id for card in registry.robots())
-            raise ValueError(f"robot_id {self.robot_id!r} doesn't exist; available: {available}") from exc
+            raise ValueError(f"robot_id {self.robot_id!r} doesn't exist. {_robot_choices()}") from exc
         compatible = registry.compatible_policies(robot.id)
         if self.policy_id is None:   # the robot's default policy, as spawn_robot would pick
             if not compatible:

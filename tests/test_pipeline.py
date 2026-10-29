@@ -215,6 +215,19 @@ def test_model_library_robot_entries_validate_first_time():
         RobotPlan.model_validate({"kind": "rover", "robot_id": "g1"})
 
 
+def test_robot_entry_errors_list_kinds_and_library_ids():
+    import pytest
+
+    from simgate.plan import RobotPlan
+
+    for bad in ({"kind": "humanoid"}, {"kind": "library"}, {}, {"robot_id": "go3"}, {"kind": "rover", "robot_id": "g1"}):
+        with pytest.raises(ValueError) as error:
+            RobotPlan.model_validate(bad)
+        message = str(error.value)
+        assert "Built-in kinds: rover, walker." in message and "Library robot_ids: g1." in message, (bad, message)
+        assert "For library robots, give robot_id and omit kind." in message, (bad, message)
+
+
 def test_race_goals_and_run_cues_in_plans():
     from simgate import config
     from simgate.director import Director
