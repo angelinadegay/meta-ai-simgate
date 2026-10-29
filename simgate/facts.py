@@ -7,7 +7,29 @@ from .spec import SceneSpec
 
 STEADY_DEG, LEANING_DEG, NEARLY_TIPPED_DEG = 15.0, 35.0, 60.0
 FACTS_RULE = ("Describe the terrain and tilt only with the words given in FACTS; never call a tilt above "
-              f"{LEANING_DEG:g}° stable or steady.")
+              f"{LEANING_DEG:g}° stable or steady. A tip may change only a setting FACTS list under \"can change\".")
+
+ADJUSTABLE = {   # the settings a tip may change, per kind of robot
+    "rover": ("wheels", "wheel_radius", "drive_speed"),
+    "walker": ("legs", "leg_length", "gait_freq_hz", "stride_deg"),
+    "library": ("command_speed_m_s", "policy_id"),   # a trained policy expects its exact body
+}
+SETTING_NAMES = {"wheels": "number of wheels", "wheel_radius": "wheel size", "drive_speed": "wheel speed",
+                 "legs": "number of legs", "leg_length": "leg length", "gait_freq_hz": "gait frequency",
+                 "stride_deg": "stride", "command_speed_m_s": "walking speed", "policy_id": "policy"}
+_SETTING_WORDS = {   # how a tip names each setting
+    "wheels": r"\b(?:four|six|4|6)[\s-]*wheel(?:s|ed)?\b|\bmore wheels\b",
+    "wheel_radius": r"\bwheel[_ ](?:radius|size)\b|\b(?:bigger|larger|smaller) wheels\b",
+    "drive_speed": r"\bdrive[_ ]speed\b|\bwheel speed\b",
+    "legs": r"\b(?:four|six|4|6)[\s-]*leg(?:s|ged)?\b|\bmore legs\b",
+    "leg_length": r"\bleg[_ ]length\b|\b(?:longer|shorter) legs\b",
+    "gait_freq_hz": r"\bgait\b|\bgait[_ ]freq",
+    "stride_deg": r"\bstride",
+    "command_speed_m_s": r"\bcommand[_ ]speed|\bwalking speed\b",
+    "policy_id": r"\bpolic(?:y|ies)\b|\bpolicy_id\b",
+}
+_TIP_CUES = re.compile(r"\b(?:try|next|you (?:could|can|might)|consider|adjust|set|increase|decrease|reduce|raise|lower"
+                       r"|change|tweak|use|give)\b", re.I)
 
 
 def terrain_label(spec: SceneSpec) -> str:
@@ -59,12 +81,24 @@ def _reason(m: dict) -> str:
     return reason
 
 
+def _can_change(robot: dict) -> dict:
+    """The settings a tip may change for this robot; a library robot's policy only to a compatible one."""
+    settings = {key: SETTING_NAMES[key] for key in ADJUSTABLE.get(robot.get("kind"), ())}
+    if "policy_id" in settings and robot.get("robot_id"):
+        from .library import LibraryRegistry
+
+        compatible = [policy.id for policy in LibraryRegistry().compatible_policies(robot["robot_id"])]
+        settings["policy_id"] = f"policy: {', '.join(compatible)}"
+    return settings
+
+
 def _robot_facts(label: str, m: dict) -> dict:
     from .agents import robot_view
 
     robot = robot_view(m.get("robot") or {})
     return {"robot": label, "kind": robot.get("kind"), "result": _result(m), "reason": _reason(m),
-            "max_tilt_deg": m.get("max_tilt_deg"), "tilt": tilt_label(m.get("max_tilt_deg")), "properties": robot}
+            "max_tilt_deg": m.get("max_tilt_deg"), "tilt": tilt_label(m.get("max_tilt_deg")), "properties": robot,
+            "can_change": _can_change(m.get("robot") or {})}
 
 
 def facts(spec: SceneSpec, metrics: dict) -> dict:
@@ -88,8 +122,30 @@ def facts_block(found: dict) -> str:
     for robot in found.get("robots", []):
         tilt = f"; tilt: {robot['tilt']} ({robot['max_tilt_deg']}° max)" if robot.get("tilt") else ""
         properties = ", ".join(f"{k}={v}" for k, v in robot["properties"].items() if k != "kind")
-        lines.append(f"- {robot['robot']} ({robot['kind']}): {robot['result']}; {robot['reason']}{tilt}; has: {properties}")
+        can_change = ", ".join(f"{key} ({name})" for key, name in robot.get("can_change", {}).items()) or "nothing"
+        lines.append(f"- {robot['robot']} ({robot['kind']}): {robot['result']}; {robot['reason']}{tilt}; has: {properties}; "
+                     f"can change: {can_change}")
     return "FACTS (use these words as-is):\n" + "\n".join(lines)
+
+
+def drop_invalid_tips(text: str, found: dict) -> tuple[str, list[str]]:
+    """Remove each tip sentence that names a setting no robot in FACTS can change (gait for the G1, wheels for a
+    walker). Returns the text and the settings that were named."""
+    allowed = {key for robot in found.get("robots", []) for key in robot.get("can_change", {})}
+    if not found.get("robots"):
+        return text, []
+    named: list[str] = []
+    kept = []
+    for part in re.split(r"(?<=[.!?])(\s+)", text):
+        if part.strip() and _TIP_CUES.search(part):
+            wrong = [key for key, pattern in _SETTING_WORDS.items() if key not in allowed and re.search(pattern, part, re.I)]
+            if wrong:
+                named += wrong
+                if kept and not kept[-1].strip():
+                    kept.pop()   # the space before the removed sentence
+                continue
+        kept.append(part)
+    return "".join(kept).strip(), named
 
 
 _FLAT = re.compile(r"\bflat\b", re.I)

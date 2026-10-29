@@ -2248,6 +2248,44 @@ def test_explainer_uses_code_facts_and_retries_contradictions():
     assert message.startswith("The rover reached the goal") and "stable" not in message and "steady" not in message
 
 
+def test_explainer_tips_use_only_settings_the_robots_have():
+    from simgate import config, llm
+    from simgate.facts import drop_invalid_tips, facts
+
+    g1 = Robot(kind="library", robot_id="g1", policy_id="g1_walking")
+    spec = SceneSpec(domain="robot_terrain", terrain=Terrain(kind="flat", roughness=0), robot=g1).fill_defaults()
+    metrics = {"simulator": "MuJoCo", "forward_progress_m": 2.5, "max_tilt_deg": 9.0, "flipped": False,
+               "robot": spec.robot.model_dump()}
+    seen = []
+    replies = iter([   # gpt-4o-mini's tip after a G1 race: walker gait settings, which the G1 doesn't have
+        "The G1 walked 2.5 m on flat ground.\n\nNext, try adjusting the gait settings for G1 to see if it can improve "
+        "stability, such as \"set gait_freq_hz 1.5 and stride_deg 10\".",
+        "The G1 walked 2.5 m on flat ground. Next, try a walking speed of 0.8 m/s.",
+    ])
+    original_mock, original_chat = config.MOCK_MODE, llm.chat
+    try:
+        config.MOCK_MODE = False
+        llm.chat = lambda messages, *args, **kwargs: seen.append(messages) or next(replies)
+        replaced = agents.explain(spec, metrics)
+        kept = agents.explain(spec, metrics)
+    finally:
+        config.MOCK_MODE, llm.chat = original_mock, original_chat
+    assert "can change: command_speed_m_s (walking speed), policy_id (policy: g1_walking)" in seen[0][1]["content"]
+    assert 'only a setting FACTS list under "can change"' in seen[0][0]["content"]
+    assert replaced == f"The G1 walked 2.5 m on flat ground. {agents._mock_tip(spec, metrics)}.", replaced
+    assert "gait" not in replaced and kept == "The G1 walked 2.5 m on flat ground. Next, try a walking speed of 0.8 m/s."
+
+    race = SceneSpec(domain="robot_terrain", robots=[
+        RobotEntry(id="r1", label="G1", robot=g1), RobotEntry(id="r2", label="Rover", robot=Robot(kind="rover"))]).fill_defaults()
+    found = facts(race, {"robots": {entry.id: {"robot": entry.robot.model_dump()} for entry in race.robots}})
+    text = "The rover won. Try bigger wheels for the rover. Then lower the gait frequency."
+    assert drop_invalid_tips(text, found) == ("The rover won. Try bigger wheels for the rover.", ["gait_freq_hz"])
+    walker = SceneSpec(domain="robot_terrain", robot=Robot(kind="walker")).fill_defaults()
+    found = facts(walker, {"simulator": "MuJoCo", "robot": walker.robot.model_dump()})
+    assert drop_invalid_tips("It slipped. Try six wheels. Or use longer legs.", found) == (
+        "It slipped. Or use longer legs.", ["wheels"])
+
+
 def test_diagnose_conclusion_opening_is_code_and_contradictions_are_rejected():
     from simgate import config, llm
     from simgate.diagnose import conclusion

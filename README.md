@@ -373,6 +373,7 @@ Without a key, it runs in mock mode.
 | `redesign_finds_the_smallest_passing_design_and_keeps_the_world` | For a 0.15 m step the smallest passing design wins (bigger wheels or 6 wheels), the world is identical, robustness is reported; "keep 4 wheels" uses wheel radius |
 | `redesign_reports_the_limit_when_nothing_passes` | A 1.0 m wall: no design passes within 12 runs, and the limit is named |
 | `design_constraints_narrow_the_design_space` | "under 15 kg", "only change the wheels", "keep 4 wheels" and library robots narrow the knobs |
+| `explainer_tips_use_only_settings_the_robots_have` | FACTS list what each robot can change (rover: wheels, wheel size, wheel speed; walker: legs, leg length, gait; G1: walking speed and compatible policies); a tip naming another setting, such as a gait for the G1, is replaced by the rules tip |
 | `mock_explainer_tests_more_only_when_the_best_is_partly` | The mock Explainer tests more (combined or stronger) only when the best verdict is "partly" and reruns are left |
 | `model_explainer_decisions_are_validated_bounded_and_visible` | Fake model: a disallowed knob is dropped, "test more" runs exactly one follow-up within budget, every decision is a step |
 | `model_designer_candidates_are_clamped_and_stop_ends_early` | Fake Designer: out-of-range and unknown knobs are clamped or dropped visibly; "stop" ends the search |

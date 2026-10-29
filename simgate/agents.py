@@ -683,8 +683,9 @@ def mark_untested_gait(text: str, spec: SceneSpec) -> str:
 
 def _explain_with_facts(system: str, user: str, spec: SceneSpec, metrics: dict, fallback) -> str:
     """Ask the Explainer with a FACTS block built in code; a reply that contradicts FACTS gets one retry with the
-    exact problem, then the rules text is used."""
-    from .facts import FACTS_RULE, checked, facts, facts_block
+    exact problem, then the rules text is used. A tip naming a setting the robots don't have is replaced by the
+    rules tip."""
+    from .facts import FACTS_RULE, checked, drop_invalid_tips, facts, facts_block
 
     found = facts(spec, metrics)
     messages = [{"role": "system", "content": f"{system}\n- {FACTS_RULE}"},
@@ -698,6 +699,9 @@ def _explain_with_facts(system: str, user: str, spec: SceneSpec, metrics: dict, 
 
     reply = [""]
     text, _ = checked(ask, found, fallback)
+    text, wrong_settings = drop_invalid_tips(text, found)
+    if wrong_settings:
+        text = f"{text} {_mock_tip(spec, metrics)}.".strip()
     return mark_untested_gait(text, spec)
 
 
