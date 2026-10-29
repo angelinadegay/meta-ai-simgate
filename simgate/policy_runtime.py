@@ -161,7 +161,8 @@ class PolicyRunner:
         zero_observation = np.zeros((1, card.observation_size), dtype=np.float32)
         initial_action = self.policy.run(zero_observation)
         self._validate_action(initial_action)
-        self._validate_joint_targets(self._targets_for(initial_action[0]))
+        # checked before _targets_for clips them, or an out-of-range policy would always pass
+        self._validate_joint_targets(self._default_angles + initial_action[0] * self._action_scale)
         self.policy.reset()
 
     @staticmethod

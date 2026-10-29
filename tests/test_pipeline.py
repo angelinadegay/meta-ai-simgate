@@ -2447,6 +2447,33 @@ def test_g1_named_mapping_policy_validation_and_mesh_budget():
         raise AssertionError("a policy/card observation-size mismatch must be rejected")
 
 
+def test_policy_with_out_of_range_targets_is_rejected_on_load():
+    import numpy as np
+
+    from simgate.library import LibraryRegistry
+    from simgate.policy_runtime import PolicyRunner
+
+    card = LibraryRegistry().policy("g1_walking")
+    model, data = MuJoCoSimulator()._make(g1_base_build())
+
+    class FarOutOfRange:
+        input_size = card.observation_size
+        output_size = len(card.joint_order)
+
+        def run(self, observation):
+            return np.full((1, len(card.joint_order)), 40.0)   # 10 rad past every default angle
+
+        def reset(self):
+            pass
+
+    try:
+        PolicyRunner(card, model, data, inference_model=FarOutOfRange())
+    except ValueError as exc:
+        assert "outside the joint range" in str(exc), exc
+    else:
+        raise AssertionError("a policy whose targets leave the joint ranges must be rejected on load")
+
+
 def test_g1_planner_and_library_selection_use_registered_cards():
     import asyncio
 
