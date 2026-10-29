@@ -1142,6 +1142,32 @@ def test_run_once_per_approval():
     assert any(e["type"] == "question" and "already ran" in e["message"] for e in events)
 
 
+def test_a_run_that_raises_reports_an_error_instead_of_hanging():
+    import asyncio
+
+    from simgate.orchestrator import Session
+
+    async def scenario():
+        events = []
+
+        async def emit(ev):
+            events.append(ev)
+
+        s = Session(emit)
+        await s.handle("rover on the moon")
+
+        def broken_run(spec, build, chunk_frames=30):
+            raise ValueError("policy joint does not exist in MuJoCo model: left_hip_pitch_joint")
+            yield
+
+        s.sim.run = broken_run
+        await asyncio.wait_for(s.handle("run"), timeout=10)
+        return events
+
+    events = asyncio.run(scenario())
+    assert any(e["type"] == "error" and "left_hip_pitch_joint" in e["message"] for e in events), events[-3:]
+
+
 def mission_run(robot, terrain, mission, env=None):
     spec = SceneSpec(domain="robot_terrain", environment=env or Environment(), terrain=terrain,
                      robot=robot, mission=mission).fill_defaults()

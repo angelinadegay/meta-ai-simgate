@@ -183,9 +183,11 @@ class Session:
         loop = asyncio.get_running_loop()
 
         def produce() -> None:
-            for chunk in sim.run(spec, build):
-                loop.call_soon_threadsafe(queue.put_nowait, chunk)
-            loop.call_soon_threadsafe(queue.put_nowait, None)
+            try:
+                for chunk in sim.run(spec, build):
+                    loop.call_soon_threadsafe(queue.put_nowait, chunk)
+            finally:   # also when the run raises, so the wait below ends and `await task` reports the error
+                loop.call_soon_threadsafe(queue.put_nowait, None)
 
         task = loop.run_in_executor(None, produce)
         while (chunk := await queue.get()) is not None:

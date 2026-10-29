@@ -407,6 +407,7 @@ Without a key, it runs in mock mode.
 | `fall_diagnostics_on_steep_slope` | A walker falling on a 25° slope gets correct fall direction, slope and slip evidence |
 | `slope_geometry_and_no_fall_fields` | Slope ahead and sideways are measured correctly, with no false steep edges |
 | `run_once_per_approval` | A double click on Run doesn't run twice; "run again" does |
+| `a_run_that_raises_reports_an_error_instead_of_hanging` | A simulation that raises while streaming shows its error instead of leaving the session waiting forever |
 | `failing_scene_runs_only_with_run_anyway` | A scene whose checks still fail isn't run by "run" or "run again"; it says which checks fail, and only "run anyway" runs it |
 | `rover_steers_to_goal_off_its_heading` | A rover turns 45°, reaches the goal and ends the run early |
 | `walker_reaches_goal_on_hills` | A 6-legged walker reaches a goal on Mars hills |
