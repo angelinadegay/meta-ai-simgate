@@ -76,7 +76,7 @@ Code then checks the model's plan against the request's own words, and each corr
 the user sees: a world named in the request ("Mars", "lunar") or a real place ("Gale Crater") wins over the plan;
 a real-terrain preset the user didn't ask for is dropped in favour of generated terrain; course obstacles go along
 the path in the order given unless the request says to scatter them or names a place; and a request ending in
-"go", "start", "run it" or "race them" runs. There is no
+"go", "start", "run it" or "race them" runs; a race with no goal finishes on the far side, and "to the summit/top/bottom/far side" sets a goal the plan left out. There is no
 one-tool-per-model-turn loop or 12-call limit.
 
 After a failed run, "why did it fail?" (or "prove it", "what caused it") plans the **diagnose** workflow and
@@ -359,6 +359,7 @@ Without a key, it runs in mock mode.
 | `model_library_robot_entries_validate_first_time` | The model's own G1 entries (`"kind": "library"` with `robot_id`) validate on the first call with the robots, world, goal and run it asked for; a redundant kind is dropped, a missing policy is the robot's default, an unknown one becomes its only policy with a note, and kind "rover" with g1 says to omit kind |
 | `robot_entry_errors_list_kinds_and_library_ids` | A bad robot entry (unknown kind, no robot, unknown robot_id, rover kind with g1) gets an error listing the built-in kinds and library robot_ids and saying to give robot_id and omit kind |
 | `rules_planner_keeps_goals_and_races_have_a_finish_line` | In mock mode "G1 … walking on Mars hills to the summit" builds with the summit as its goal, "race a G1 against a rover on Jezero" gets a far-side finish line, "to the bottom" is the lowest point, and any race without a goal finishes at the far side |
+| `model_plans_get_a_finish_line_and_a_named_goal` | A model's race plan without a goal (the real goal-less Jezero reply) gets the far-side finish line with the note "No finish line was given, so I put it on the far side."; a goal-less single robot asked to go "to the summit" gets the highest point |
 | `race_goals_and_run_cues_in_plans` | "Race … to the summit/top/bottom/far side" sets the shared goal, a closing "go"/"start"/"run it" asks to run, and a model's "far side" maps to the east goal |
 | `model_plans_are_corrected_from_the_request_words` | Model plans are corrected from the request's words (named world or real place, unrequested preset dropped, course obstacles on the path, closing run words), with a note the user sees |
 | `stress_plan_requires_an_existing_robot_scene` | Stress plans without a robot scene fall back to a safe answer |

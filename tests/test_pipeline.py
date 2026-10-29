@@ -202,7 +202,8 @@ def test_model_library_robot_entries_validate_first_time():
             assert [(robot.kind, robot.robot_id, robot.policy_id) for robot in plan.robots] == expected
             assert plan.workflow == asked["workflow"] and plan.run_now == asked["run_now"]
             assert plan.world.model_dump(exclude_none=True) == asked["world"]
-            assert (plan.goal.model_dump(exclude_none=True) if plan.goal else None) == asked.get("goal")
+            # the model's goal; a race without one gets the far-side finish line
+            assert plan.goal.model_dump(exclude_none=True) == asked.get("goal", {"place": "east"})
     finally:
         config.MOCK_MODE, llm.chat = original_mock, original_chat
 
@@ -241,6 +242,38 @@ def test_rules_planner_keeps_goals_and_races_have_a_finish_line():
                         ("put a rock next to the rim", None)):
         plan = Director(emit).plan(text, None)
         assert (plan.goal.place if plan.goal else None) == place, text
+
+
+def test_model_plans_get_a_finish_line_and_a_named_goal():
+    import asyncio
+
+    from simgate import config, llm
+    from simgate.director import Director
+
+    async def emit(event):
+        pass
+
+    # gpt-4o-mini's valid but goal-less reply to "race a G1 against a rover on Jezero, go"
+    jezero = ('{"workflow":"race","summary":"G1 Humanoid races against a rover on Jezero","world":{"preset":"real-jezero"},'
+              '"robots":[{"robot_id":"g1"},{"kind":"rover"}],"run_now":true}')
+    summit = ('{"workflow":"build","summary":"G1 on Mars hills","world":{"body":"mars","terrain_kind":"hills"},'
+              '"robots":[{"robot_id":"g1"}],"run_now":true}')
+    original_mock, original_chat = config.MOCK_MODE, llm.chat
+    try:
+        config.MOCK_MODE = False
+        llm.chat = lambda *args, **kwargs: jezero
+        world, _ = asyncio.run(Director(emit).execute_plan("race a G1 against a rover on Jezero, go"))
+        assert [entry.goal_place for entry in world.spec.robots] == ["east", "east"]
+        assert all(info["mission"]["goal"] for info in world.build.scene["robots"].values())
+        assert "No finish line was given, so I put it on the far side." in world.spec.assumptions
+
+        for text, reply, place in (("G1 humanoid walking on Mars hills to the summit, go", summit, "highest"),
+                                   ("G1 on Mars hills, go", summit, None)):
+            llm.chat = lambda *args, reply=reply, **kwargs: reply
+            plan = Director(emit).plan(text)
+            assert (plan.goal.place if plan.goal else None) == place, text
+    finally:
+        config.MOCK_MODE, llm.chat = original_mock, original_chat
 
 
 def test_robot_entry_errors_list_kinds_and_library_ids():

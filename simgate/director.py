@@ -9,7 +9,7 @@ from typing import Any, Awaitable, Callable
 
 from . import agents, config, llm, presets
 from .library import LibraryRegistry
-from .plan import Plan, WorldPlan
+from .plan import GoalPlan, Plan, WorldPlan
 from .spec import Robot, SceneSpec
 from .terrain_data import list_presets
 from .tools import ToolResult, World, invoke_tool
@@ -654,7 +654,21 @@ def _apply_text_guards(plan: Plan, text: str) -> list[str]:
     if _ENDS_WITH_RUN.search(source) and not plan.run_now:
         plan.run_now = True
         notes.append("You asked to run it, so it runs now.")
+    if plan.workflow in ("build", "race") and plan.domain == "robot_terrain" and plan.goal is None \
+            and not any(robot.goal_place for robot in plan.robots):
+        robot_count = sum(robot.count for robot in plan.robots)
+        named = _GOAL_WORDS.search(source)
+        if named is not None:
+            plan.goal = GoalPlan(place=_GOAL_PLACES[named.group(1)])
+            notes.append(f"You asked to go to the {named.group(1)}, so that is the goal.")
+        elif plan.workflow == "race" or (robot_count > 1 and plan.run_now):
+            plan.goal = GoalPlan(place="east")
+            notes.append("No finish line was given, so I put it on the far side.")
     return notes
+
+
+_GOAL_PLACES = {"summit": "highest", "top": "highest", "bottom": "lowest", "far side": "east"}
+_GOAL_WORDS = re.compile(r"(?<!next )\bto (?:the )?(summit|top|bottom|far side)\b")
 
 
 _CHANGE_VERB = re.compile(
