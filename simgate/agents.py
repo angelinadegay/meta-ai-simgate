@@ -623,12 +623,7 @@ def _mock_explain(spec: SceneSpec, m: dict) -> str:
             text += course
         text = goal + text
         text += f" Gravity here is {g} m/s², so it weighs {g / 9.81:.2f}× what it would on Earth, which changes how much grip its {grip} get."
-        if m["flipped"]:
-            tip = "Try: \"use six legs\"" if walker else "Try: \"give it bigger wheels\" or \"use six wheels\""
-        else:
-            other = "Mars" if spec.environment.body == "moon" else "the Moon"
-            tip = f"Try: \"put it on {other}\" or \"make the terrain rocky\"" if walker else "Try: \"make the slope steeper\" or \"make it walk\""
-        return f"{text} {tip}."
+        return f"{text} {_mock_tip(spec, m)}."
     ratio = m["shaking_freq_hz"] / m["building_freq_hz"]
     resonance = " The shaking frequency is close to the building's own frequency, so it resonated and swayed much more." if 0.8 < ratio < 1.25 else ""
     return (f"The {m['stories']}-story frame swayed up to {m['max_roof_displacement_cm']} cm at the roof, "
@@ -703,6 +698,33 @@ def _explain_with_facts(system: str, user: str, spec: SceneSpec, metrics: dict, 
     reply = [""]
     text, _ = checked(ask, found, fallback)
     return mark_untested_gait(text, spec)
+
+
+def _mock_tip(spec: SceneSpec, m: dict) -> str:
+    """A next step that fits what the scene has: a course suggests wheels or legs, a slope suggests less slope or
+    more grip; never "make the slope steeper" on flat ground or a course."""
+    robot, kind = spec.robot, spec.terrain.kind if spec.terrain else "flat"
+    failed = bool(m.get("flipped")) or m.get("goal_reached") is False
+    other = "Mars" if spec.environment.body == "moon" else "the Moon"
+    if robot.kind == "walker":
+        if robot.legs == 4:
+            return 'Try: "use six legs"'
+        if spec.obstacles:
+            return 'Try: "make its legs longer"'
+        if kind == "slope":
+            return 'Try: "make the slope less steep" or "make the surface rock"' if failed else 'Try: "make the slope steeper"'
+        return f'Try: "put it on {other}" or "make the terrain rocky"'
+    if robot.kind == "library":
+        return f'Try: "put it on {other}"'
+    if spec.obstacles:
+        if not failed:
+            return 'Try: "make the obstacles bigger"'
+        return 'Try: "give it bigger wheels" or "use six wheels"' if robot.wheels == 4 else 'Try: "give it bigger wheels"'
+    if kind == "slope":
+        return 'Try: "make the slope less steep" or "make the surface rock"' if failed else 'Try: "make the slope steeper"'
+    if m.get("flipped"):
+        return 'Try: "give it bigger wheels" or "use six wheels"'
+    return f'Try: "put it on {other}" or "make it walk"'
 
 
 def explain(spec: SceneSpec, metrics: dict) -> str:

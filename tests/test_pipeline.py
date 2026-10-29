@@ -2198,6 +2198,25 @@ def test_race_stress_report_counts_each_robot():
     assert "report.overall ||" in page and '"race"' in page
 
 
+def test_mock_tips_fit_the_scene():
+    def tip(text):
+        session, (turn,) = session_turns(text)
+        return session.spec, [e for e in turn if e["type"] == "explanation"][-1]["message"].rsplit("Try:", 1)[1]
+
+    spec, course = tip("Rover obstacle course with a big step, go")
+    assert spec.obstacles and "bigger wheels" in course and "six wheels" in course and "slope" not in course
+    spec, flat = tip("a rover on flat ground, go")
+    assert spec.terrain.kind == "flat" and not spec.obstacles and "slope" not in flat
+    spec, walker = tip("a four-legged walker on hills, go")
+    assert spec.robot.kind == "walker" and spec.robot.legs == 4 and "six legs" in walker
+
+    from simgate.agents import _mock_tip
+
+    slope = SceneSpec(domain="robot_terrain", terrain=Terrain(kind="slope", slope_deg=30)).fill_defaults()
+    assert "less steep" in _mock_tip(slope, {"flipped": True})
+    assert "steeper" in _mock_tip(slope, {"flipped": False}) and "less" not in _mock_tip(slope, {"flipped": False})
+
+
 def test_stress_trigger_requires_robot_scene():
     import asyncio
     from unittest.mock import patch
