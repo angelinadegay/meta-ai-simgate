@@ -1020,7 +1020,7 @@ def test_plan_summaries_are_scene_names():
     assert '"Three rovers race on Mars hills", not an action' in prompt
     examples = [line for line in prompt.splitlines() if line.endswith("}") and ' plan: {"workflow"' in line]
     summaries = [json.loads(line.split(" plan: ", 1)[1])["summary"] for line in examples]
-    assert len(summaries) == 11
+    assert len(summaries) == 13
     assert not any(summary.split()[0] in {"Race", "Compare", "Test", "Make", "Explain", "Create"} for summary in summaries)
 
     plan = Director().plan("compare a rover on the moon and mars")
@@ -1044,7 +1044,12 @@ def test_plan_prompt_states_world_course_and_preset_rules():
     assert examples["Named world"].world.body == "moon" and examples["Named world"].world.preset is None
     assert [obstacle.placement for obstacle in examples["Course"].obstacles] == ["path"] * 3
     assert examples["Real place"].world.preset == "real-gale"
-    assert len(examples) == 11  # every example in the prompt validates as a Plan
+    library = examples["Library robot"].robots
+    assert [(robot.kind, robot.robot_id) for robot in library] == [(None, "g1")] and examples["Library robot"].goal
+    mixed = examples["Mixed race"]
+    assert mixed.workflow == "race" and [(robot.kind, robot.robot_id) for robot in mixed.robots] == [(None, "g1"), ("rover", None)]
+    assert '"robots":[{"robot_id":"g1"}]' in prompt   # shown without a kind, as the model should write it
+    assert len(examples) == 13  # every example in the prompt validates as a Plan
 
     assert "30" not in prompt.split("Short examples:", 1)[1].split("Available library robots", 1)[0]
     steeper = examples["Steeper edit"].changes

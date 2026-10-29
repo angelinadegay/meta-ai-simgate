@@ -234,6 +234,12 @@ def _plan_system() -> str:
     ]
     terrain_presets = agents.presets_text()
     world_ids = [world.id for world in registry.worlds()]
+    library_examples = (   # library robots by robot_id with no kind; the places and world are only illustrative
+        f'Library robot plan: {{"workflow":"build","summary":"Humanoid walks to the north edge","world":{{"terrain_kind":"flat"}},'
+        f'"robots":[{{"robot_id":"{robots[0]["id"]}"}}],"goal":{{"place":"north"}},"run_now":false}}\n'
+        f'Mixed race plan: {{"workflow":"race","summary":"Humanoid and rover race to the west edge",'
+        f'"robots":[{{"robot_id":"{robots[0]["id"]}"}},{{"kind":"rover"}}],"goal":{{"place":"west"}},"run_now":false}}\n'
+    ) if robots else ""
     schema = json.dumps(Plan.model_json_schema(), separators=(",", ":"))
     return f"""You are the Director for a physics simulation sandbox. Make a complete plan in ONE response.
 Return only one JSON object matching the Plan schema below. Do not return tools or a sequence of actions.
@@ -273,7 +279,7 @@ Named world plan: {{"workflow":"build","summary":"Rover on Moon craters","world"
 Course plan: {{"workflow":"build","summary":"Rover obstacle course","world":{{"terrain_kind":"flat"}},"robots":[{{"kind":"rover"}}],"obstacles":[{{"kind":"rock","size":"small","count":10,"placement":"path"}},{{"kind":"step","placement":"path"}},{{"kind":"gap","placement":"path"}}],"run_now":false}}
 Real place plan: {{"workflow":"build","summary":"Rover in Gale Crater","world":{{"preset":"real-gale"}},"robots":[{{"kind":"rover"}}],"run_now":false}}
 Race plan: {{"workflow":"race","summary":"Three rovers race to the east side","robots":[{{"kind":"rover","count":3}}],"goal":{{"place":"east"}},"run_now":false}}
-Compare plan: {{"workflow":"compare","summary":"Rover on Mars and Earth","robots":[{{"kind":"rover"}}],"variants":[{{"label":"Mars","gravity":3.71}},{{"label":"Earth","gravity":9.81}}],"run_now":false}}
+{library_examples}Compare plan: {{"workflow":"compare","summary":"Rover on Mars and Earth","robots":[{{"kind":"rover"}}],"variants":[{{"label":"Mars","gravity":3.71}},{{"label":"Earth","gravity":9.81}}],"run_now":false}}
 Stress plan: {{"workflow":"stress_test","summary":"Rover robustness test","question":"How robust is it?","run_now":false}}
 - For "make it steeper" with no number, ask for a slope and leave the angle out; code sets the steepness:
 Steeper edit plan: {{"workflow":"edit","summary":"Rover on a steeper slope","changes":{{"terrain":{{"kind":"slope"}}}}}}
