@@ -40,7 +40,8 @@ class LibraryRegistry:
             for policy in self.policies()
             if policy.robot_id == robot.id
             or (
-                len(policy.joint_order) == len(robot.joint_names)
+                bool(policy.joint_order)   # built-in controllers name no joints: they fit only their own robot
+                and len(policy.joint_order) == len(robot.joint_names)
                 and all(name in robot.joint_names for name in policy.joint_order)
             )
         ]

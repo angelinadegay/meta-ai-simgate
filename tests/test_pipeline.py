@@ -2473,6 +2473,20 @@ def test_g1_planner_and_library_selection_use_registered_cards():
     asyncio.run(select())
 
 
+def test_library_lists_only_each_robots_own_compatible_policies():
+    from pathlib import Path
+
+    from simgate.library import LibraryRegistry
+
+    registry = LibraryRegistry()
+    compatible = {robot.id: [policy.id for policy in registry.compatible_policies(robot.id)] for robot in registry.robots()}
+    assert compatible["rover"] == ["rover_wheel_controller"], compatible
+    assert compatible["walker"] == ["walker_gait"], compatible
+    assert compatible["g1"] == ["g1_walking"], compatible
+    page = (Path(__file__).resolve().parent.parent / "static" / "vendor" / "index.html").read_text(encoding="utf-8")
+    assert "policy.joint_order.length > 0 && policy.joint_order.length === robot.joint_names.length" in page
+
+
 def _run_one(name, fn) -> str:
     """Run one test for the plain-script runner and return its report line."""
     try:

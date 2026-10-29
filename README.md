@@ -426,6 +426,7 @@ Without a key, it runs in mock mode.
 | `g1_reaches_diagonal_five_metre_goal` | G1's Navigator reaches a 5 m goal at 45° to its starting heading |
 | `g1_named_mapping_policy_validation_and_mesh_budget` | Checker validates the policy and 1 s stand, joint-name mapping survives obstacles/goal markers, bad observation sizes are rejected, and the mesh scene stays under 5 MiB |
 | `g1_planner_and_library_selection_use_registered_cards` | G1 prompts and UI selections resolve to registered robot, policy and world cards |
+| `library_lists_only_each_robots_own_compatible_policies` | The rover and walker controllers, which name no joints, are offered only for their own robot (server and browser) |
 
 ---
 

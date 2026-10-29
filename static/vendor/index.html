@@ -331,7 +331,7 @@ $("form").onsubmit = (e) => { e.preventDefault(); const t = $("input").value.tri
 
 function compatiblePolicies(robot) {
   return libraryData.policies.filter((policy) => policy.robot_id === robot.id ||
-    (policy.joint_order.length === robot.joint_names.length && policy.joint_order.every((name) => robot.joint_names.includes(name))));
+    (policy.joint_order.length > 0 && policy.joint_order.length === robot.joint_names.length && policy.joint_order.every((name) => robot.joint_names.includes(name))));
 }
 function libraryCard(title, detail, license, credit, selected, onClick) {
   const button = document.createElement("button"); button.type = "button";
