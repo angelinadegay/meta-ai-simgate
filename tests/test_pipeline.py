@@ -827,6 +827,14 @@ def test_director_tools_validate_and_update_world():
     assert world.build is not None and world.simulator is not None
 
 
+def test_set_world_accepts_a_bare_real_terrain_preset_name():
+    from simgate import tools
+
+    world = tools.World(agents.plan("a rover on flat terrain"))
+    tools.set_world(world, {"preset": "jezero"})
+    assert (world.spec.terrain.kind, world.spec.terrain.preset, world.spec.environment.body) == ("real", "jezero", "mars")
+
+
 def test_no_tool_loop_leftovers():
     from simgate import director, tools
 

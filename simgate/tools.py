@@ -169,7 +169,7 @@ def set_world(world: World, args: dict[str, Any]) -> ToolResult:
                 preset=world_card.terrain_preset,
             ) if world_card.terrain_kind == "real" else (spec.terrain or Terrain())
         else:
-            available = {name for name in registry.worlds() if name.terrain_kind == "real"}
+            available = [card for card in registry.worlds() if card.terrain_kind == "real"]
             real = next((item for item in available if item.terrain_preset == parsed.preset), None)
             if real is None:
                 raise ValueError(f"Unknown world or terrain preset: {parsed.preset}")

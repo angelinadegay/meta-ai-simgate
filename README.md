@@ -391,6 +391,7 @@ Without a key, it runs in mock mode.
 | `adding_obstacles_keeps_the_existing_terrain` | Adding obstacles to an existing scene keeps its terrain (a 10° ice slope stays one); only a new course starts flat |
 | `template_repair_uses_registered_physics_presets` | Safe repairs restore registered gravity, friction and slope values |
 | `director_tools_validate_and_update_world` | Tools validate inputs and update the draft world |
+| `set_world_accepts_a_bare_real_terrain_preset_name` | A plan naming a preset by its bare name ("jezero") sets that real terrain instead of crashing |
 | `no_tool_loop_leftovers` | The removed one-tool-per-turn loop leaves no docstring or tool-catalog code behind |
 | `mock_director_turns_race_into_ordered_tool_calls` | Offline planning creates a mixed race and asks before running |
 | `build_custom_retries_and_emits_attempt_steps` | A rejected custom fragment is corrected and both attempts appear in the step tree |
