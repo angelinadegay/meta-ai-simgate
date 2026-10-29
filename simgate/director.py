@@ -479,18 +479,20 @@ def _rule_plan(text: str, world_state: World | SceneSpec | dict[str, Any] | None
 
 _WHY = re.compile(r"\bwhy\b|\bprove (it|why)\b|\bwhat caused\b|\bwhat went wrong\b|\bdiagnos")
 _FIX = re.compile(r"\bfix (it|this|that)\b|\bmake (it|this|that|the [\w -]{1,30}?) (pass|work|succeed)\b|\bwhat would work\b|\bredesign\b")
-_USE_DESIGN = re.compile(r"\b(use|apply|take) (this|that|the|your) (new |winning |suggested )?design\b")
+_USE_DESIGN = re.compile(r"\b(use|apply|take) (?:(?:this|that|the|your) )?(new |winning |suggested |fragile )?design\b")
 
 
 def _use_design_plan(text: str, state: Any) -> Plan | None:
-    """"use this design" applies the last redesign's winner through the typed edit path (no model call)."""
+    """"use this design" applies the last redesign's winner (or, when there is none, the fragile design that passed
+    once) through the typed edit path (no model call)."""
     if not _USE_DESIGN.search(text.lower()):
         return None
-    winner = ((state.redesign or {}).get("winner") if state is not None else None)
+    redesign = (state.redesign or {}) if state is not None else {}
+    winner = redesign.get("winner") or redesign.get("fragile")
     if not winner:
         return Plan(workflow="answer", summary="No design to apply",
                     reply="There's no passing design to apply yet. Ask me to make it pass first.")
-    return Plan(workflow="edit", summary="Apply the passing design",
+    return Plan(workflow="edit", summary="Apply the fragile design" if winner.get("fragile") else "Apply the passing design",
                 changes={"robot": winner["changes"], "robot_id": state.redesign.get("robot_id")})
 
 

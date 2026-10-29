@@ -482,8 +482,9 @@ function renderDiagnosis(r) {
 function renderRedesign(r) {
   $("redesignCard").hidden = false; $("diagnosisCard").hidden = true;
   const body = $("redesignBody"); body.replaceChildren();
-  const w = r.winner;
+  const w = r.winner || r.fragile;   // a fragile design passed once but not 2 of 3 robustness checks
   if (w) {
+    if (w.fragile) body.appendChild(textEl("div", "Fragile design: passed once but isn't reliable, so it is not the winner.", "fragile"));
     const table = document.createElement("table"); table.className = "design-table";
     const head = document.createElement("tr"); head.append(textEl("th", "Change"), textEl("th", "Before"), textEl("th", "After"));
     table.appendChild(head);
@@ -504,8 +505,9 @@ function renderRedesign(r) {
   for (const note of r.notes || []) lines.appendChild(textEl("div", note));
   body.appendChild(lines);
   $("redesignActions").hidden = !w;
+  $("useDesign").textContent = w && w.fragile ? "Use fragile design" : "Use this design";
 }
-$("useDesign").onclick = () => send("use this design");
+$("useDesign").onclick = () => send($("useDesign").textContent.toLowerCase());
 $("showRuns").onclick = () => { addMsg("Show runs", "user"); ws.send(JSON.stringify({ type: "show_design" })); };
 
 function renderChecks(checks) {

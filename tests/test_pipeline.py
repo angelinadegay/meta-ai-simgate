@@ -1760,7 +1760,7 @@ def test_browser_handles_the_analysis_events():
     root = Path(__file__).resolve().parent.parent
     page = (root / "static" / "vendor" / "index.html").read_text(encoding="utf-8")
     for needed in ('case "diagnosis"', 'case "redesign"', 'id="diagnosisCard"', 'id="redesignCard"',
-                   'chips(q, ev.chips, null)', 'send("use this design")', 'type: "show_design"',
+                   'chips(q, ev.chips, null)', 'send($("useDesign").textContent.toLowerCase())', '"Use fragile design"', 'type: "show_design"',
                    '"✓ confirmed"', '"~ partly"', '"✕ ruled out"', 'Designer: [55, 190]', '"Batch runner": [175, 190]',
                    'if (ev.chips)'):
         assert needed in page, needed
@@ -2142,6 +2142,45 @@ def test_less_slip_without_getting_closer_is_ruled_out():
     assert verdict(base, {"passed": False, "final_distance_m": 7.0, "flipped": True}) == "partly"     # 30% closer
     assert verdict(base, {"passed": False, "final_distance_m": 9.9, "flipped": False}) == "partly"    # fall avoided
     assert verdict(base, {"passed": False, "final_distance_m": 9.0, "flipped": True, "slip_ratio": 0.1}) == "ruled out"
+
+
+def test_robustness_decides_the_winner():
+    from simgate import redesign
+
+    real, checked = redesign.robustness, []
+
+    def scripted(scores):
+        def robustness(world, changes, robot_id):
+            checked.append(changes)
+            passed = scores[min(len(checked), len(scores)) - 1]
+            return {"passed": passed, "total": 3, "failed": ["seed 1", "seed 2", "friction -10%"][passed:]}
+        return robustness
+
+    try:   # the smallest passing design holds up 1/3: the next-best passing design is tried and wins at 3/3
+        redesign.robustness = scripted([1, 3])
+        _, (_, _, fix) = session_turns("Rover obstacle course with a big step, go", "why did it fail?", "make it pass")
+    finally:
+        redesign.robustness = real
+    report = next(e["report"] for e in fix if e["type"] == "redesign")
+    assert len(checked) == 2 and report["winner"]["changes"] == checked[1] and report["winner"]["robustness"]["passed"] == 3
+    assert any(d["decision"] == "next-best" and "passed only 1/3" in d["reason"] for d in report["decisions"])
+    assert fix[-1]["chips"] == ["Use this design"]
+
+    checked.clear()
+    try:   # nothing holds up: no winner, the best one is shown as fragile and can still be applied
+        redesign.robustness = scripted([1])
+        session, (_, _, fix, use) = session_turns("Rover obstacle course with a big step, go", "why did it fail?",
+                                                  "make it pass", "use fragile design")
+    finally:
+        redesign.robustness = real
+    report = next(e["report"] for e in fix if e["type"] == "redesign")
+    assert report["winner"] is None and report["fragile"]["fragile"] and report["fragile"]["changes"] in checked
+    assert "Found a design that passed once but isn't reliable (1/3)" in report["message"]
+    assert "Smallest change that passes" not in report["message"]
+    assert fix[-1]["chips"] == ["Use fragile design"]
+    for name, value in report["fragile"]["changes"].items():
+        assert getattr(session.spec.robots[0].robot, name) == value
+    assert not [e for e in use if e["type"] == "error"]
 
 
 def test_stress_trigger_requires_robot_scene():

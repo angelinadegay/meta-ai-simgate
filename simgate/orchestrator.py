@@ -125,7 +125,9 @@ class Session:
             if report.get("reproduced") is None:   # the robot asked about didn't fail: offer the one that did
                 return self._failure_chips(self.last_summary)
             return [self._fix_chip(report.get("robot_id"))] if report.get("reproduced") else ["Run again"]
-        return ["Use this design"] if report.get("winner") else ["Run again"]
+        if report.get("winner"):
+            return ["Use this design"]
+        return ["Use fragile design"] if report.get("fragile") else ["Run again"]
 
     def _racer_label(self, robot_id: str | None) -> str | None:
         """A race robot's label, for chips that name it; None in a single-robot scene."""
@@ -148,7 +150,7 @@ class Session:
     async def show_design(self) -> None:
         """Replay the last redesign's winning design with streamed frames, without applying it."""
         try:
-            winner = (self.last_redesign or {}).get("winner")
+            winner = (self.last_redesign or {}).get("winner") or (self.last_redesign or {}).get("fragile")
             if self.spec is None or winner is None or self.last_summary is None:
                 await self.emit({"type": "question", "message": "There's no passing design to show yet. Ask me to make it pass first."})
                 return
@@ -167,8 +169,10 @@ class Session:
             await self._stream(spec, sim, build)
             await self.agent("Simulator", "done", "Replay finished; the scene itself is unchanged.")
             await self.emit({"type": "explanation",
-                             "message": f"That was the winning design ({winner['description']}), not applied yet. "
-                                        "Say \"use this design\" to apply it."})
+                             "message": (f"That was the fragile design ({winner['description']}), not applied yet. "
+                                         "Say \"use fragile design\" to apply it anyway.") if winner.get("fragile") else
+                                        (f"That was the winning design ({winner['description']}), not applied yet. "
+                                         "Say \"use this design\" to apply it.")})
         except Exception as e:  # noqa: BLE001
             await self.emit({"type": "error", "message": f"{type(e).__name__}: {e}"})
 

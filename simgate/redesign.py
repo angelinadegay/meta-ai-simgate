@@ -16,6 +16,7 @@ from .spec import Robot, SceneSpec
 MAX_ROUNDS = 3
 CANDIDATES_PER_ROUND = 4
 ROBUSTNESS_RUNS = 3
+MIN_ROBUST_PASSES = 2   # a design is the winner only if it passes at least 2 of the 3 robustness checks
 TESTED_GAIT = {"gait_freq_hz": 2.0, "stride_deg": 15.0}
 StepCallback = Callable[[dict], None]
 
@@ -569,9 +570,10 @@ def redesign(spec: SceneSpec, summary: dict, constraints: str | None = None, dia
                       "Stop: a passing design held up in the robustness checks.")
                 break
 
-    if report["winner"] is None and passing:
-        best = min(passing, key=lambda c: (c["distance"], len(c["changes"])))
-        report["winner"] = {**_winner_fields(best, space), "robustness": best.get("robustness")}
+    if report["winner"] is None and passing:   # passed once but not reliably: shown as fragile, never the winner
+        checked_designs = [c for c in passing if c.get("robustness")] or passing
+        best = max(checked_designs, key=lambda c: ((c.get("robustness") or {}).get("passed", 0), -c["distance"]))
+        report["fragile"] = {**_winner_fields(best, space), "robustness": best.get("robustness"), "fragile": True}
     report["message"] = _message(report, space)
     return report
 
@@ -593,15 +595,15 @@ def _shown(name: str, value: Any) -> str:
 
 def _pick_winner(world: SceneSpec, space: DesignSpace, passing: list[dict], robot_id: str | None,
                  report: dict, on_step: StepCallback | None) -> dict | None:
-    """The smallest passing change that holds up; if the smallest fails 2+ checks, the next-best gets one try."""
+    """The smallest passing change that passes at least 2 of 3 robustness checks; when one doesn't, the next-best
+    passing design is tried."""
     ranked = sorted(passing, key=lambda c: (c["distance"], len(c["changes"])))
-    for attempt, candidate in enumerate(ranked[:2]):
-        if candidate.get("robustness") is not None:
-            continue
+    unchecked = [candidate for candidate in ranked if candidate.get("robustness") is None]
+    for attempt, candidate in enumerate(unchecked):
         _emit(on_step, "Batch runner", "robustness", "Checking the smallest passing design on 3 nearby conditions.", "", "working")
         candidate["robustness"] = robustness(world, candidate["changes"], robot_id)
         report["robustness_runs"] += candidate["robustness"]["total"]
-        held = candidate["robustness"]["total"] > 0 and candidate["robustness"]["passed"] >= candidate["robustness"]["total"] - 1
+        held = candidate["robustness"]["passed"] >= MIN_ROBUST_PASSES
         _emit(on_step, "Batch runner", "robustness", "Robustness checks.",
               f"{describe_design(candidate['changes'], space.original())}: passes "
               f"{candidate['robustness']['passed']}/{candidate['robustness']['total']}"
@@ -610,10 +612,11 @@ def _pick_winner(world: SceneSpec, space: DesignSpace, passing: list[dict], robo
               "done" if held else "warning")
         if held:
             return {**_winner_fields(candidate, space), "robustness": candidate["robustness"]}
-        if attempt == 0 and len(ranked) > 1:
+        if attempt + 1 < len(unchecked):
             report["decisions"].append({"agent": "Designer", "decision": "next-best",
-                                        "reason": "The smallest passing design failed 2 or more robustness checks; "
-                                                  "trying the next-best passing design once."})
+                                        "reason": f"{describe_design(candidate['changes'], space.original())} passed only "
+                                                  f"{candidate['robustness']['passed']}/{candidate['robustness']['total']} "
+                                                  "robustness checks; trying the next-best passing design."})
     return None
 
 
@@ -628,6 +631,11 @@ def _message(report: dict, space: DesignSpace) -> str:
         gait = " Untested gait: outside the tuned 2.0 Hz / 15° settings." if winner.get("label") == "untested gait" else ""
         return (f"Smallest change that passes: {winner['description']}.{held}{gait} Tried {tried} designs. "
                 "Say \"use this design\" to apply it.")
+    if (fragile := report.get("fragile")) is not None:
+        robust = fragile.get("robustness") or {}
+        score = f" ({robust['passed']}/{robust['total']})" if robust else ""
+        return (f"Found a design that passed once but isn't reliable{score}: {fragile['description']}. It's shown as "
+                f"fragile, not as a winner. Tried {tried} designs. Say \"use fragile design\" to apply it anyway.")
     scored = [c for r in report["rounds"] for c in r["candidates"] if c.get("closeness") is not None]
     if not scored:
         if report.get("crashed"):

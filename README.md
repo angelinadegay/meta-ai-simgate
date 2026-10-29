@@ -315,8 +315,10 @@ adjustment is shown.
 - **Winner:** the smallest change that passes (each numeric knob counted as a share of its range, a choice such
   as 6 wheels as 0.5; fewer changed knobs win ties).
 - **Robustness:** the winner reruns on 3 nearby conditions inside the same world (terrain/obstacle seed +1 and +2,
-  friction −10%) and is reported as "passes 3/3" or which failed. If it fails 2 or more, the next-best passing
-  design gets one try.
+  friction −10%) and is reported as "passes 3/3" or which failed. A design is the winner only if it passes at least
+  2 of the 3; otherwise the next-best passing design is tried. If none qualifies, the result says "found a design
+  that passed once but isn't reliable (1/3)" and shows it as **fragile**, not as the winner; the button then reads
+  *"Use fragile design"* and still applies it.
 - **No pass:** the result says so, shows the best attempt and how close it got, and names the limit that blocked
   it (e.g. "wheel radius already at the 0.35 m maximum").
 - **Nothing is applied automatically.** *"Use this design"* (button or chip) applies only the winner's changes
