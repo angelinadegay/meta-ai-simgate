@@ -81,6 +81,11 @@ class Session:
         if self.library_selection and spec.domain == "robot_terrain" and not unchanged:
             self._apply_library_selection(spec)
             world.spec = spec
+            if world.build is not None:   # it was built before the selection changed the robot: build and check that
+                world.simulator = agents.route(spec)
+                world.build = await asyncio.to_thread(agents.build, world.simulator, spec, lambda line: None)
+                world.checks = await asyncio.to_thread(world.simulator.validate, spec, world.build)
+                world.run_requested = world.run_requested and not blocking_failures(world.checks)
         self.spec, self.sim, self.build, self.checks = spec, world.simulator, world.build, list(world.checks)
         if not unchanged:
             self._forget_runs()

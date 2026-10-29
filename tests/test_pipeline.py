@@ -2558,6 +2558,26 @@ def test_g1_planner_and_library_selection_use_registered_cards():
     asyncio.run(select())
 
 
+def test_library_selection_builds_and_checks_the_selected_robot():
+    import asyncio
+
+    from simgate.orchestrator import Session
+
+    async def emit(event):
+        pass
+
+    async def scenario():
+        session = Session(emit)
+        await session.select_library("g1", "g1_walking", "earth-rock")   # no scene yet: applies to the next one
+        await session.handle("a robot on flat ground")
+        return session
+
+    session = asyncio.run(scenario())
+    assert session.spec.robot.robot_id == "g1"
+    assert 'name="left_hip_pitch_joint"' in session.build.code, "the built scene must be the selected G1"
+    assert any(check.name == "Library policy loads and validates" and check.passed for check in session.checks)
+
+
 def test_rules_planner_reads_a_unitree_robot_in_a_race_as_the_g1():
     from simgate.director import Director
 
