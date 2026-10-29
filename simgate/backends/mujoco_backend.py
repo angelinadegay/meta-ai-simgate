@@ -768,7 +768,7 @@ class MuJoCoSimulator(Simulator):
                 zmax = max(float(H.max()), 0.01)
             obstacle_xml, self.course = course.build_geoms(slots, H, terrain.size_m, terrain.seed)
 
-        robot_xml, actuator_xml, mesh_xml, defaults_xml = [], [], [], []
+        robot_xml, actuator_xml, mesh_xml, defaults_xml = [], [], [], []   # two G1s share one copy of their defaults
         compiler_assets = set()
         markers = []
         for robot_index, entry in enumerate(spec.robots):
@@ -822,7 +822,7 @@ class MuJoCoSimulator(Simulator):
         xml = f'''<mujoco model="{spec.title}">
   {compiler_xml}
   <option timestep="0.002" gravity="0 0 {-environment.gravity:.4f}"/>
-  <default><geom friction="{environment.friction:.3f} 0.005 0.0001"/>{''.join(defaults_xml)}</default>
+  <default><geom friction="{environment.friction:.3f} 0.005 0.0001"/>{''.join(dict.fromkeys(defaults_xml))}</default>
   <asset>
     <hfield name="terrain" nrow="{GRID}" ncol="{GRID}" size="{half:.3f} {half:.3f} {zmax:.4f} 0.5" elevation="{elevation}"/>
 {''.join(mesh_xml)}

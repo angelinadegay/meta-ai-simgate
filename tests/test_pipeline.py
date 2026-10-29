@@ -2419,6 +2419,23 @@ def test_g1_reaches_diagonal_five_metre_goal():
     assert summary["goal_reached"] and summary["outcome"] == "reached", summary
 
 
+def test_two_g1s_share_one_scene():
+    import mujoco
+
+    from simgate.backends.mujoco_backend import _model_from_xml
+
+    g1 = Robot(kind="library", robot_id="g1", policy_id="g1_walking")
+    spec = SceneSpec(
+        domain="robot_terrain",
+        terrain=Terrain(kind="flat", roughness=0),
+        robots=[RobotEntry(id="a", label="G1 A", robot=g1), RobotEntry(id="b", label="G1 B", robot=g1)],
+    ).fill_defaults()
+    xml, _, _ = MuJoCoSimulator().template(spec)
+    model = _model_from_xml(xml)
+    for prefix in ("a_", "b_"):
+        assert mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, f"{prefix}left_knee_joint") >= 0
+
+
 def test_g1_lying_on_the_ground_counts_as_fallen():
     spec = SceneSpec(
         domain="robot_terrain",
