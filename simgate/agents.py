@@ -703,6 +703,8 @@ def _mock_explain_stress(results: list[dict]) -> str:
     failed = [result for result in measured if not result.get("passed")]
     if not measured:
         return "No runs produced usable measurements. Try the stress test again with a shorter simulation duration."
+    if all(isinstance(result.get("robots"), dict) for result in measured):
+        return _mock_explain_race_stress(measured)
 
     text = f"{len(passed)} of {len(results)} runs passed."
     baseline = next((result for result in measured if result.get("label") == "Baseline"), None)
@@ -714,7 +716,37 @@ def _mock_explain_stress(results: list[dict]) -> str:
     if not failed:
         text += " No failures were measured, so these conditions did not establish a failure threshold."
         return text + " Try a steeper slope or a larger payload."
+    pattern, suggestion = _stress_pattern(passed, failed)
+    return f"{text} {pattern} {suggestion}"
 
+
+def _mock_explain_race_stress(results: list[dict]) -> str:
+    """A race's stress test, robot by robot: each robot's pass count, its baseline result, and the changed
+    condition its failures share (only for a robot that both passed and failed)."""
+    ids = list(results[0]["robots"])
+    label = {robot_id: results[0]["robots"][robot_id]["label"] for robot_id in ids}
+    text = "; ".join(f"{label[robot_id]} passed {sum(r['robots'][robot_id]['passed'] for r in results)} of {len(results)} runs"
+                     for robot_id in ids) + "."
+    baseline = next((result for result in results if result.get("label") == "Baseline"), None)
+    if baseline:
+        text += " Baseline: " + "; ".join(f"{label[robot_id]} {baseline['robots'][robot_id]['reason']}" for robot_id in ids) + "."
+    suggestion = "Try a steeper slope or a larger payload."
+    for robot_id in ids:
+        passed = [r for r in results if r["robots"][robot_id]["passed"]]
+        failed = [r for r in results if not r["robots"][robot_id]["passed"]]
+        if not failed:
+            continue
+        if not passed:
+            text += f" {label[robot_id]} failed in every condition, including the baseline, so no changed condition explains it."
+            suggestion = f"Try \"why did the {label[robot_id]} fail?\" to test causes one at a time."
+            continue
+        pattern, suggestion = _stress_pattern(passed, failed)
+        text += f" {label[robot_id]}: {pattern}"
+    return f"{text} {suggestion}"
+
+
+def _stress_pattern(passed: list[dict], failed: list[dict]) -> tuple[str, str]:
+    """The changed condition the failed runs share, and a suggestion to isolate it."""
     knobs = ("gravity", "surface", "friction", "payload_kg", "slope_deg", "obstacle_scale", "push_n", "seed")
     counts = {
         key: sum(key in result.get("changes", {}) for result in failed)
@@ -741,8 +773,7 @@ def _mock_explain_stress(results: list[dict]) -> str:
             pattern = f"Failures clustered in runs that changed {key} to {', '.join(map(str, dict.fromkeys(failed_values)))}."
         sample = failed[0]
         suggestion = f"Try repeating {sample['label']} while varying only {key} to isolate its effect."
-    text += f" {pattern} {suggestion}"
-    return text
+    return pattern, suggestion
 
 
 CRASH_NOTE = "That's a problem running the simulation, not a physics result"

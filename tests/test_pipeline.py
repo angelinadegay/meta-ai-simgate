@@ -2023,6 +2023,19 @@ def test_explainers_get_each_robots_kind_and_mark_untested_gaits():
         assert mark_untested_gait(text, walker_scene) == text
 
 
+def test_mock_stress_explainer_reads_each_racer():
+    _, (race, stress) = session_turns(MIXED_RACE, "stress test")
+    robots = next(e["metrics"] for e in race if e["type"] == "metrics")["robots"]
+    assert robots["r1"]["goal_reached"] and not robots["r2"]["goal_reached"]
+    rows = next(e for e in stress if e["type"] == "report")["rows"]
+    rover_passes = sum(row["robots"]["r1"]["passed"] for row in rows)
+    walker_passes = sum(row["robots"]["r2"]["passed"] for row in rows)
+    message = stress[-1]["message"]
+    assert message.startswith(f"Rover passed {rover_passes} of {len(rows)} runs; Walker passed {walker_passes} of {len(rows)} runs.")
+    assert "Baseline: Rover reached; Walker out_of_time." in message
+    assert "0 m forward progress" not in message
+
+
 def test_stress_trigger_requires_robot_scene():
     import asyncio
     from unittest.mock import patch
