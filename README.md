@@ -366,8 +366,8 @@ When the two seeds give different verdicts the cause is marked **uncertain** (a 
 opening of the conclusion says so ("Uncertain: slipping (the 2 seeds disagreed)."), and a model conclusion that calls
 it confirmed or ruled out is sent back.
 
-**Budget:** at most 8 reruns in total, counting each seed, including the two reproductions: typically 2 causes and a
-control, each on 2 seeds. In a multi-robot scene one robot is diagnosed
+**Budget:** at most 12 reruns in total, counting each seed: the reproduction on 2 seeds, typically 2 causes and a
+control on 2 seeds each (6), and room for one follow-up round of up to 2 experiments on 2 seeds (4). In a multi-robot scene one robot is diagnosed
 (the first that failed, or the one named), with the others unchanged.
 
 ### 12. Make it pass
@@ -451,7 +451,7 @@ Without a key, it runs in mock mode.
 
 ### 15. Tests
 
-`python tests/test_pipeline.py` runs 129 offline tests (simulations, the agents with scripted models, uploads and
+`python tests/test_pipeline.py` runs 130 offline tests (simulations, the agents with scripted models, uploads and
 the page's wiring). rasterio is in requirements.txt, so the real-terrain integration test runs too; without it
 that test reports "skip" with the reason.
 
@@ -473,7 +473,7 @@ that test reports "skip" with the reason.
 | `plan_workflow_expands_race_and_runs_only_when_requested` | A 3-rover race asks before running, and a requested run is handed to the session to stream |
 | `run_now_race_streams_frames_before_metrics` | A race the user asked to run streams run_start and frames before metrics, then the leaderboard and explanation, like an approved run |
 | `plan_workflow_bounds_visible_repairs_and_asks_before_running` | Repair events form a visible Checker → Builder → Checker chain with each failure reported once, stop after three attempts and never run failed scenes |
-| `diagnose_confirms_the_step_and_rules_out_low_gravity` | On Mars a 0.2 m step stops the rover: diagnose reproduces it, confirms the obstacle and rules out low gravity on both seeds, within 8 reruns, and reports its cost |
+| `diagnose_confirms_the_step_and_rules_out_low_gravity` | On Mars a 0.2 m step stops the rover: diagnose reproduces it, confirms the obstacle and rules out low gravity on both seeds, within 12 reruns, and reports its cost |
 | `diagnose_confirms_slipping_on_an_icy_slope` | On a 25° ice slope, a rock surface alone makes it pass, so slipping is confirmed |
 | `diagnose_does_not_diagnose_a_passing_run` | A passing run gets a clear "nothing to explain" and no reruns |
 | `experiment_knobs_and_per_robot_metrics` | The experiment and design knobs change only what they name; one robot's numbers are read from a multi-robot run |
@@ -572,7 +572,8 @@ that test reports "skip" with the reason.
 | `diagnose_conclusion_opening_is_code_and_contradictions_are_rejected` | The diagnosis opening ("Confirmed: X." or "No single tested cause explains it.") is written in code; a reply contradicting it gets one retry, then the rules text |
 | `less_slip_without_getting_closer_is_ruled_out` | Less slip without getting closer is "ruled out" with a side note; "partly" needs 30% less distance left or an avoided fall |
 | `wilson_interval_labels_and_seeded_repeats` | Wilson intervals match known values (3/3 → 44–100%), the reliable pass/borderline/reliable fail labels, a crashed run left out of the count, seed 0 unchanged and seed k adding terrain seed + k, and the start nudge staying within ±1 cm and ±1° and repeating for the same seed |
-| `diagnose_marks_a_verdict_the_seeds_disagree_on_uncertain` | With faked batch results, a cause that passes on one seed and not the other is "uncertain", the conclusion opens "Confirmed: obstacle. Uncertain: slipping (the 2 seeds disagreed).", the 8-rerun budget is used as 2 reproductions + 3 experiments × 2 seeds, a model conclusion calling it ruled out is rejected, and the cost is reported |
+| `diagnose_marks_a_verdict_the_seeds_disagree_on_uncertain` | With faked batch results, a cause that passes on one seed and not the other is "uncertain", the conclusion opens "Confirmed: obstacle. Uncertain: slipping (the 2 seeds disagreed).", 8 runs are used (2 reproductions + 3 experiments × 2 seeds; a cause passed on its own, so no follow-up), a model conclusion calling it ruled out is rejected, and the cost is reported |
+| `diagnose_still_runs_a_follow_up_after_three_causes_on_two_seeds` | With faked batch results, after 3 causes on 2 seeds each, two causes that each only partly help are tested together as a follow-up on 2 seeds and confirmed: 2 + 6 + 2 = 10 runs within the 12-rerun budget |
 | `stress_repeat_shows_pass_rates_and_every_card_shows_its_cost` | "Repeat ×3" after a stress test repeats it (not a rerun of the scene): every row gets 3 seeds with its pass count, interval and label, the explanation counts them, and the report and the turn report 9 runs; the page has a cost line on each analysis card and the uncertain badge |
 | `robustness_decides_the_winner` | A design that passes only 1/3 robustness checks loses to the next-best that passes 3/3; if none holds up, the best is shown as fragile and can still be applied |
 | `race_diagnosis_and_redesign_target_one_robot` | In a race, "why did it fail?" diagnoses the robot that failed (or the one named; a winner has nothing to explain) and redesign changes only that robot |

@@ -13,7 +13,7 @@ from .reliability import seeded
 from .spec import SceneSpec
 
 SEEDS = 2               # every reproduction and experiment runs on 2 seeds (the original and one more)
-MAX_RERUNS = 8          # reproduction + every experiment, each counted once per seed, in total
+MAX_RERUNS = 12         # each counted once per seed: reproduction (2) + 3 causes (6) + one follow-up round (up to 4)
 MAX_HYPOTHESES = 4
 MAX_DECISION_ROUNDS = 2
 MAX_FOLLOW_UPS = 2

@@ -1667,12 +1667,12 @@ def test_model_explainer_decisions_are_validated_bounded_and_visible():
                      terrain=Terrain(kind="flat", roughness=0), robot=Robot(kind="rover"),
                      obstacles=[Obstacle(kind="step", height_m=0.2)]).fill_defaults()
     summary = failed_run(spec)
-    # Two causes on 2 seeds each leave room in the 8-rerun budget for one follow-up (three causes would use it all).
     chat, calls = scripted_models({
         "candidate\ncauses": [json.dumps({"hypotheses": [
-            {"cause": "low gravity", "why": "gravity is 3.71 m/s²", "intervention": {"gravity": 9.81}, "control": True},
+            {"cause": "low gravity", "why": "gravity is 3.71 m/s²", "intervention": {"gravity": 9.81}},
             {"cause": "wheels too small", "why": "stopped at a 0.2 m step", "intervention": {"wheel_radius": 0.3}},
-            {"cause": "step height", "why": "stuck 7.9 m short at the 0.2 m step", "intervention": {"obstacle_scale": 0.9}}]})],
+            {"cause": "step height", "why": "stuck 7.9 m short at the 0.2 m step", "intervention": {"obstacle_scale": 0.9}},
+            {"cause": "slipping", "why": "slip was 1%", "intervention": {"surface": "rock"}, "control": True}]})],
         "deciding what to do": [
             json.dumps({"decision": "test more", "reason": "The step only partly explains it; trying a lower step.",
                         "next": [{"cause": "step height (stronger)", "intervention": {"obstacle_scale": 0.25}},
@@ -2480,7 +2480,7 @@ def test_diagnose_marks_a_verdict_the_seeds_disagree_on_uncertain():
     assert verdicts == {"obstacle": ("confirmed", ["confirmed", "confirmed"]),
                         "slipping": ("uncertain", ["confirmed", "ruled out"]),
                         "too fast": ("ruled out", ["ruled out", "ruled out"])}, verdicts
-    assert report["runs"] == diagnose.MAX_RERUNS == 8 and report["seeds"] == 2
+    assert report["runs"] == 8 and report["seeds"] == 2   # obstacle passed on its own, so no follow-up was needed
     assert batches[0] == ["Baseline, seed 2"] and len(batches[1]) == 6   # 2 reproductions, then 3 experiments × 2 seeds
     slipping = next(h for h in report["hypotheses"] if h["cause"] == "slipping")
     assert "seeds disagree: confirmed on seed 1, ruled out on seed 2" in slipping["numbers_text"]
@@ -2492,6 +2492,43 @@ def test_diagnose_marks_a_verdict_the_seeds_disagree_on_uncertain():
     uncertain = [{"cause": "slipping", "verdict": "uncertain"}]
     assert contradictions("Slipping was ruled out by the experiment.", uncertain)
     assert not contradictions("Slipping helped on one seed only, so more runs are needed.", uncertain)
+
+
+def test_diagnose_still_runs_a_follow_up_after_three_causes_on_two_seeds():
+    from simgate import diagnose
+
+    def result(variation, distance):
+        return {"id": "run-x", "label": variation.get("label", "Baseline"), "changes": {}, "passed": distance < 1,
+                "reason": "", "summary": {"goal_reached": distance < 1, "final_distance_m": distance, "flipped": False}}
+
+    def distance(variation):   # each cause alone gets clearly closer; both together reach the goal
+        lower, grip = "obstacle_scale" in variation, "surface" in variation
+        return 0.4 if lower and grip else 5.0 if lower else 5.5 if grip else 8.0
+
+    batches = []
+
+    def fake_batch(spec, variations, on_result=None, timeout=None, baseline=True):
+        batches.append(len(variations) + int(baseline))
+        return ([result({}, 8.0)] if baseline else []) + [result(v, distance(v)) for v in variations]
+
+    hypotheses = [{"cause": "obstacle", "why": "stopped at the step", "intervention": {"obstacle_scale": 0.5}},
+                  {"cause": "slipping", "why": "slid 45%", "intervention": {"surface": "rock"}},
+                  {"cause": "too fast", "why": "nothing points to speed", "intervention": {"speed_scale": 0.6}, "control": True}]
+    real_batch, real_rules = diagnose.run_batch, diagnose.rule_hypotheses
+    try:
+        diagnose.run_batch, diagnose.rule_hypotheses = fake_batch, lambda spec, metrics: [dict(h) for h in hypotheses]
+        report = diagnose.diagnose(step_course(0.2), {"goal_reached": False, "final_distance_m": 8.0, "flipped": False})
+    finally:
+        diagnose.run_batch, diagnose.rule_hypotheses = real_batch, real_rules
+    assert diagnose.MAX_RERUNS == 12 and batches == [2, 6, 2]   # 2 reproductions, 3 causes × 2 seeds, 1 follow-up × 2 seeds
+    assert report["runs"] == 10 <= diagnose.MAX_RERUNS
+    verdicts = {h["cause"]: h["verdict"] for h in report["hypotheses"]}
+    assert verdicts == {"obstacle": "partly", "slipping": "partly", "too fast": "ruled out",
+                        "obstacle + slipping": "confirmed"}, verdicts
+    follow_up = report["hypotheses"][-1]
+    assert follow_up.get("follow_up") and follow_up["seed_verdicts"] == ["confirmed", "confirmed"]
+    assert [d["decision"] for d in report["decisions"]] == ["test more", "conclude"]
+    assert report["conclusion"].startswith("Confirmed: obstacle + slipping.")
 
 
 def test_stress_repeat_shows_pass_rates_and_every_card_shows_its_cost():
