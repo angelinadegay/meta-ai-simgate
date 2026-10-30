@@ -14,9 +14,10 @@
   }
   * { box-sizing: border-box; }
   [hidden] { display: none !important; }
+  html { color-scheme: dark; }   /* dark scrollbars and form controls */
   html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text); font: 14px/1.5 Inter, system-ui, sans-serif; }
-  .app { display: grid; grid-template-columns: minmax(340px, 420px) 1fr; height: 100vh; }
-  aside { display: flex; flex-direction: column; border-right: 1px solid var(--line); background: var(--panel); min-height: 0; }
+  .app { display: grid; grid-template-columns: minmax(340px, 420px) 1fr; grid-template-rows: minmax(0, 1fr); height: 100vh; }
+  aside { display: flex; flex-direction: column; border-right: 1px solid var(--line); background: var(--panel); min-height: 0; overflow: hidden; }   /* held to the window: only its parts scroll */
   header { padding: 16px 18px 12px; border-bottom: 1px solid var(--line); }
   header h1 { margin: 0; font-size: 17px; letter-spacing: .2px; }
   header h1 span { color: var(--accent); }
@@ -51,7 +52,7 @@
   #libraryPanel summary { cursor: pointer; font-weight: 600; }
   .library-tabs, .library-actions { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
   .library-tabs .chip.selected { border-color: var(--accent); color: var(--accent); }
-  #libraryItems { display: flex; flex-direction: column; gap: 5px; max-height: 23vh; overflow-y: auto; margin-top: 8px; }
+  #libraryItems { display: flex; flex-direction: column; gap: 5px; margin-top: 8px; }
   .library-item { width: 100%; padding: 7px 9px; border: 1px solid var(--line); border-radius: 7px; background: var(--panel-2); color: var(--text); font: inherit; text-align: left; cursor: pointer; }
   .library-item.selected { border-color: var(--accent); }
   .library-item strong, .library-item span { display: block; }
@@ -61,13 +62,30 @@
   .library-entry .library-item { flex: 1; min-width: 0; }
   .library-entry .chip { align-self: center; }
   .library-item.not-ready { border-color: var(--warn); cursor: default; }
-  .badge { display: inline-block; margin-left: 6px; padding: 0 6px; border: 1px solid currentColor; border-radius: 99px; font-size: 10px; font-weight: 500; }
-  .badge.uploaded { color: var(--accent); }
-  .badge.not-ready { color: var(--warn); }
-  .upload-form { display: grid; gap: 6px; margin-top: 8px; }
-  .upload-form[hidden], .upload-form [hidden] { display: none; }
-  .upload-form label { display: grid; gap: 2px; color: var(--muted); font-size: 11px; }
-  .upload-form input, .upload-form select { padding: 5px 7px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel-2); color: var(--text); font: inherit; font-size: 12.5px; }
+  .tag { display: inline-block; margin-left: 6px; padding: 0 6px; border: 1px solid currentColor; border-radius: 99px; font-size: 10px; font-weight: 500; vertical-align: 1px; }
+  .tag.uploaded { color: var(--accent); }
+  .tag.not-ready { color: var(--warn); }
+  .library-item.not-ready .quick { margin: 4px 0 2px; }
+  #uploadDialog { width: min(460px, calc(100vw - 32px)); max-height: calc(100vh - 32px); padding: 0; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); color: var(--text); }
+  #uploadDialog::backdrop { background: rgba(0,0,0,.55); }
+  .upload-form { display: grid; gap: 10px; padding: 16px 18px 18px; }
+  .dialog-head { display: flex; align-items: center; justify-content: space-between; }
+  .dialog-head h2 { margin: 0; font-size: 15px; }
+  .dialog-head .close { width: 28px; height: 28px; padding: 0; border: 0; border-radius: 6px; background: transparent; color: var(--muted); font-size: 20px; line-height: 1; cursor: pointer; }
+  .dialog-head .close:hover { background: var(--panel-2); color: var(--text); }
+  .upload-questions { display: grid; gap: 8px; padding: 10px 12px; border: 1px solid var(--accent); border-radius: 8px; background: var(--panel-2); }
+  .upload-questions p { margin: 0; font-weight: 600; white-space: pre-wrap; overflow-wrap: anywhere; }
+  .upload-questions:has(.error) { border-color: var(--bad); }
+  .upload-questions .error { color: #fecaca; font-weight: 500; }
+  .upload-questions .quick { margin-top: 4px; }
+  .upload-form label { display: grid; gap: 3px; color: var(--muted); font-size: 11.5px; }
+  .upload-form label.needed { color: var(--accent); }
+  .upload-form label.needed :is(input, select) { border-color: var(--accent); }
+  .upload-form input, .upload-form select { padding: 7px 9px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--text); font: inherit; font-size: 13px; outline: none; }
+  .upload-form :is(input, select):focus { border-color: var(--accent); }
+  .upload-form .pair { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .upload-form .pair small { grid-column: 1 / -1; margin-top: -4px; color: var(--muted); font-size: 11px; }
+  .upload-form .library-actions { position: sticky; bottom: -18px; justify-content: flex-end; margin: 4px -18px -18px; padding: 10px 18px 14px; border-top: 1px solid var(--line); background: var(--panel); }   /* the Upload button stays in view */
   .dropzone { padding: 10px; border: 1px dashed var(--line); border-radius: 7px; color: var(--muted); font-size: 12px; text-align: center; }
   .dropzone.over { border-color: var(--accent); color: var(--text); }
   .dropzone label { display: inline; color: var(--accent); cursor: pointer; text-decoration: underline; }
@@ -76,10 +94,10 @@
   .chip { font: inherit; font-size: 12px; padding: 5px 10px; border-radius: 99px; border: 1px solid var(--line); background: transparent; color: var(--text); cursor: pointer; }
   .chip:hover { border-color: var(--accent); }
   .chip.primary { background: var(--accent); color: #1a1205; border-color: var(--accent); font-weight: 600; }
-  form { padding: 12px 14px; border-top: 1px solid var(--line); display: flex; gap: 8px; }
-  form input { flex: 1; font: inherit; padding: 10px 12px; border-radius: 9px; border: 1px solid var(--line); background: var(--bg); color: var(--text); outline: none; }
-  form input:focus { border-color: var(--accent); }
-  form button { font: inherit; font-weight: 600; padding: 0 14px; border-radius: 9px; border: 0; background: var(--accent); color: #1a1205; cursor: pointer; }
+  #form { flex: none; padding: 12px 14px; border-top: 1px solid var(--line); display: flex; gap: 8px; }
+  #form input { flex: 1; font: inherit; padding: 10px 12px; border-radius: 9px; border: 1px solid var(--line); background: var(--bg); color: var(--text); outline: none; }
+  #form input:focus { border-color: var(--accent); }
+  #form button { font: inherit; font-weight: 600; padding: 0 14px; border-radius: 9px; border: 0; background: var(--accent); color: #1a1205; cursor: pointer; }
   main { position: relative; min-width: 0; }
   #view { position: absolute; inset: 0; }
   .empty { position: absolute; inset: 0; display: grid; place-items: center; color: var(--muted); text-align: center; pointer-events: none; }
@@ -139,7 +157,8 @@
   .badge.ok { background: rgba(52,211,153,.15); color: var(--ok); } .badge.miss { background: rgba(248,113,113,.15); color: var(--bad); }
   #code { position: absolute; top: 56px; left: 14px; bottom: 80px; width: min(560px, 55%); display: none; overflow: auto; margin: 0; padding: 12px; font: 11.5px/1.45 'JetBrains Mono', monospace; color: #c9d1d9; }
   @media (max-width: 860px) {
-    .app { grid-template-columns: 1fr; grid-template-rows: 55vh 45vh; } aside { order: 2; }
+    .app { grid-template-columns: 1fr; grid-template-rows: 50vh minmax(0, 50vh); } aside { order: 2; }
+    header { padding: 8px 14px; } header p, .mode { display: none; }   /* room for the chat on small screens */
     #topright { width: 190px; max-height: calc(100% - 100px); overflow-y: auto; top: 8px; right: 8px; }
     .card { font-size: 11px; padding: 8px 10px; } .check small { display: none; }
     #player { left: 8px; right: 8px; bottom: 8px; } #note { display: none; } #code { width: calc(100% - 28px); }
@@ -171,25 +190,6 @@
         <button type="button" class="chip" id="uploadPolicy">Upload policy</button>
         <button type="button" class="chip" id="uploadWorld">Upload world</button>
       </div>
-      <form id="uploadForm" class="upload-form" hidden>
-        <div class="dropzone" id="dropzone">Drop files or one .zip here, or <label for="uploadFiles">choose files</label>
-          <input type="file" id="uploadFiles" multiple hidden
-            accept=".zip,.xml,.urdf,.mjcf,.stl,.obj,.msh,.png,.jpg,.tif,.tiff,.onnx,.yaml,.yml,.json,.md,.txt">
-          <div class="file-list" id="uploadFileList">No files yet.</div>
-        </div>
-        <label>Name <input id="uploadName" required maxlength="200"></label>
-        <label>Credit <input id="uploadCredit" required maxlength="200" placeholder="Who made it"></label>
-        <label>License <input id="uploadLicense" required maxlength="200" placeholder="e.g. MIT, BSD-3-Clause, CC-BY-4.0"></label>
-        <label data-for="policy">Robot it drives <select id="uploadRobotId"></select></label>
-        <label data-for="terrain">World <select id="uploadBody"></select></label>
-        <label data-for="terrain">Ground <select id="uploadSurface"></select></label>
-        <label data-for="terrain">Width in metres (heightmap images) <input id="uploadSize" type="number" min="1" max="1000" step="any"></label>
-        <label data-for="terrain">Height range in metres, black to white (heightmap images) <input id="uploadHeight" type="number" min="0" max="500" step="any"></label>
-        <div class="library-actions">
-          <button class="chip primary" id="uploadSubmit">Upload</button>
-          <button type="button" class="chip" id="uploadCancel">Cancel</button>
-        </div>
-      </form>
       <div class="library-status" id="libraryStatus">Connect to load library cards.</div>
     </details>
     <div id="log">
@@ -199,6 +199,36 @@
     </div>
     <form id="form"><input id="input" autocomplete="off" placeholder="e.g. Can a small rover climb a rocky hill on Mars?"><button>Send</button></form>
   </aside>
+  <dialog id="uploadDialog" aria-labelledby="uploadTitle">
+      <form id="uploadForm" class="upload-form">
+        <div class="dialog-head"><h2 id="uploadTitle">Upload</h2><button type="button" class="close" id="uploadClose" aria-label="Close">×</button></div>
+        <div class="upload-questions" id="uploadQuestions" hidden></div>
+        <div class="dropzone" id="dropzone">Drop files or one .zip here, or <label for="uploadFiles">choose files</label>
+          <input type="file" id="uploadFiles" multiple hidden
+            accept=".zip,.xml,.urdf,.mjcf,.stl,.obj,.msh,.png,.jpg,.tif,.tiff,.onnx,.yaml,.yml,.json,.md,.txt">
+          <div class="file-list" id="uploadFileList">No files yet.</div>
+        </div>
+        <label>Name <input id="uploadName" required maxlength="200"></label>
+        <div class="pair">
+          <label>Credit <input id="uploadCredit" required maxlength="200" placeholder="Who made it"></label>
+          <label>License <input id="uploadLicense" required maxlength="200" placeholder="e.g. MIT, BSD-3-Clause"></label>
+        </div>
+        <label data-for="policy">Robot it drives <select id="uploadRobotId"></select></label>
+        <div class="pair" data-for="terrain">
+          <label>World <select id="uploadBody"></select></label>
+          <label>Ground <select id="uploadSurface"></select></label>
+        </div>
+        <div class="pair" data-for="terrain">
+          <label>Width (m) <input id="uploadSize" type="number" min="1" max="1000" step="any" placeholder="e.g. 20"></label>
+          <label>Height range (m) <input id="uploadHeight" type="number" min="0" max="500" step="any" placeholder="e.g. 2"></label>
+          <small>Heightmap images only: the width of the square, and the height from black to white. GeoTIFFs carry their own.</small>
+        </div>
+        <div class="library-actions">
+          <button class="chip primary" id="uploadSubmit">Upload</button>
+          <button type="button" class="chip" id="uploadCancel">Cancel</button>
+        </div>
+      </form>
+  </dialog>
   <main>
     <div id="view"></div>
     <div class="empty" id="empty">The scene appears here as the agents build it.</div>
@@ -374,7 +404,7 @@ function libraryCard(title, detail, license, credit, selected, onClick, onUse) {
   button.setAttribute("aria-pressed", String(selected));
   const name = document.createElement("strong"); name.textContent = title;
   if (onUse) {   // only uploaded items have their own Use button
-    const badge = document.createElement("span"); badge.className = "badge uploaded"; badge.textContent = "uploaded";
+    const badge = document.createElement("span"); badge.className = "tag uploaded"; badge.textContent = "uploaded";
     name.appendChild(badge);
   }
   const info = document.createElement("span"); info.textContent = detail;
@@ -392,7 +422,7 @@ function libraryCard(title, detail, license, credit, selected, onClick, onUse) {
 function pendingCard(upload) {
   const card = document.createElement("div"); card.className = "library-item not-ready";
   const name = document.createElement("strong"); name.textContent = upload.name;
-  const badge = document.createElement("span"); badge.className = "badge not-ready";
+  const badge = document.createElement("span"); badge.className = "tag not-ready";
   badge.textContent = upload.status === "needs_answers" ? "needs answers" : "not ready";
   name.appendChild(badge); card.appendChild(name);
   for (const reason of upload.reasons || []) {
@@ -475,7 +505,8 @@ const FORM_FIELDS = { robot_id: "uploadRobotId", body: "uploadBody", surface: "u
 function openUpload(kind) {
   uploadKind = kind; uploadFiles = [];
   libraryTab = { robot: "robots", policy: "policies", terrain: "worlds" }[kind];
-  $("libraryPanel").open = true; $("uploadForm").hidden = false; renderLibrary();
+  $("libraryPanel").open = true; renderLibrary();
+  $("uploadTitle").textContent = `Upload ${UPLOAD_NOUN[kind]}`; showFormQuestions([]);
   for (const field of $("uploadForm").querySelectorAll("[data-for]")) field.hidden = field.dataset.for !== kind;
   $("uploadRobotId").replaceChildren(...libraryData.robots.filter((robot) => robot.joint_names.length)
     .map((robot) => new Option(robot.name, robot.id)));
@@ -485,6 +516,35 @@ function openUpload(kind) {
   $("uploadSurface").replaceChildren(new Option("Ask me", ""), ...surfaces.map((surface) => new Option(surface, surface)));
   $("uploadSubmit").textContent = `Upload ${UPLOAD_NOUN[kind]}`;
   renderUploadFiles();
+  if (!$("uploadDialog").open) $("uploadDialog").showModal();
+}
+function closeUpload() { if ($("uploadDialog").open) $("uploadDialog").close(); uploadFiles = []; }
+// Questions the server needs answered before it keeps anything: shown at the top of the dialog, next to their fields.
+function showFormQuestions(questions) {
+  const box = $("uploadQuestions"); box.replaceChildren(); box.hidden = !questions.length;
+  $("uploadForm").querySelectorAll("label.needed").forEach((label) => label.classList.remove("needed"));
+  for (const question of questions) {
+    const text = document.createElement("p"); text.textContent = question.question; box.appendChild(text);
+    $(FORM_FIELDS[question.field])?.closest("label")?.classList.add("needed");
+    if (question.choices?.length) {
+      const row = document.createElement("div"); row.className = "quick"; box.appendChild(row);
+      for (const choice of question.choices) {
+        const button = document.createElement("button"); button.type = "button"; button.className = "chip"; button.textContent = choice;
+        button.onclick = () => { $(FORM_FIELDS[question.field]).value = choice; submitUpload(); };
+        row.appendChild(button);
+      }
+    } else {
+      text.append(" Fill in the highlighted field, then upload again.");
+    }
+  }
+  if (questions.length) { box.scrollIntoView({ block: "nearest" }); $(FORM_FIELDS[questions[0].field])?.focus(); }
+}
+function showFormError(text) {
+  if (!$("uploadDialog").open) return;
+  showFormQuestions([]);
+  const box = $("uploadQuestions"), line = document.createElement("p");
+  line.className = "error"; line.textContent = text; box.appendChild(line); box.hidden = false;
+  box.scrollIntoView({ block: "nearest" });
 }
 function renderUploadFiles() {
   $("uploadFileList").textContent = uploadFiles.length ? uploadFiles.map((file) => file.name).join(", ") : "No files yet.";
@@ -493,7 +553,9 @@ function addFiles(list) { uploadFiles.push(...list); renderUploadFiles(); }
 $("uploadRobot").onclick = () => openUpload("robot");
 $("uploadPolicy").onclick = () => openUpload("policy");
 $("uploadWorld").onclick = () => openUpload("terrain");
-$("uploadCancel").onclick = () => { $("uploadForm").hidden = true; uploadFiles = []; };
+$("uploadCancel").onclick = closeUpload;
+$("uploadClose").onclick = closeUpload;
+$("uploadDialog").onclose = () => { uploadFiles = []; };
 $("uploadFiles").onchange = (event) => { addFiles(event.target.files); event.target.value = ""; };
 $("dropzone").ondragover = (event) => { event.preventDefault(); $("dropzone").classList.add("over"); };
 $("dropzone").ondragleave = () => $("dropzone").classList.remove("over");
@@ -515,11 +577,16 @@ async function submitUpload() {
   }
   for (const file of uploadFiles) form.append("files", file, file.webkitRelativePath || file.name);
   renderStep({ id: `${step}-upload`, agent: "Upload", status: "working", thought: `Checking ${uploadFiles.length} file(s) and storing them…` });
+  const submit = $("uploadSubmit"), label = submit.textContent;
+  submit.disabled = true; submit.textContent = "Checking…";
   try {
     const response = await fetch("/upload", { method: "POST", body: form });
     showUploadResult(step, kind, response.status, await response.json());
   } catch (error) {
     renderStep({ id: `${step}-upload`, agent: "Upload", status: "error", thought: "The upload didn't reach the server.", result: String(error) });
+    showFormError(`The upload didn't reach the server: ${error}`);
+  } finally {
+    submit.disabled = false; submit.textContent = label;
   }
 }
 async function answerUpload(kind, uploadId, field, value) {
@@ -545,23 +612,11 @@ function answerChips(container, kind, uploadId, question) {
 function showUploadResult(step, kind, status, body) {
   if (!body.ok && !body.questions) {
     renderStep({ id: `${step}-upload`, agent: "Upload", status: "error", thought: "Not accepted.", result: body.error });
-    addMsg(body.error); return;
+    addMsg(body.error, "err"); showFormError(body.error); return;
   }
   if (!body.ok) {   // 422: nothing was kept; answer on the form and it is uploaded again
     renderStep({ id: `${step}-upload`, agent: "Upload", status: "warning", thought: "Needs an answer first; nothing was stored.", result: body.error });
-    for (const question of body.questions) {
-      const message = addMsg(question.question), row = document.createElement("div"); row.className = "quick"; message.appendChild(row);
-      if (question.choices?.length) {
-        for (const choice of question.choices) {
-          const button = document.createElement("button"); button.type = "button"; button.className = "chip"; button.textContent = choice;
-          button.onclick = () => { $(FORM_FIELDS[question.field]).value = choice; submitUpload(); };
-          row.appendChild(button);
-        }
-      } else {
-        message.append(" Fill it in on the upload form and upload again.");
-        $(FORM_FIELDS[question.field])?.focus();
-      }
-    }
+    showFormQuestions(body.questions);
     return;
   }
   const upload = body.upload, state = body.robot || body.policy, terrain = body.terrain;
@@ -593,7 +648,7 @@ function showUploadResult(step, kind, status, body) {
     const reasons = [...(state?.errors || []), ...checks.filter((check) => !check.passed && !check.advisory).map((check) => `${check.name} (${check.detail})`)];
     addMsg(`Not ready: ${reasons.join("; ")}`);
   }
-  if (!body.answered) { $("uploadForm").hidden = true; uploadFiles = []; }
+  if (!body.answered) closeUpload();
   refreshLibrary();
 }
 function factsSummary(kind, state, terrain) {

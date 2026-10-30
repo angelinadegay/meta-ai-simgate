@@ -3472,14 +3472,19 @@ def test_library_page_offers_uploads():
                    '<input id="uploadName" required', '<input id="uploadCredit" required', '<input id="uploadLicense" required',
                    'id="uploadRobotId"', 'data-for="terrain"', 'fetch("/upload", { method: "POST", body: form })',
                    "fetch(`/upload/${kind}/${uploadId}/answers`", 'fetch("/library")', 'agent: "Upload"',
-                   'agent: kind === "policy" ? "Adapter" : "Inspector"', 'agent: "Checker"', 'badge uploaded', '"not ready"',
-                   'use.textContent = "Use"', "answerChips(row, kind, upload.id, question)", "ondrop"):
+                   'agent: kind === "policy" ? "Adapter" : "Inspector"', 'agent: "Checker"', 'tag uploaded', '"not ready"',
+                   'use.textContent = "Use"', "answerChips(row, kind, upload.id, question)", "ondrop",
+                   '<dialog id="uploadDialog"', 'showModal()', 'id="uploadQuestions"', "showFormQuestions(body.questions)",
+                   "showFormError(body.error)"):
         assert needed in page, needed
     # the side panel stays usable: the chat log shrinks and scrolls, and the open Library scrolls inside itself
     import re
 
     assert re.search(r"#log \{[^}]*min-height: 0;[^}]*overflow-y: auto", page)
     assert re.search(r"#libraryPanel \{[^}]*max-height: 45%;[^}]*overflow-y: auto", page)
+    assert "grid-template-rows: minmax(0, 1fr)" in page, "the side panel is held to the window height"
+    # the upload form is a dialog of its own, not squeezed into the Library panel
+    assert page.index('<dialog id="uploadDialog"') > page.index("</aside>")
 
 
 def test_library_endpoint_shows_uploads_with_their_state():
