@@ -2909,22 +2909,17 @@ def test_uploads_are_stored_and_listed_in_the_registry():
 
 
 def test_upload_endpoint_stores_files_and_reports_errors():
-    import tempfile
-    from pathlib import Path
     from unittest.mock import patch
 
-    from fastapi.testclient import TestClient
-
     import server
-    from simgate.library import uploads
 
-    client = TestClient(server.app)
     form = {"type": "robot", "name": "Arm", "credit": "Lab", "license": "BSD-3-Clause"}
-    with tempfile.TemporaryDirectory() as root, patch.object(uploads, "UPLOADS_DIR", Path(root)):
-        ok = client.post("/upload", data=form, files=[("files", ("robot.xml", MJCF_BODY)), ("files", ("base.stl", b"solid"))])
+    folder, uploads_dir, client = _robot_uploads()   # a real robot: robot uploads are compiled by the Inspector
+    with folder, uploads_dir:
+        ok = client.post("/upload", data=form, files=[("files", ("dog.xml", dog_mjcf())), ("files", ("notes.md", b"# Dog"))])
         assert ok.status_code == 200 and ok.json()["ok"], ok.text
         upload = ok.json()["upload"]
-        assert upload["source"] == "upload" and (Path(root) / "robot" / upload["id"] / "robot.xml").is_file()
+        assert upload["source"] == "upload" and (Path(folder.name) / "robot" / upload["id"] / "dog.xml").is_file()
 
         bad = client.post("/upload", data=form, files=[("files", ("run.py", b"print(1)"))])
         assert bad.status_code == 400 and not bad.json()["ok"] and ".py can't be uploaded" in bad.json()["error"]
