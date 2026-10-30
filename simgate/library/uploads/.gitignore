@@ -1,0 +1,4 @@
+# Uploads stay on the machine they were made on.
+terrain/
+robot/
+policy/

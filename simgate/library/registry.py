@@ -9,6 +9,7 @@ from pydantic import ValidationError
 from .. import presets
 from ..terrain_data import list_presets
 from .cards import PolicyCard, RobotCard, WorldCard
+from .uploads import UploadRecord, list_uploads
 
 CardType = TypeVar("CardType", RobotCard, PolicyCard)
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -57,6 +58,10 @@ class LibraryRegistry:
             if card.id == policy_id:
                 return card
         raise ValueError(f"Unknown policy library id: {policy_id}")
+
+    def uploads(self, kind: str | None = None) -> list[UploadRecord]:
+        """User uploads stored on disk (source "upload"), newest first; kind is terrain, robot or policy."""
+        return list_uploads(kind, self.uploads_dir)
 
     def worlds(self) -> list[WorldCard]:
         surfaces = presets.SURFACE_FRICTION

@@ -2806,6 +2806,135 @@ def test_library_lists_only_each_robots_own_compatible_policies():
     assert "policy.joint_order.length > 0 && policy.joint_order.length === robot.joint_names.length" in page
 
 
+MJCF_BODY = b'<mujoco><compiler meshdir="meshes"/><asset><mesh name="base" file="base.stl"/></asset><worldbody><body name="base"/></worldbody></mujoco>'
+
+
+def _zip(entries, symlink=None):
+    import io
+    import zipfile
+
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
+        for name, content in entries.items():
+            archive.writestr(name, content)
+        if symlink:
+            info = zipfile.ZipInfo(symlink)
+            info.external_attr = (0o120777 << 16)   # a symbolic link
+            archive.writestr(info, "/etc/passwd")
+    return buffer.getvalue()
+
+
+def test_uploads_reject_unsafe_files():
+    import tempfile
+    from pathlib import Path
+    from unittest.mock import patch
+
+    import pytest
+
+    from simgate.library import uploads
+    from simgate.library.uploads import UploadError, save_upload
+
+    meta = {"name": "Test bot", "credit": "Me", "license": "MIT"}
+    with tempfile.TemporaryDirectory() as root:
+        def rejected(kind, files, match, **overrides):
+            with pytest.raises(UploadError, match=match):
+                save_upload(kind, files, **{**meta, **overrides}, uploads_dir=Path(root))
+
+        rejected("robot", [("robot.xml", MJCF_BODY), ("setup.py", b"import os")], r"\.py can't be uploaded")
+        rejected("robot", [("robot.xml", MJCF_BODY), ("lib.so", b"\x7fELF")], r"\.so can't be uploaded")
+        rejected("policy", [("policy.pt", b"PK")], "Export the policy to ONNX")
+        rejected("policy", [("policy.pt", b"PK")], r"torch\.onnx\.export")
+        rejected("robot", [("../robot.xml", MJCF_BODY)], "Unsafe file path")
+        rejected("robot", [("robot.zip", _zip({"../../robot.xml": MJCF_BODY}))], "Unsafe file path")
+        rejected("robot", [("robot.zip", _zip({"/etc/robot.xml": MJCF_BODY}))], "Unsafe file path")
+        rejected("robot", [("robot.zip", _zip({"C:/robot.xml": MJCF_BODY}))], "Unsafe file path")
+        rejected("robot", [("robot.zip", _zip({"robot.xml": MJCF_BODY}, symlink="meshes/link.stl"))], "symbolic link")
+        rejected("robot", [("robot.zip", _zip({f"m{i}.stl": b"x" for i in range(501)} | {"robot.xml": MJCF_BODY}))],
+                 "limit is 500")
+        with patch.object(uploads, "MAX_EXTRACTED_BYTES", 1000):   # a zip bomb, scaled down
+            rejected("robot", [("robot.zip", _zip({"robot.xml": MJCF_BODY, "big.stl": b"\0" * 5000}))], "expands to more")
+        with patch.object(uploads, "MAX_UPLOAD_BYTES", 100):
+            rejected("robot", [("robot.xml", MJCF_BODY)], "larger than")
+
+        plugin = b'<mujoco><extension><plugin plugin="mujoco.elasticity.solid"/></extension></mujoco>'
+        rejected("robot", [("robot.xml", plugin)], "plugins aren't allowed")
+        rejected("robot", [("robot.xml", b'<mujoco><include file="../../other.xml"/></mujoco>')], "outside the upload")
+        rejected("robot", [("robot.xml", b'<mujoco><compiler meshdir="/usr/share"/></mujoco>')], "outside the upload")
+        rejected("robot", [("robot.urdf", b'<robot name="r"><link name="a"><visual><geometry>'
+                                          b'<mesh filename="file:///etc/x.stl"/></geometry></visual></link></robot>')],
+                 "outside the upload")
+        rejected("robot", [("robot.xml", b'<!DOCTYPE m [<!ENTITY a "aaaa">]><mujoco>&a;</mujoco>')], "DOCTYPE")
+        rejected("robot", [("robot.xml", MJCF_BODY), ("cfg.yaml", b'!!python/object/apply:os.system ["echo hi"]')],
+                 "isn't valid YAML")
+        rejected("robot", [("robot.xml", MJCF_BODY), ("card.json", b"{not json")], "isn't valid JSON")
+        rejected("robot", [("base.stl", b"solid")], "robot upload needs one of")
+        rejected("policy", [("README.md", b"# policy")], "policy upload needs one of")
+        rejected("terrain", [("policy.onnx", b"onnx")], "belong in a policy upload")
+        rejected("robot", [("robot.xml", MJCF_BODY)], "License is required", license="  ")
+        rejected("comet", [("robot.xml", MJCF_BODY)], "Upload type must be one of")
+        assert not any(Path(root).rglob("*.xml")), "a rejected upload must leave nothing on disk"
+
+
+def test_uploads_are_stored_and_listed_in_the_registry():
+    import json
+    import tempfile
+    from pathlib import Path
+
+    from simgate.library import LibraryRegistry
+    from simgate.library.uploads import save_upload
+
+    urdf = (b'<robot name="r"><link name="a"><visual><geometry><mesh filename="package://r/meshes/a.stl"/>'
+            b'</geometry></visual></link></robot>')
+    with tempfile.TemporaryDirectory() as root:
+        archive = _zip({"bot/robot.xml": MJCF_BODY, "bot/meshes/base.stl": b"solid base", "bot/robot.urdf": urdf,
+                        "__MACOSX/bot/._robot.xml": b"junk", "bot/.DS_Store": b"junk"})
+        record = save_upload("robot", [("bot.zip", archive)], "My Rover Bot!", "Ada Lovelace", "CC-BY-4.0",
+                             uploads_dir=Path(root))
+        assert record.id.startswith("my-rover-bot-") and len(record.id) == len("my-rover-bot-") + 8
+        assert record.files == ["bot/meshes/base.stl", "bot/robot.urdf", "bot/robot.xml"]
+        folder = Path(root) / "robot" / record.id
+        assert (folder / "bot" / "meshes" / "base.stl").read_bytes() == b"solid base"
+        stored = json.loads((folder / "upload.json").read_text(encoding="utf-8"))
+        assert (stored["source"], stored["credit"], stored["license"]) == ("upload", "Ada Lovelace", "CC-BY-4.0")
+        again = save_upload("robot", [("bot.zip", archive)], "My Rover Bot!", "Ada Lovelace", "CC-BY-4.0",
+                            uploads_dir=Path(root))
+        assert again.id == record.id and len(list((Path(root) / "robot").iterdir())) == 1
+
+        policy = save_upload("policy", [("walk.onnx", b"onnx bytes"), ("notes.md", b"# notes")], "Walk", "Me", "MIT",
+                             uploads_dir=Path(root))
+        registry = LibraryRegistry(uploads_dir=Path(root))
+        assert [r.id for r in registry.uploads("robot")] == [record.id]
+        assert [(r.id, r.source) for r in registry.uploads("policy")] == [(policy.id, "upload")]
+        assert {r.kind for r in registry.uploads()} == {"robot", "policy"}
+
+
+def test_upload_endpoint_stores_files_and_reports_errors():
+    import tempfile
+    from pathlib import Path
+    from unittest.mock import patch
+
+    from fastapi.testclient import TestClient
+
+    import server
+    from simgate.library import uploads
+
+    client = TestClient(server.app)
+    form = {"type": "robot", "name": "Arm", "credit": "Lab", "license": "BSD-3-Clause"}
+    with tempfile.TemporaryDirectory() as root, patch.object(uploads, "UPLOADS_DIR", Path(root)):
+        ok = client.post("/upload", data=form, files=[("files", ("robot.xml", MJCF_BODY)), ("files", ("base.stl", b"solid"))])
+        assert ok.status_code == 200 and ok.json()["ok"], ok.text
+        upload = ok.json()["upload"]
+        assert upload["source"] == "upload" and (Path(root) / "robot" / upload["id"] / "robot.xml").is_file()
+
+        bad = client.post("/upload", data=form, files=[("files", ("run.py", b"print(1)"))])
+        assert bad.status_code == 400 and not bad.json()["ok"] and ".py can't be uploaded" in bad.json()["error"]
+        missing = client.post("/upload", data={**form, "credit": ""}, files=[("files", ("robot.xml", MJCF_BODY))])
+        assert missing.status_code == 400 and "Credit is required" in missing.json()["error"]
+        with patch.object(server, "MAX_UPLOAD_BYTES", 10):
+            big = client.post("/upload", data=form, files=[("files", ("robot.xml", MJCF_BODY))])
+        assert big.status_code == 413 and "larger than" in big.json()["error"]
+
+
 def _run_one(name, fn) -> str:
     """Run one test for the plain-script runner and return its report line."""
     try:

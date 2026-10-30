@@ -440,6 +440,9 @@ Without a key, it runs in mock mode.
 | `library_selection_sets_up_one_scene_only` | A Library setup applies to one scene; a later "race three rovers on Mars" gets three rovers on Mars, not the selected G1 and world |
 | `rules_planner_reads_a_unitree_robot_in_a_race_as_the_g1` | "Race a Unitree robot against a rover" plans a G1 and a rover; "Unitree G1 humanoid" is one G1 |
 | `library_lists_only_each_robots_own_compatible_policies` | The rover and walker controllers, which name no joints, are offered only for their own robot (server and browser) |
+| `uploads_reject_unsafe_files` | Uploads refuse code and pickles (.py, .so, .pt with the ONNX export snippet), unsafe zip paths, symlinks, more than 500 files, zip bombs, oversize uploads, MJCF plugins, file references leaving the upload, DOCTYPE/entities, unsafe YAML, a missing main file and missing name/credit/license, and leave nothing on disk |
+| `uploads_are_stored_and_listed_in_the_registry` | A safe upload is stored under uploads/<type>/<id>/ with an upload.json record, the same upload twice is stored once, and the registry lists it with source "upload" |
+| `upload_endpoint_stores_files_and_reports_errors` | POST /upload stores a robot and answers 400 with the reason for a rejected file or a missing credit, and 413 for an oversize upload |
 
 ---
 

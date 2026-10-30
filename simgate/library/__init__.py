@@ -2,5 +2,6 @@
 
 from .cards import PolicyCard, RobotCard, WorldCard
 from .registry import LibraryRegistry
+from .uploads import UploadError, UploadRecord, save_upload
 
-__all__ = ["LibraryRegistry", "PolicyCard", "RobotCard", "WorldCard"]
+__all__ = ["LibraryRegistry", "PolicyCard", "RobotCard", "UploadError", "UploadRecord", "WorldCard", "save_upload"]
