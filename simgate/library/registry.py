@@ -9,12 +9,13 @@ from pydantic import ValidationError
 from .. import presets
 from ..terrain_data import list_presets
 from .cards import PolicyCard, RobotCard, WorldCard
+from . import uploads as uploads_module
 from .uploads import UploadRecord, list_uploads
 
 CardType = TypeVar("CardType", RobotCard, PolicyCard)
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 PRESETS_DIR = Path(__file__).resolve().parent / "presets"
-UPLOADS_DIR = Path(__file__).resolve().parent / "uploads"
+UPLOAD_CARD_FILES = {"robots": "robot_card.json", "policies": "policy_card.json"}   # in uploads/<type>/<id>/
 
 
 class LibraryRegistry:
@@ -22,11 +23,11 @@ class LibraryRegistry:
         self,
         project_root: Path = PROJECT_ROOT,
         presets_dir: Path = PRESETS_DIR,
-        uploads_dir: Path = UPLOADS_DIR,
+        uploads_dir: Path | None = None,
     ) -> None:
         self.project_root = project_root.resolve()
         self.presets_dir = presets_dir
-        self.uploads_dir = uploads_dir
+        self.uploads_dir = uploads_dir or uploads_module.UPLOADS_DIR
 
     def robots(self) -> list[RobotCard]:
         return self._cards(RobotCard, "robots")
@@ -101,20 +102,21 @@ class LibraryRegistry:
 
     def _cards(self, card_type: type[CardType], category: str) -> list[CardType]:
         cards: dict[str, CardType] = {}
-        for folder in (self.presets_dir / category, self.uploads_dir / category):
-            if not folder.exists():
-                continue
-            for path in sorted(folder.glob("*.json")):
-                try:
-                    card = card_type.model_validate_json(path.read_text(encoding="utf-8"))
-                except (OSError, ValidationError, ValueError) as exc:
-                    raise ValueError(f"Invalid {category[:-1]} library card at {path}: {exc}") from exc
-                if card.id in cards:
-                    raise ValueError(f"Duplicate {category[:-1]} library id: {card.id}")
-                asset_path = getattr(card, "mjcf_path", None) or getattr(card, "file", None)
-                if asset_path is not None:
-                    self._validate_asset_exists(asset_path, path)
-                cards[card.id] = card
+        paths = [path for folder in (self.presets_dir / category, self.uploads_dir / category) if folder.exists()
+                 for path in sorted(folder.glob("*.json"))]
+        # an uploaded robot or policy gets its card once the Inspector's checks pass
+        paths += sorted(self.uploads_dir.glob(f"*/*/{UPLOAD_CARD_FILES[category]}"))
+        for path in paths:
+            try:
+                card = card_type.model_validate_json(path.read_text(encoding="utf-8"))
+            except (OSError, ValidationError, ValueError) as exc:
+                raise ValueError(f"Invalid {category[:-1]} library card at {path}: {exc}") from exc
+            if card.id in cards:
+                raise ValueError(f"Duplicate {category[:-1]} library id: {card.id}")
+            asset_path = getattr(card, "mjcf_path", None) or getattr(card, "file", None)
+            if asset_path is not None:
+                self._validate_asset_exists(asset_path, path)
+            cards[card.id] = card
         return list(cards.values())
 
     def _validate_asset_exists(self, asset_path: str, card_path: Path) -> None:

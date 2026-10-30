@@ -445,6 +445,12 @@ Without a key, it runs in mock mode.
 | `upload_endpoint_stores_files_and_reports_errors` | POST /upload stores a robot and answers 400 with the reason for a rejected file or a missing credit, and 413 for an oversize upload |
 | `uploaded_geotiff_and_png_terrains_become_presets` | A fake GeoTIFF (make_test_dtm.py) and a small PNG heightmap uploaded as terrains become presets that build and pass the physics checks; missing world, surface, size or height range come back as questions; the image's top is north; the Inspector reports size, relief and slopes and warns when it is too steep or too small; both appear as Library worlds with source "upload" |
 | `planner_names_an_uploaded_terrain_only_by_its_whole_name` | An uploaded terrain called "My hill" is chosen for "a rover on my hill" but not for "make my rover faster" |
+| `uploaded_urdf_cart_is_inspected_checked_and_listed` | A URDF cart with a mesh is converted to MJCF from upload files only, gets motors, is measured (mass, wheels, mesh), drafted as wheeled, stands, drives 0.5 m, is listed with its wheel controller and reaches a goal in a scene; a missing mesh is refused |
+| `inspector_questions_are_answered_without_a_reupload` | A cart whose names don't say which end is the front asks "Which way is forward"; it isn't listed until the answer ("-x") turns it around, and a bad answer is refused |
+| `uploaded_mjcf_quadruped_gets_a_baseline_gait` | An MJCF quadruped (scene parts dropped) gets a baseline gait in diagonal pairs, labelled as such |
+| `inspector_flags_wrong_units` | A robot 8 mm tall gets the mm/inches warning and isn't listed |
+| `inspector_model_draft_is_checked_against_facts` | The Inspector agent's draft is checked against FACTS with one retry showing the exact errors, falls back to the rules when still wrong, and loses questions that FACTS already settle |
+| `uploaded_robots_race_with_name_prefixes_and_their_own_defaults` | An uploaded cart and dog race a G1 with prefixed names: the G1's joint defaults stay on the G1, visual meshes stay visual, and all three move |
 
 ---
 

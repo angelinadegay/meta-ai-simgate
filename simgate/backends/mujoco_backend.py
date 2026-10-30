@@ -12,6 +12,7 @@ import numpy as np
 from .. import presets
 from ..library import LibraryRegistry
 from ..policy_runtime import PolicyRunner
+from ..simple_control import SimpleController
 from ..spec import Mission, SceneSpec
 from ..terrain_data import load_preset, resample
 from . import obstacles as course
@@ -372,13 +373,12 @@ def _model_from_xml(xml: str) -> mujoco.MjModel:
     compiler = root.find("compiler")
     asset_root = compiler.get("meshdir", "") if compiler is not None else ""
     assets = {}
-    if asset_root:
-        for mesh in root.findall("./asset/mesh"):
-            filename = mesh.get("file")
-            if filename is None:
-                continue
-            relative = (Path(asset_root) / filename).as_posix()
-            assets[relative] = _read_model_asset(relative)
+    for mesh in root.findall("./asset/mesh"):   # library meshes name their file from the project root
+        filename = mesh.get("file")
+        if filename is None:
+            continue
+        relative = (Path(asset_root) / filename).as_posix() if asset_root else filename
+        assets[relative] = _read_model_asset(relative)
     return mujoco.MjModel.from_xml_string(xml, assets) if assets else mujoco.MjModel.from_xml_string(xml)
 
 
@@ -407,6 +407,9 @@ def _library_robot_parts(
     meshdir = source_compiler.get("meshdir", "") if source_compiler is not None else ""
     asset_root = (Path(robot_card.mjcf_path).parent / meshdir).as_posix()
     asset_xml = source.find("asset")
+    for mesh in asset_xml.findall("mesh") if asset_xml is not None else []:   # several robots' meshes can share a scene
+        if mesh.get("file"):
+            mesh.set("file", (Path(asset_root) / mesh.get("file")).as_posix())
     mesh_xml = "".join(
         ET.tostring(item, encoding="unicode") for item in asset_xml
     ) if asset_xml is not None else ""
@@ -457,6 +460,15 @@ def _library_robot_parts(
         actuators_xml = "".join(ET.tostring(item, encoding="unicode") for item in actuator_root)
         mesh_xml = "".join(ET.tostring(item, encoding="unicode") for item in asset_root_xml)
         defaults_xml = "".join(ET.tostring(item, encoding="unicode") for item in defaults_root)
+    if defaults_xml:   # the robot's own defaults apply to its parts only, not to other robots in the scene
+        scope = f"{prefix}{robot_card.id}_defaults"
+        defaults_xml = f'<default class="{scope}">{defaults_xml}</default>'
+        if not source_body.get("childclass"):
+            source_body.set("childclass", scope)
+        scoped = ET.fromstring(f"<actuators>{actuators_xml}</actuators>")
+        for node in scoped:
+            node.set("class", node.get("class") or scope)
+        actuators_xml = "".join(ET.tostring(item, encoding="unicode") for item in scoped)
     return (
         ET.tostring(source_body, encoding="unicode"),
         actuators_xml,
@@ -504,6 +516,8 @@ def _robot_collision_masks(body_xml: str, index: int, count: int) -> str:
     own_mask = 1 << (index + 1)
     other_masks = sum(1 << (other + 1) for other in range(count) if other != index)
     for geom in root.iter("geom"):
+        if geom.get("contype") == "0" and geom.get("conaffinity") == "0":
+            continue   # a visual-only mesh stays visual
         geom.set("contype", str(own_mask))
         geom.set("conaffinity", str(1 | other_masks))
     return ET.tostring(root, encoding="unicode")
@@ -812,9 +826,7 @@ class MuJoCoSimulator(Simulator):
     <geom name="{prefix}goal_zone" type="cylinder" size="{mission["radius"]:.2f} 0.02" pos="{gx:.2f} {gy:.2f} {gz + 0.02:.3f}" contype="0" conaffinity="0" rgba="0.2 0.85 0.5 0.35"/>
     <geom name="{prefix}goal_flag" type="capsule" fromto="{gx:.2f} {gy:.2f} {gz:.3f} {gx:.2f} {gy:.2f} {gz + 1.5:.3f}" size="0.03" contype="0" conaffinity="0" rgba="0.2 0.85 0.5 1"/>'''))
 
-        if len(compiler_assets) > 1:
-            raise ValueError("Multi-robot library assets must share one compiler mesh directory.")
-        compiler_xml = f'<compiler angle="radian" meshdir="{next(iter(compiler_assets))}/"/>' if compiler_assets else ""
+        compiler_xml = '<compiler angle="radian"/>' if compiler_assets else ""
         half = terrain.size_m / 2
         elevation = " ".join(f"{value:.4f}" for value in np.flipud(H / zmax).ravel())
         marker_xml = "\n".join(marker[1] for marker in markers)
@@ -875,7 +887,7 @@ class MuJoCoSimulator(Simulator):
             robot, actuators, mesh_xml, defaults_xml, asset_root = _library_robot_parts(
                 spec, (sx, sy, sz), yaw
             )
-            compiler_xml = f'<compiler angle="radian" meshdir="{asset_root}/"/>'
+            compiler_xml = '<compiler angle="radian"/>'
         else:
             sz = height_at(H, t.size_m, sx, sy, footprint_radius(spec.robot)) + spec.robot.wheel_radius + 0.1
             robot, actuators = rover_xml(spec, (sx, sy, sz), yaw)
@@ -1052,11 +1064,15 @@ class MuJoCoSimulator(Simulator):
         model: mujoco.MjModel,
         data: mujoco.MjData,
         name_prefix: str = "",
-    ) -> PolicyRunner:
+    ) -> PolicyRunner | SimpleController:
         if spec.robot.kind != "library":
             raise ValueError("A library policy can only control a library robot.")
+        registry = LibraryRegistry()
+        policy = registry.policy(spec.robot.policy_id)
+        if policy.format == "builtin":   # an uploaded robot's wheel controller, baseline gait or held pose
+            return SimpleController(registry.robot(spec.robot.robot_id), policy, model, data, name_prefix=name_prefix)
         return PolicyRunner(
-            LibraryRegistry().policy(spec.robot.policy_id),
+            policy,
             model,
             data,
             name_prefix=name_prefix,

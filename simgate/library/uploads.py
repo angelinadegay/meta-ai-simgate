@@ -125,6 +125,16 @@ def save_upload(kind: str, files: list[tuple[str, bytes]], name: str, credit: st
     return record
 
 
+def get_upload(kind: str, upload_id: str, uploads_dir: Path | None = None) -> UploadRecord:
+    """A stored upload by type and id; the id must look like one (no path tricks)."""
+    if kind not in KINDS or not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,40}-[0-9a-f]{8}", upload_id or ""):
+        raise UploadError(f"No {kind} upload with id {upload_id!r}.")
+    folder = (uploads_dir or UPLOADS_DIR) / kind / upload_id
+    if not (folder / "upload.json").is_file():
+        raise UploadError(f"No {kind} upload with id {upload_id!r}.")
+    return _read_record(folder)
+
+
 def discard_upload(record: UploadRecord) -> None:
     """Remove a stored upload that couldn't be used (e.g. a terrain that failed to convert)."""
     if record.folder:

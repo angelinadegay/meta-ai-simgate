@@ -2,3 +2,6 @@
 terrain/
 robot/
 policy/
+# staging folders and test runs
+.*
+!.gitignore

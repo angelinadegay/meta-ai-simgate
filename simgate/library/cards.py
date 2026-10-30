@@ -15,8 +15,32 @@ class Card(BaseModel):
     credit: str
 
 
+class WheelSpec(BaseModel):
+    """A driven wheel of an uploaded robot; side, radius and spin sign are measured in code."""
+    model_config = ConfigDict(extra="forbid")
+
+    joint: str
+    side: Literal["left", "right"]
+    radius_m: float = Field(gt=0)
+    spin_sign: Literal[-1, 1] = 1   # joint velocity sign that rolls the robot forward (+x)
+
+
+class LegSpec(BaseModel):
+    """A leg of an uploaded robot for the baseline gait: hip swings fore-aft, knee lifts the foot."""
+    model_config = ConfigDict(extra="forbid")
+
+    name: str
+    hip: str
+    knee: str | None = None
+    foot: str | None = None
+    side: Literal["left", "right"] = "left"
+    phase: float = 0.0              # gait phase offset, radians
+    hip_sign: Literal[-1, 1] = 1    # hip direction that moves the foot backward on the ground
+    knee_sign: Literal[-1, 1] = 1   # knee direction that lifts the foot
+
+
 class RobotCard(Card):
-    kind: Literal["wheeled", "legged", "humanoid"]
+    kind: Literal["wheeled", "legged", "humanoid", "other"]
     source: Literal["builtin", "preset", "upload"]
     mjcf_path: str | None = None
     root_body: str
@@ -25,6 +49,12 @@ class RobotCard(Card):
     standing_height_m: float = Field(gt=0)
     mass_kg: float = Field(gt=0)
     forward_axis: tuple[float, float, float] = (1.0, 0.0, 0.0)
+    # uploaded robots without a trained policy: which built-in controller drives them, and its parts
+    controller: Literal["policy", "wheels", "gait", "hold"] = "policy"
+    wheels: list[WheelSpec] = []
+    track_m: float | None = None    # distance between left and right wheels
+    legs: list[LegSpec] = []
+    feet: list[str] = []
 
     @model_validator(mode="after")
     def validate_mjcf_path(self) -> "RobotCard":

@@ -3042,6 +3042,214 @@ def test_planner_names_an_uploaded_terrain_only_by_its_whole_name():
         assert agents.plan("make my rover faster").terrain.kind != "real"
 
 
+def cart_urdf(names=("front_left", "front_right", "rear_left", "rear_right"), mesh=True):
+    """A 4-wheel cart: continuous wheel joints on cylinders, no actuators, a visual mesh on the chassis."""
+    wheels = "".join(f"""
+  <link name="{n}_wheel"><inertial><mass value="0.5"/><inertia ixx="0.004" iyy="0.004" izz="0.004" ixy="0" ixz="0" iyz="0"/></inertial>
+    <collision><origin rpy="1.5708 0 0"/><geometry><cylinder radius="0.1" length="0.05"/></geometry></collision></link>
+  <joint name="{n}_joint" type="continuous"><parent link="chassis"/><child link="{n}_wheel"/>
+    <origin xyz="{x} {y} -0.04"/><axis xyz="0 1 0"/><limit effort="15" velocity="30"/></joint>""" for n, x, y in zip(
+        names, (0.2, 0.2, -0.2, -0.2), (0.22, -0.22, 0.22, -0.22)))
+    visual = '<visual><geometry><mesh filename="package://cart/meshes/body.stl"/></geometry></visual>' if mesh else ""
+    return f"""<robot name="cart">
+  <link name="chassis"><inertial><mass value="6"/><inertia ixx="0.08" iyy="0.12" izz="0.15" ixy="0" ixz="0" iyz="0"/></inertial>
+    {visual}<collision><geometry><box size="0.5 0.36 0.1"/></geometry></collision></link>{wheels}
+</robot>""".encode()
+
+
+def dog_mjcf():
+    """A 4-legged MJCF robot with hip and knee joints, position actuators, and a floor and light around it."""
+    legs, actuators = "", ""
+    for name, x, y in (("FL", 0.2, 0.12), ("FR", 0.2, -0.12), ("RL", -0.2, 0.12), ("RR", -0.2, -0.12)):
+        legs += f"""
+      <body name="{name}_thigh" pos="{x} {y} 0"><joint name="{name}_hip" axis="0 1 0" range="-1 1"/>
+        <geom type="capsule" fromto="0 0 0 0 0 -0.14" size="0.02" mass="0.3"/>
+        <body name="{name}_calf" pos="0 0 -0.14"><joint name="{name}_knee" axis="0 1 0" range="-2.2 0"/>
+          <geom type="capsule" fromto="0 0 0 0 0 -0.14" size="0.018" mass="0.2"/>
+          <geom name="{name}_foot" type="sphere" pos="0 0 -0.14" size="0.022" mass="0.05"/></body></body>"""
+        actuators += f'<position joint="{name}_hip" kp="40"/><position joint="{name}_knee" kp="40"/>'
+    return f"""<mujoco model="dog"><worldbody><light pos="0 0 3"/><geom name="floor" type="plane" size="5 5 0.1"/>
+    <body name="trunk" pos="0 0 0.35"><freejoint/><geom type="box" size="0.25 0.1 0.05" mass="4"/>{legs}</body>
+  </worldbody><actuator>{actuators}</actuator></mujoco>""".encode()
+
+
+def _robot_uploads():
+    """A temporary uploads folder inside the project (library assets must be), and the endpoint client."""
+    import tempfile
+    from unittest.mock import patch
+
+    from fastapi.testclient import TestClient
+
+    import server
+    from simgate.library import uploads
+
+    folder = tempfile.TemporaryDirectory(dir=uploads.UPLOADS_DIR, prefix=".test-")
+    return folder, patch.object(uploads, "UPLOADS_DIR", Path(folder.name)), TestClient(server.app)
+
+
+MESH = Path(__file__).resolve().parent.parent / "third_party/unitree_rl_gym/resources/robots/g1_description/meshes/left_elbow_link.STL"
+ROBOT_FORM = {"type": "robot", "credit": "Test", "license": "MIT"}
+
+
+def test_uploaded_urdf_cart_is_inspected_checked_and_listed():
+    from simgate.library import LibraryRegistry
+
+    folder, uploads_dir, client = _robot_uploads()
+    with folder, uploads_dir:
+        answer = client.post("/upload", data={**ROBOT_FORM, "name": "Cart"},
+                             files=[("files", ("cart.urdf", cart_urdf())), ("files", ("meshes/body.stl", MESH.read_bytes()))])
+        assert answer.status_code == 200, answer.text
+        robot = answer.json()["robot"]
+        facts = robot["facts"]
+        assert (robot["status"], robot["inspector"], robot["questions"]) == ("listed", "rules", [])
+        assert facts["total_mass_kg"] == 8.0 and facts["mesh_files"] == 1 and not facts["free_joint_in_upload"]
+        assert [w["joint"] for w in facts["candidate_wheels"]] == [f"{n}_joint" for n in ("front_left", "front_right", "rear_left", "rear_right")]
+        assert facts["units_warning"] is None and "motor" in robot["conversion_notes"][0]
+        card = robot["robot_card"]
+        assert (card["kind"], card["controller"], card["track_m"]) == ("wheeled", "wheels", 0.44)
+        assert {w["joint"]: w["side"] for w in card["wheels"]} == {"front_left_joint": "left", "front_right_joint": "right",
+                                                                   "rear_left_joint": "left", "rear_right_joint": "right"}
+        checks = {c["name"]: c for c in robot["checks"]}
+        for name in ("Model compiles", "Mass and size are plausible", "Stands for 1 s on flat ground",
+                     "Drives forward 0.5 m with the wheel controller"):
+            assert checks[name]["passed"], checks[name]
+        registry = LibraryRegistry()
+        upload_id = answer.json()["upload"]["id"]
+        assert registry.robot(upload_id).source == "upload"
+        assert [p.id for p in registry.compatible_policies(upload_id)] == [f"{upload_id}-wheels"]
+
+        spec = SceneSpec(domain="robot_terrain", terrain=Terrain(kind="flat", roughness=0), duration_s=12,
+                         robot=Robot(kind="library", robot_id=upload_id, policy_id=f"{upload_id}-wheels"),
+                         mission=Mission(start_xy=[-3, 0], start_heading_deg=0, goal_xy=[3, 2])).fill_defaults()
+        sim = MuJoCoSimulator()
+        build = sim.build(spec)
+        assert all(c.passed or c.advisory for c in sim.validate(spec, build))
+        list(sim.run(spec, build))
+        assert sim.summary()["outcome"] == "reached", sim.summary()
+
+        missing = client.post("/upload", data={**ROBOT_FORM, "name": "No mesh"}, files=[("files", ("cart.urdf", cart_urdf()))])
+        assert missing.status_code == 400 and "isn't in the upload" in missing.json()["error"]
+
+
+def test_inspector_questions_are_answered_without_a_reupload():
+    from simgate.library import LibraryRegistry
+
+    folder, uploads_dir, client = _robot_uploads()
+    with folder, uploads_dir:
+        answer = client.post("/upload", data={**ROBOT_FORM, "name": "Plain cart"},
+                             files=[("files", ("cart.urdf", cart_urdf(("w1", "w2", "w3", "w4"), mesh=False)))])
+        robot = answer.json()["robot"]
+        upload_id = answer.json()["upload"]["id"]
+        assert robot["status"] == "needs_answers"
+        assert robot["questions"] == [{"field": "forward_axis", "question": "Which way is forward: +x or -x?", "choices": ["+x", "-x"]}]
+        assert upload_id not in [card.id for card in LibraryRegistry().robots()], "not listed while a question is open"
+
+        bad = client.post(f"/upload/robot/{upload_id}/answers", json={"answers": {"forward_axis": "up"}})
+        assert bad.status_code == 400
+        assert client.post("/upload/robot/..%2F..%2Fx/answers", json={"answers": {"kind": "other"}}).status_code in (400, 404)
+        answered = client.post(f"/upload/robot/{upload_id}/answers", json={"answers": {"forward_axis": "-x"}})
+        robot = answered.json()["robot"]
+        assert (robot["status"], robot["questions"], robot["answers"]) == ("listed", [], {"forward_axis": "-x"})
+        # turned around: the wheel that was on the left (+y) is now on the right, and it still drives forward
+        assert {w["joint"]: w["side"] for w in robot["robot_card"]["wheels"]}["w1_joint"] == "right"
+        assert next(c for c in robot["checks"] if c["name"].startswith("Drives forward"))["passed"]
+        assert upload_id in [card.id for card in LibraryRegistry().robots()]
+
+
+def test_uploaded_mjcf_quadruped_gets_a_baseline_gait():
+    folder, uploads_dir, client = _robot_uploads()
+    with folder, uploads_dir:
+        answer = client.post("/upload", data={**ROBOT_FORM, "name": "Dog"}, files=[("files", ("dog.xml", dog_mjcf()))])
+        robot = answer.json()["robot"]
+        assert robot["status"] == "listed" and robot["baseline_gait"] and robot["facts"]["free_joint_in_upload"]
+        assert "Left out the scene parts" in robot["conversion_notes"][0]
+        card = robot["robot_card"]
+        assert (card["kind"], card["controller"]) == ("legged", "gait")
+        phases = {leg["hip"]: round(leg["phase"], 2) for leg in card["legs"]}
+        assert phases["FL_hip"] == phases["RR_hip"] != phases["FR_hip"] == phases["RL_hip"], phases   # diagonal pairs
+        gait = next(c for c in robot["checks"] if c["name"] == "Baseline gait tried")
+        assert gait["advisory"] and "may walk badly" in gait["detail"]
+        assert answer.json()["robot"]["policy_card"]["name"] == "Baseline gait"
+
+
+def test_inspector_flags_wrong_units():
+    tiny = (b'<mujoco><worldbody><body name="chip"><freejoint/><geom type="box" size="0.01 0.01 0.004" mass="0.2"/>'
+            b'</body></worldbody></mujoco>')
+    folder, uploads_dir, client = _robot_uploads()
+    with folder, uploads_dir:
+        robot = client.post("/upload", data={**ROBOT_FORM, "name": "Chip"}, files=[("files", ("chip.xml", tiny))]).json()["robot"]
+        assert "mm or inches" in robot["facts"]["units_warning"]
+        assert robot["status"] == "checks_failed"
+        assert not next(c for c in robot["checks"] if c["name"] == "Mass and size are plausible")["passed"]
+
+
+def test_inspector_model_draft_is_checked_against_facts():
+    import json
+
+    from simgate import config, llm
+    from simgate.library import save_upload
+    from simgate.library.inspector import inspect_robot
+
+    good = {"kind": "wheeled", "forward_axis": "+x", "wheels": [f"{n}_joint" for n in ("front_left", "front_right", "rear_left", "rear_right")],
+            "legs": [], "feet": [], "standing_height_m": 0.15, "controller": "wheels", "questions": []}
+    folder, uploads_dir, _ = _robot_uploads()
+    original_mock, original_chat = config.MOCK_MODE, llm.chat
+    try:
+        config.MOCK_MODE = False
+        with folder, uploads_dir:
+            calls = []
+            replies = iter([json.dumps({**good, "wheels": ["left_wheel_spin"]}), json.dumps(good)])
+            llm.chat = lambda messages, *args, **kwargs: calls.append(messages) or next(replies)
+            record = save_upload("robot", [("cart.urdf", cart_urdf(mesh=False))], "Cart", "Me", "MIT")
+            robot = inspect_robot(record)
+            assert robot["inspector"] == "model" and robot["status"] == "listed" and len(calls) == 2
+            assert "'left_wheel_spin' is not a hinge joint in FACTS.joints" in calls[1][-1]["content"]
+            assert '"candidate_wheels"' in calls[0][1]["content"] and "cart.urdf" in calls[0][1]["content"]
+
+            llm.chat = lambda messages, *args, **kwargs: json.dumps({**good, "controller": "gait"})   # wrong twice
+            record = save_upload("robot", [("cart.urdf", cart_urdf(mesh=False))], "Cart two", "Me", "MIT")
+            assert inspect_robot(record)["inspector"] == "rules"
+
+            asks = {**good, "questions": [{"field": "forward_axis", "question": "Forward?", "choices": ["+x", "-x"]},
+                                          {"field": "kind", "question": "Kind?", "choices": ["wheeled", "legged"]}]}
+            llm.chat = lambda messages, *args, **kwargs: json.dumps(asks)   # its wheels are named front/rear: nothing is open
+            robot = inspect_robot(save_upload("robot", [("cart.urdf", cart_urdf(mesh=False))], "Cart three", "Me", "MIT"))
+            assert robot["questions"] == [] and robot["status"] == "listed"
+            assert robot["model_calls"][-1]["dropped_questions"] == ["forward_axis", "kind"]
+    finally:
+        config.MOCK_MODE, llm.chat = original_mock, original_chat
+
+
+def test_uploaded_robots_race_with_name_prefixes_and_their_own_defaults():
+    import mujoco
+
+    from simgate.backends.mujoco_backend import _model_from_xml
+
+    folder, uploads_dir, client = _robot_uploads()
+    with folder, uploads_dir:
+        robots = {}
+        for name, files in (("Cart", [("cart.urdf", cart_urdf()), ("meshes/body.stl", MESH.read_bytes())]),
+                            ("Dog", [("dog.xml", dog_mjcf())])):
+            answer = client.post("/upload", data={**ROBOT_FORM, "name": name}, files=[("files", f) for f in files]).json()
+            robots[name] = Robot(kind="library", robot_id=answer["upload"]["id"], policy_id=answer["robot"]["policy_card"]["id"])
+        robots["G1"] = Robot(kind="library", robot_id="g1", policy_id="g1_walking")
+        spec = SceneSpec(domain="robot_terrain", terrain=Terrain(kind="flat", roughness=0), duration_s=6,
+                         robots=[RobotEntry(id=f"r{i + 1}", label=label, robot=robot, goal_place="east")
+                                 for i, (label, robot) in enumerate(robots.items())]).fill_defaults()
+        sim = MuJoCoSimulator()
+        build = sim.build(spec)
+        assert all(c.passed or c.advisory for c in sim.validate(spec, build))
+        model = _model_from_xml(build.code)
+        loss = lambda joint: model.dof_frictionloss[model.jnt_dofadr[mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, joint)]]
+        assert loss("r2_FL_hip") == 0 and loss("r3_left_knee_joint") == 0.1, "the G1's joint defaults stay on the G1"
+        visual = [g for g in range(model.ngeom) if model.geom_type[g] == mujoco.mjtGeom.mjGEOM_MESH
+                  and model.body_rootid[model.geom_bodyid[g]] == mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "r1_rover")]
+        assert visual and all(model.geom_contype[g] == 0 and model.geom_conaffinity[g] == 0 for g in visual)
+        list(sim.run(spec, build))
+        progress = {m["label"]: m["progress_toward_goal_m"] for m in sim.summary()["robots"].values()}
+        assert progress["Cart"] > 2 and progress["Dog"] > 0.2 and progress["G1"] > 1, progress
+
+
 def _run_one(name, fn) -> str:
     """Run one test for the plain-script runner and return its report line."""
     try:
