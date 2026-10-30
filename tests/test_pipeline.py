@@ -3245,6 +3245,143 @@ def test_uploaded_robots_race_with_name_prefixes_and_their_own_defaults():
         assert progress["Cart"] > 2 and progress["Dog"] > 0.2 and progress["G1"] > 1, progress
 
 
+G1_DEPLOY = Path(__file__).resolve().parent.parent / "third_party/unitree_rl_gym/deploy"
+G1_POLICY_FILES = [("files", ("motion.onnx", (G1_DEPLOY / "pre_train/g1/motion.onnx").read_bytes())),
+                   ("files", ("g1.yaml", (G1_DEPLOY / "deploy_mujoco/configs/g1.yaml").read_bytes()))]
+POLICY_FORM = {"type": "policy", "name": "My G1 walk", "credit": "Unitree Robotics", "license": "BSD-3-Clause"}
+CARD_FIELDS = ("robot_id", "format", "control_dt", "joint_order", "obs_layout", "action_scale", "default_angles",
+               "kps", "kds", "command", "clock_period_s", "recurrent_state_size")
+
+
+def _same(a, b) -> bool:
+    """Equal field values, numbers within float tolerance."""
+    if isinstance(a, dict) and isinstance(b, dict):
+        return a.keys() == b.keys() and all(_same(a[k], b[k]) for k in a)
+    if isinstance(a, (list, tuple)) and isinstance(b, (list, tuple)):
+        return len(a) == len(b) and all(_same(x, y) for x, y in zip(a, b))
+    if isinstance(a, (int, float)) and isinstance(b, (int, float)) and not isinstance(a, bool):
+        return abs(a - b) <= 1e-9
+    return a == b
+
+
+def test_golden_g1_policy_upload_matches_the_shipped_card_and_walks():
+    """The G1's own ONNX policy and g1.yaml, uploaded as a user would: the Adapter's card must equal the shipped one."""
+    import json
+
+    from simgate.library import LibraryRegistry
+
+    folder, uploads_dir, client = _robot_uploads()
+    with folder, uploads_dir:
+        asked = client.post("/upload", data=POLICY_FORM, files=G1_POLICY_FILES)
+        assert asked.status_code == 422 and asked.json()["questions"][0]["field"] == "robot_id"
+        assert "g1" in asked.json()["questions"][0]["choices"]
+
+        answer = client.post("/upload", data={**POLICY_FORM, "robot_id": "g1"}, files=G1_POLICY_FILES).json()
+        policy = answer["policy"]
+        assert (policy["status"], policy["adapter"]) == ("needs_answers", "rules")
+        assert [q["field"] for q in policy["questions"]] == ["clock_period_s"]   # g1.yaml doesn't say; deploy_mujoco.py does
+        assert policy["facts"]["onnx"]["observation_size"] == 47 and policy["facts"]["onnx"]["recurrent_state_size"] == 64
+
+        answered = client.post(f"/upload/policy/{answer['upload']['id']}/answers", json={"answers": {"clock_period_s": "0.8"}})
+        policy = answered.json()["policy"]
+        assert policy["status"] == "listed", policy["checks"]
+        shipped = LibraryRegistry().policy("g1_walking").model_dump(mode="json")
+        made = policy["policy_card"]
+        for field in CARD_FIELDS:
+            assert _same(json.loads(json.dumps(made[field])), shipped[field]), (field, made[field], shipped[field])
+        checks = {check["name"]: check for check in policy["checks"]}
+        assert checks["Stands for 2 s at command 0"]["passed"]
+        assert checks["Walks forward 0.5 m in 4 s"]["passed"], checks["Walks forward 0.5 m in 4 s"]
+        assert answer["upload"]["id"] in [card.id for card in LibraryRegistry().compatible_policies("g1")]
+
+
+def test_adapter_model_draft_is_checked_against_the_config():
+    import json
+
+    from simgate import config, llm
+    from simgate.library import save_upload
+    from simgate.library.adapter import adapt_policy, check_draft, rules_draft
+
+    folder, uploads_dir, _ = _robot_uploads()
+    original_mock, original_chat = config.MOCK_MODE, llm.chat
+    try:
+        with folder, uploads_dir:
+            record = save_upload("policy", [file for _, file in G1_POLICY_FILES], "Walk", "Me", "MIT")
+            config.MOCK_MODE = True
+            good = adapt_policy(record, "g1")["draft"]
+            wrong = {**good, "observation": [{**good["observation"][0], "scale": 1.0}] + good["observation"][1:]}
+            config.MOCK_MODE = False
+            calls = []
+            replies = iter([json.dumps(wrong), json.dumps(good)])
+            llm.chat = lambda messages, *args, **kwargs: calls.append(messages) or next(replies)
+            policy = adapt_policy(save_upload("policy", [file for _, file in G1_POLICY_FILES], "Walk two", "Me", "MIT"), "g1")
+            assert policy["adapter"] == "model" and len(calls) == 2
+            assert "base_ang_vel scale is 1.0, but the config's ang_vel_scale is 0.25" in calls[1][-1]["content"]
+
+            facts = policy["facts"]
+            scan = rules_draft(facts)
+            scan.observation[-1] = scan.observation[-1].model_copy(update={"name": "height_scan"})
+            assert any("height_scan isn't supported" in error for error in check_draft(scan, facts))
+    finally:
+        config.MOCK_MODE, llm.chat = original_mock, original_chat
+
+
+def test_adapter_checks_explain_a_wrong_observation_order():
+    import json
+
+    from simgate import config, llm
+    from simgate.library import save_upload
+    from simgate.library.adapter import adapt_policy
+
+    folder, uploads_dir, _ = _robot_uploads()
+    original_mock, original_chat = config.MOCK_MODE, llm.chat
+    try:
+        with folder, uploads_dir:
+            config.MOCK_MODE = True
+            draft = adapt_policy(save_upload("policy", [file for _, file in G1_POLICY_FILES], "Walk", "Me", "MIT"), "g1")["draft"]
+            blocks = draft["observation"]
+            swapped = {**draft, "clock_period_s": 0.8, "questions": [],   # joint velocities read where positions belong
+                       "observation": blocks[:3] + [blocks[4], blocks[3]] + blocks[5:]}
+            config.MOCK_MODE = False
+            llm.chat = lambda *args, **kwargs: json.dumps(swapped)
+            policy = adapt_policy(save_upload("policy", [file for _, file in G1_POLICY_FILES], "Swapped", "Me", "MIT"), "g1")
+            assert policy["adapter"] == "model" and policy["status"] == "checks_failed", policy["status"]
+            failed = [check for check in policy["checks"] if not check["passed"]]
+            assert failed and all("Likely wrong:" in check["detail"] for check in failed), failed
+            assert not (Path(folder.name) / "policy" / policy["upload_id"] / "policy_card.json").exists()
+    finally:
+        config.MOCK_MODE, llm.chat = original_mock, original_chat
+
+
+def test_policy_runtime_reads_base_linear_velocity_in_the_body_frame():
+    import mujoco
+    import numpy as np
+
+    from simgate.library import LibraryRegistry, PolicyCard
+    from simgate.policy_runtime import PolicyRunner
+
+    shipped = LibraryRegistry().policy("g1_walking").model_dump()
+    card = PolicyCard.model_validate({**shipped, "obs_layout": [{"name": "lin_vel", "size": 3, "scale": 2.0}],
+                                      "recurrent_state_size": None})
+
+    class Still:
+        input_size, output_size = 3, 12
+
+        def run(self, observation):
+            return np.zeros((1, 12))
+
+        def reset(self):
+            pass
+
+    model, data = MuJoCoSimulator()._make(g1_base_build())
+    runner = PolicyRunner(card, model, data, inference_model=Still())
+    root = runner.root_qpos_address
+    data.qpos[root + 3:root + 7] = [math.cos(math.pi / 4), 0, 0, math.sin(math.pi / 4)]   # facing +y
+    data.qvel[runner.root_dof_address:runner.root_dof_address + 3] = [0.0, 1.0, 0.0]      # moving north = forward
+    mujoco.mj_forward(model, data)
+    assert np.allclose(runner.observation(0.0), [2.0, 0.0, 0.0], atol=1e-6)
+
+
 def _run_one(name, fn) -> str:
     """Run one test for the plain-script runner and return its report line."""
     try:

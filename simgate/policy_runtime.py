@@ -211,7 +211,8 @@ class PolicyRunner:
 
     def observation(self, sim_time: float) -> np.ndarray:
         blocks = {
-            "ang_vel": self.data.qvel[self.root_dof_address + 3 : self.root_dof_address + 6],
+            "ang_vel": self._base_velocity()[:3],
+            "lin_vel": self._base_velocity()[3:],
             "gravity_orientation": self._gravity_orientation(),
             "command": self._command,
             "joint_position_delta": (
@@ -297,15 +298,22 @@ class PolicyRunner:
         )
         if root_body is None:
             raise ValueError("policy joints do not share a robot root body")
-        free_joint_ids = [
-            joint_id
-            for joint_id in range(self.model.njnt)
-            if int(self.model.jnt_bodyid[joint_id]) == root_body
-            and int(self.model.jnt_type[joint_id]) == int(mujoco.mjtJoint.mjJNT_FREE)
-        ]
+        self.base_body = root_body
+        body_id = root_body   # the free joint is on the base body, or on a body above it (an uploaded robot's wrapper)
+        while body_id > 0:
+            free_joint_ids = [
+                joint_id
+                for joint_id in range(self.model.njnt)
+                if int(self.model.jnt_bodyid[joint_id]) == body_id
+                and int(self.model.jnt_type[joint_id]) == int(mujoco.mjtJoint.mjJNT_FREE)
+            ]
+            if free_joint_ids:
+                break
+            body_id = int(self.model.body_parentid[body_id])
         if len(free_joint_ids) != 1:
             raise ValueError("policy robot root must have exactly one free joint")
         free_joint = free_joint_ids[0]
+        self.base_has_free_joint = body_id == root_body
         return int(self.model.jnt_qposadr[free_joint]), int(self.model.jnt_dofadr[free_joint])
 
     def _is_descendant(self, body_id: int, ancestor_id: int) -> bool:
@@ -315,7 +323,22 @@ class PolicyRunner:
             body_id = int(self.model.body_parentid[body_id])
         return False
 
+    def _base_velocity(self) -> np.ndarray:
+        """[angular, linear] velocity of the base body in its own frame."""
+        if self.base_has_free_joint:   # a free joint's angular velocity is already in the body frame
+            angular = self.data.qvel[self.root_dof_address + 3 : self.root_dof_address + 6]
+            rotation = self.data.xmat[self.base_body].reshape(3, 3)
+            linear = rotation.T @ self.data.qvel[self.root_dof_address : self.root_dof_address + 3]
+            return np.concatenate([angular, linear])
+        velocity = np.zeros(6)
+        mujoco.mj_objectVelocity(self.model, self.data, mujoco.mjtObj.mjOBJ_BODY, self.base_body, velocity, 1)
+        return velocity
+
     def _gravity_orientation(self) -> np.ndarray:
+        if not self.base_has_free_joint:
+            quaternion = self.data.xquat[self.base_body]
+            qw, qx, qy, qz = quaternion
+            return np.array([2 * (-qz * qx + qw * qy), -2 * (qz * qy + qw * qx), 1 - 2 * (qw * qw + qz * qz)])
         quaternion = self.data.qpos[self.root_qpos_address + 3 : self.root_qpos_address + 7]
         qw, qx, qy, qz = quaternion
         return np.array(

@@ -451,6 +451,10 @@ Without a key, it runs in mock mode.
 | `inspector_flags_wrong_units` | A robot 8 mm tall gets the mm/inches warning and isn't listed |
 | `inspector_model_draft_is_checked_against_facts` | The Inspector agent's draft is checked against FACTS with one retry showing the exact errors, falls back to the rules when still wrong, and loses questions that FACTS already settle |
 | `uploaded_robots_race_with_name_prefixes_and_their_own_defaults` | An uploaded cart and dog race a G1 with prefixed names: the G1's joint defaults stay on the G1, visual meshes stay visual, and all three move |
+| `golden_g1_policy_upload_matches_the_shipped_card_and_walks` | GOLDEN: the G1's own motion.onnx and g1.yaml, uploaded as a user would for robot g1, ask which robot and then the clock period (g1.yaml doesn't give it); after "0.8" the Adapter's card equals the shipped G1 card field by field, it stands 2 s, walks 0.5 m in 4 s and is listed |
+| `adapter_model_draft_is_checked_against_the_config` | The Adapter agent's draft is checked against the ONNX sizes and the config's own numbers, with one retry showing the exact errors; a height scan is refused as unsupported |
+| `adapter_checks_explain_a_wrong_observation_order` | A policy card with joint positions and velocities swapped fails the standing/walking checks, each with what is likely wrong, and isn't listed |
+| `policy_runtime_reads_base_linear_velocity_in_the_body_frame` | The base_lin_vel block is the root's velocity in its own frame |
 
 ---
 
