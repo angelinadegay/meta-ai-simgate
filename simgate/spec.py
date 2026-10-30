@@ -4,6 +4,7 @@ The planner turns plain language into a SceneSpec, the router reads its
 `domain` to pick a simulator, and each simulator backend builds from it.
 Adding a new simulator means adding a domain and a backend, nothing else.
 """
+import math
 from typing import Literal, Optional
 
 from pydantic import BaseModel, Field, model_validator
@@ -25,6 +26,10 @@ class Terrain(BaseModel):
     roughness: float = Field(0.3, ge=0.0, le=1.0)
     size_m: float = 20.0
     seed: int = 0
+    # kind="real" from an uploaded heightmap image: this scene's own width and height range ("make it wider"),
+    # None keeps the upload's. Real elevation data (HiRISE, GeoTIFF) keeps the scale it was measured at.
+    preset_size_m: Optional[float] = Field(None, ge=1.0, le=1000.0)
+    preset_relief_m: Optional[float] = Field(None, ge=0.0, le=500.0)
 
 
 class Robot(BaseModel):
@@ -152,18 +157,31 @@ class SceneSpec(BaseModel):
         env = self.environment
         t = self.terrain
         if self.domain == "robot_terrain" and t is not None and t.kind == "real":
-            from .terrain_data import load_preset   # local import: only needed for real terrain
+            from .terrain_data import load_preset, resizable   # local import: only needed for real terrain
             if not t.preset:
                 raise ValueError("Real terrain needs a preset name.")
             _, meta = load_preset(t.preset)
-            t.size_m = float(meta["size_m"])
+            resized = t.preset_size_m is not None or t.preset_relief_m is not None
+            if resized and not resizable(meta):
+                raise ValueError(f"{meta['label']} is real elevation data: its size and height come from the "
+                                 "measurements and can't be changed.")
+            t.size_m = float(t.preset_size_m or meta["size_m"])
+            relief = float(meta["relief_m"] if t.preset_relief_m is None else t.preset_relief_m)
             if env.body != meta.get("body", env.body):   # the data decides which world this is
                 env.body, env.gravity, env.surface, env.friction = meta["body"], None, meta.get("surface", env.surface), None
             elif "surface" not in env.model_fields_set and env.friction is None:
                 env.surface = meta.get("surface", env.surface)   # nobody chose a surface: use the site's own
-            self.assumptions.append(
-                f"Terrain: real elevation data, {meta['label']} ({meta['size_m']:.0f} m square, "
-                f"{meta['relief_m']:.1f} m of relief, typical slope {meta.get('typical_slope_deg', '?')}°). Credit: {meta['credit']}.")
+            if resized:   # slopes scale with height over width
+                stretch = (relief / meta["relief_m"] if meta["relief_m"] else 0.0) * meta["size_m"] / t.size_m
+                slope = round(math.degrees(math.atan(math.tan(math.radians(meta.get("typical_slope_deg", 0.0))) * stretch)), 1)
+                self.assumptions.append(
+                    f"Terrain: {meta['label']}, resized for this scene to {t.size_m:g} m square with {relief:g} m of "
+                    f"height (uploaded as {meta['size_m']:g} m and {meta['relief_m']:g} m), typical slope about "
+                    f"{slope}°. Credit: {meta['credit']}.")
+            else:
+                self.assumptions.append(
+                    f"Terrain: real elevation data, {meta['label']} ({meta['size_m']:.0f} m square, "
+                    f"{meta['relief_m']:.1f} m of relief, typical slope {meta.get('typical_slope_deg', '?')}°). Credit: {meta['credit']}.")
         if env.gravity is None:
             g = presets.gravity_for(env.body)
             env.gravity = g if g is not None else 9.81

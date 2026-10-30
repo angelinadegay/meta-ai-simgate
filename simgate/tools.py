@@ -10,6 +10,7 @@ from . import agents, config, llm, presets
 from .backends.base import BuildResult, Check, Simulator, blocking_failures
 from .library import LibraryRegistry
 from .spec import Mission, Obstacle, Robot, RobotEntry, SceneSpec, Terrain
+from .terrain_data import load_preset, resizable
 
 
 Place = Literal["start_area", "center", "lowest", "highest", "north", "south", "east", "west"]
@@ -29,6 +30,9 @@ class SetWorldArgs(ToolArgs):
     preset: str | None = None
     slope_deg: float | None = Field(default=None, ge=-89, le=89)
     roughness: float | None = Field(default=None, ge=0, le=1)
+    # an uploaded heightmap's width and height range for this scene, in metres; only numbers the user gave
+    size_m: float | None = Field(default=None, ge=1, le=1000)
+    relief_m: float | None = Field(default=None, ge=0, le=500)
 
 
 class SpawnRobotArgs(ToolArgs):
@@ -189,13 +193,22 @@ def set_world(world: World, args: dict[str, Any]) -> ToolResult:
     if parsed.terrain_kind is not None:
         spec.terrain.kind = parsed.terrain_kind
         if parsed.terrain_kind != "real":
-            spec.terrain.preset = None
+            spec.terrain.preset = spec.terrain.preset_size_m = spec.terrain.preset_relief_m = None
     if parsed.slope_deg is not None:
         if spec.terrain.kind != "slope":
             raise ValueError("slope_deg can only be set for slope terrain.")
         spec.terrain.slope_deg = parsed.slope_deg
     if parsed.roughness is not None:
         spec.terrain.roughness = parsed.roughness
+    if parsed.size_m is not None or parsed.relief_m is not None:
+        meta = load_preset(spec.terrain.preset)[1] if spec.terrain.kind == "real" and spec.terrain.preset else {}
+        if not resizable(meta):
+            raise ValueError("size_m and relief_m only resize an uploaded heightmap terrain"
+                             + (f"; {meta['label']} is real elevation data, which keeps its measured scale." if meta else "."))
+        if parsed.size_m is not None:
+            spec.terrain.preset_size_m = parsed.size_m
+        if parsed.relief_m is not None:
+            spec.terrain.preset_relief_m = parsed.relief_m
     if spec.robots or spec.robot is not None:
         _refresh_spec(spec)
     world.spec = spec

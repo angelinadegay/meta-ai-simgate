@@ -11,7 +11,7 @@ from . import agents, config, llm, presets
 from .library import LibraryRegistry
 from .plan import GoalPlan, Plan, WorldPlan
 from .spec import Robot, SceneSpec
-from .terrain_data import list_presets
+from .terrain_data import list_presets, load_preset, resizable
 from .tools import ToolResult, World, invoke_tool
 
 StepCallback = Callable[[dict[str, Any]], Awaitable[None]]
@@ -32,6 +32,8 @@ class Director:
         ``state`` is the session's workflows.SessionState (last run, diagnosis, redesign), if any."""
         if (design := _use_design_plan(text, state)) is not None:
             return design
+        if (resize := _resize_plan(text, world_state)) is not None:
+            return resize
         if config.MOCK_MODE:
             return _analysis_plan(text, world_state, state) or _rule_plan_with_title(text, world_state)
 
@@ -286,6 +288,8 @@ Steeper edit plan: {{"workflow":"edit","summary":"Rover on a steeper slope","cha
 - For "use six wheels", change only that robot field, never whole robot records:
 Robot edit plan: {{"workflow":"edit","summary":"Six-wheel rover","changes":{{"robot":{{"wheels":6}}}}}}
 - An edit lists only the fields that change; code rebuilds the title.
+- An uploaded heightmap marked "resizable" can get a new world.size_m (width) and world.relief_m (height range) in an
+  edit, only with numbers the user gave: "make the hill 25 m wide" -> {{"workflow":"edit","summary":"Wider hill","changes":{{"world":{{"size_m":25}}}}}}
 Diagnose plan: {{"workflow":"diagnose","summary":"Why the rover got stuck"}}
 Redesign plan: {{"workflow":"redesign","summary":"A rover that passes the course","constraints":"<the user's limits, in their words>"}}
 Answer plan: {{"workflow":"answer","summary":"What SimGate can do","reply":"You can build robot scenes, compare conditions, race robots, or run stress tests."}}
@@ -668,6 +672,59 @@ def _apply_text_guards(plan: Plan, text: str) -> list[str]:
             plan.goal = GoalPlan(place="east")
             notes.append("No finish line was given, so I put it on the far side.")
     return notes
+
+
+_WIDER = re.compile(r"\b(wider|bigger|larger|broader)\b")
+_NARROWER = re.compile(r"\b(narrower|smaller)\b")
+_LOWER = re.compile(r"\b(lower|shorter|flatter|gentler|less (?:tall|high|steep)|not (?:as|so) (?:tall|high|steep))\b")
+_HIGHER = re.compile(r"\b(taller|higher|steeper)\b")
+_WIDTH_GIVEN = re.compile(r"(\d+(?:\.\d+)?)\s*(?:m|metres?|meters?)\s*(?:wide|across|square)\b")
+_HEIGHT_GIVEN = re.compile(r"(\d+(?:\.\d+)?)\s*(?:m|metres?|meters?)\s*(?:tall|high)\b")
+# a resize word about something else ("lower gravity", "bigger wheels") leaves the terrain to the planner
+_NOT_TERRAIN = re.compile(r"\b(gravity|friction|speed|mass|weight|heavier|lighter|wheels?|legs?|robots?|rovers?"
+                          r"|walkers?|chassis|goal|obstacles?|rocks?|steps?|gaps?|walls?|faster|slower|run|race)\b")
+WIDER_MIN_M = 20.0   # "wider" with no number: twice as wide, and at least the size of SimGate's generated terrain
+
+
+def _resize_plan(text: str, world_state: World | SceneSpec | dict[str, Any] | None) -> Plan | None:
+    """"make it wider and not as tall" on a scene with an uploaded heightmap: an edit of its width and height range,
+    set in code (no model call). Numbers the user gives are used as given; without numbers, wider is twice as wide
+    (at least 20 m), narrower half as wide, lower half the height, and taller or steeper 1.5 times the height.
+    None when the request isn't only about resizing the current real terrain."""
+    current = _current_spec(world_state)
+    terrain = current.terrain if current is not None and current.domain == "robot_terrain" else None
+    if terrain is None or terrain.kind != "real" or not terrain.preset:
+        return None
+    source = text.lower()
+    width, height = _WIDTH_GIVEN.search(source), _HEIGHT_GIVEN.search(source)
+    wider, narrower = _WIDER.search(source), _NARROWER.search(source)
+    lower, higher = _LOWER.search(source), _HIGHER.search(source)
+    if not (width or height or wider or narrower or lower or higher) or _NOT_TERRAIN.search(source):
+        return None
+    meta = load_preset(terrain.preset)[1]
+    if not resizable(meta):
+        return Plan(workflow="answer", summary="Real terrain keeps its measured scale",
+                    reply=f"{meta['label']} is real elevation data, so its width and height come from the measurements; "
+                          "stretching it would make it fake. Pick another terrain, or upload a heightmap image to set "
+                          "the size yourself.")
+    size = terrain.preset_size_m or float(meta["size_m"])
+    relief = float(meta["relief_m"]) if terrain.preset_relief_m is None else terrain.preset_relief_m
+    world: dict[str, float] = {}
+    if width:
+        world["size_m"] = float(width.group(1))
+    elif wider or narrower:
+        world["size_m"] = max(2 * size, WIDER_MIN_M) if wider else size / 2
+    if height:
+        world["relief_m"] = float(height.group(1))
+    elif lower or higher:
+        world["relief_m"] = relief / 2 if lower else relief * 1.5
+    world = {"size_m": min(max(world.get("size_m", size), 1.0), 1000.0),
+             "relief_m": round(min(max(world.get("relief_m", relief), 0.0), 500.0), 3)}
+    if world == {"size_m": size, "relief_m": relief}:
+        return Plan(workflow="answer", summary="Terrain size unchanged",
+                    reply=f"{meta['label']} is already {size:g} m wide with {relief:g} m of height.")
+    return Plan(workflow="edit", summary=f"{meta['label']}: {world['size_m']:g} m wide, {world['relief_m']:g} m tall "
+                f"(was {size:g} m and {relief:g} m)", changes={"world": world})
 
 
 _GOAL_PLACES = {"summit": "highest", "top": "highest", "bottom": "lowest", "far side": "east"}

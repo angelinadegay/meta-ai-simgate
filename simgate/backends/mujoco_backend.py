@@ -14,7 +14,7 @@ from ..library import LibraryRegistry
 from ..policy_runtime import PolicyRunner
 from ..simple_control import SimpleController
 from ..spec import Mission, SceneSpec
-from ..terrain_data import load_preset, resample
+from ..terrain_data import load_preset, resample, scene_heights
 from . import obstacles as course
 from .base import BuildResult, Check, Simulator
 
@@ -73,7 +73,7 @@ def make_heights(spec: SceneSpec, start_xy: tuple[float, float] | None = None) -
             H += (0.6 + t.roughness) * (0.35 * np.exp(-((d - 1.0) ** 2) / 0.05) - 0.5 * np.exp(-(d**2) / 0.4))
     if t.kind == "real":
         # Real elevation data (e.g. NASA HiRISE), already in metres with row 0 at -y.
-        H += resample(load_preset(t.preset)[0], GRID)
+        H += resample(scene_heights(t), GRID)   # an uploaded heightmap may be resized for this scene
     if t.kind in ("rocky", "hills", "craters", "slope", "real") and t.roughness > 0:
         # Small-scale bumps (coarse random grid, bilinearly upsampled); "rocky" gets the most.
         # On real terrain these stand in for sub-metre roughness the orbital data can't resolve.
@@ -1207,13 +1207,15 @@ class MuJoCoSimulator(Simulator):
             lo, hi = presets.SLOPE_RANGE_DEG
             checks.append(Check("Slope is plausible", lo <= spec.terrain.slope_deg <= hi, f"{spec.terrain.slope_deg}°."))
         if spec.terrain.kind == "real":
-            heights, meta = load_preset(spec.terrain.preset)
+            heights, meta = scene_heights(spec.terrain), load_preset(spec.terrain.preset)[1]
             built_relief = float(model.hfield_size[0][2])
             extra = course.GAP_DEPTH if any(o.kind == "gap" for o in spec.obstacles) else 0.0   # trenches deepen it
             ok = abs(built_relief - extra - float(heights.max())) <= 0.05 * float(heights.max()) + 0.3   # bumps add a little
+            resized = spec.terrain.preset_size_m is not None or spec.terrain.preset_relief_m is not None
             checks.append(Check("Real terrain matches source data", ok,
-                                f"{meta['label']}: {meta['size_m']:.0f} m square, relief {built_relief:.1f} m in model "
-                                f"vs {meta['relief_m']:.1f} m in the data, typical slope {meta.get('typical_slope_deg', '?')}°."))
+                                f"{meta['label']}: {spec.terrain.size_m:.0f} m square{' (resized for this scene)' if resized else ''}, "
+                                f"relief {built_relief:.1f} m in model vs {float(heights.max()):.1f} m in the data"
+                                + ("." if resized else f", typical slope {meta.get('typical_slope_deg', '?')}°.")))
 
         mission = build.scene.get("mission") or {}
         if mission.get("goal") is not None:

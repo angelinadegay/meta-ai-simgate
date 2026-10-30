@@ -58,6 +58,21 @@ def load_preset(name: str) -> tuple[np.ndarray, dict]:
     return heights, json.loads(meta_path.read_text())
 
 
+def resizable(meta: dict) -> bool:
+    """An uploaded heightmap image: its width and height range were the uploader's choice, so a scene may change
+    them. Real elevation data (HiRISE, GeoTIFF) keeps the scale it was measured at."""
+    return bool(meta.get("uploaded")) and str(meta.get("source", "")).lower().endswith((".png", ".jpg"))
+
+
+def scene_heights(terrain) -> np.ndarray:
+    """A real terrain's heights for one scene: the preset's, scaled to the scene's height range when it has one."""
+    heights = load_preset(terrain.preset)[0]
+    top = float(heights.max())
+    if terrain.preset_relief_m is not None and top > 0:
+        heights = heights * (terrain.preset_relief_m / top)
+    return heights
+
+
 def resample(heights: np.ndarray, n: int) -> np.ndarray:
     """Bilinear resample to an n x n grid covering the same area."""
     rows, cols = heights.shape

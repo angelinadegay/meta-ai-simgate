@@ -251,7 +251,7 @@ button; one whose checks failed is shown as *not ready*, with the reasons. Behin
 
 | Upload | Files | What happens |
 | --- | --- | --- |
-| World | A GeoTIFF elevation model in a metric projection, or a square greyscale PNG/JPG heightmap | A GeoTIFF goes through the HiRISE converter's path (patch picking, hole filling, north up). A heightmap needs its width and height range in metres; black is the lowest point and the image's top edge is north. |
+| World | A GeoTIFF elevation model in a metric projection, or a square greyscale PNG/JPG heightmap | A GeoTIFF goes through the HiRISE converter's path (patch picking, hole filling, north up). A heightmap needs its width and height range in metres; black is the lowest point and the image's top edge is north. A scene can resize it from the chat ("make it wider and not as tall", "make the hill 30 m wide"); the upload itself is unchanged, and real elevation data keeps its measured scale. |
 | Robot | MJCF (`.xml`/`.mjcf`) or URDF, with its meshes (`.stl`, `.obj`, `.msh`) | Compiled with MuJoCo from upload files only (a URDF is converted with `mj_saveLastXML`), then inspected and tested. |
 | Policy | An ONNX model plus a yaml/json config and/or a README | Read in code, adapted to the chosen robot's joints by name, and tested on that robot. |
 
@@ -417,7 +417,7 @@ Without a key, it runs in mock mode.
 
 ### 14. Tests
 
-`python tests/test_pipeline.py` runs 124 offline tests (simulations, the agents with scripted models, uploads and
+`python tests/test_pipeline.py` runs 126 offline tests (simulations, the agents with scripted models, uploads and
 the page's wiring). rasterio is in requirements.txt, so the real-terrain integration test runs too; without it
 that test reports "skip" with the reason.
 
@@ -518,6 +518,7 @@ that test reports "skip" with the reason.
 | `upload_endpoint_stores_files_and_reports_errors` | POST /upload stores a robot and answers 400 with the reason for a rejected file or a missing credit, and 413 for an oversize upload |
 | `uploaded_geotiff_and_png_terrains_become_presets` | A fake GeoTIFF (make_test_dtm.py) and a small PNG heightmap uploaded as terrains become presets that build and pass the physics checks; missing world, surface, size or height range come back as questions; the image's top is north; the Inspector reports size, relief and slopes and warns when it is too steep or too small; both appear as Library worlds with source "upload" |
 | `planner_names_an_uploaded_terrain_only_by_its_whole_name` | An uploaded terrain called "My hill" is chosen for "a rover on my hill" but not for "make my rover faster" |
+| `chat_resizes_an_uploaded_heightmap_but_not_real_elevation_data` | "Make it wider and not as tall" on a 2 m uploaded hill gives a 20 m wide, 1 m tall scene that passes its checks while the upload stays as it was; given numbers are used as given; "lower the gravity" isn't a resize; Jezero (real data) is refused |
 | `uploaded_urdf_cart_is_inspected_checked_and_listed` | A URDF cart with a mesh is converted to MJCF from upload files only, gets motors, is measured (mass, wheels, mesh), drafted as wheeled, stands, drives 0.5 m, is listed with its wheel controller and reaches a goal in a scene; a missing mesh is refused |
 | `urdf_laid_out_like_unitrees_is_accepted` | A URDF in urdf/ with its own `<mujoco>` block and `meshdir="../meshes"` is accepted and inspected; a reference that leaves the upload is still refused |
 | `inspector_questions_are_answered_without_a_reupload` | A cart whose names don't say which end is the front asks "Which way is forward"; it isn't listed until the answer ("-x") turns it around, and a bad answer is refused |

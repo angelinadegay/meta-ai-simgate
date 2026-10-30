@@ -3049,6 +3049,57 @@ def test_planner_names_an_uploaded_terrain_only_by_its_whole_name():
         assert agents.plan("make my rover faster").terrain.kind != "real"
 
 
+def test_chat_resizes_an_uploaded_heightmap_but_not_real_elevation_data():
+    import tempfile
+    from pathlib import Path
+    from unittest.mock import patch
+
+    import numpy as np
+
+    from simgate import terrain_data, tools
+    from simgate.director import Director, _resize_plan
+    from simgate.library import save_upload, uploads
+    from simgate.library.terrain_upload import prepare_terrain
+    from simgate.workflows import apply_edit
+
+    y, x = np.mgrid[0:64, 0:64] / 63.0
+    hill = np.exp(-((x - 0.5) ** 2 + (y - 0.5) ** 2) / 0.08)
+    with tempfile.TemporaryDirectory() as tmp, patch.object(uploads, "UPLOADS_DIR", Path(tmp)):
+        terrain_data.load_preset.cache_clear()
+        record = save_upload("terrain", [("hill.png", _png(hill))], "Hill", "Me", "CC0-1.0")
+        name = prepare_terrain(record, "earth", "gravel", 2, 2)["name"]   # 2 typed for the width instead of 20
+        scene = SceneSpec(domain="robot_terrain", terrain=Terrain(kind="real", preset=name, roughness=0),
+                          robot=Robot(kind="rover")).fill_defaults()
+
+        plan = Director().plan("make it wider and not as tall", scene)   # no numbers: twice as wide (at least 20 m), half the height
+        assert plan.workflow == "edit" and (plan.changes.world.size_m, plan.changes.world.relief_m) == (20, 1)
+        resized = apply_edit(scene, plan.changes).spec
+        assert resized.terrain.preset == name and resized.terrain.size_m == 20
+        assert any("resized for this scene to 20 m square with 1 m of height" in line for line in resized.assumptions)
+        sim = MuJoCoSimulator()
+        checks = sim.validate(resized, sim.build(resized))
+        assert all(check.passed or check.advisory for check in checks), [c for c in checks if not c.passed]
+        assert terrain_data.load_preset(name)[1]["size_m"] == 2, "the upload in the Library is unchanged"
+
+        given = Director().plan("make the hill 30 m wide and 3 m tall", resized)
+        assert (given.changes.world.size_m, given.changes.world.relief_m) == (30, 3)
+        assert Director().plan("make it narrower", resized).changes.world.size_m == 10
+        for other in ("lower the gravity", "use bigger wheels", "make the rover faster"):
+            assert _resize_plan(other, resized) is None, other
+
+        jezero = SceneSpec(domain="robot_terrain", terrain=Terrain(kind="real", preset="jezero"),
+                           robot=Robot(kind="rover")).fill_defaults()
+        refused = Director().plan("make it wider", jezero)
+        assert refused.workflow == "answer" and "real elevation data" in refused.reply
+        try:
+            tools.set_world(tools.World(jezero), {"size_m": 80})
+        except ValueError as error:
+            assert "measured scale" in str(error)
+        else:
+            raise AssertionError("real elevation data can't be stretched")
+    terrain_data.load_preset.cache_clear()
+
+
 def cart_urdf(names=("front_left", "front_right", "rear_left", "rear_right"), mesh=True):
     """A 4-wheel cart: continuous wheel joints on cylinders, no actuators, a visual mesh on the chassis."""
     wheels = "".join(f"""

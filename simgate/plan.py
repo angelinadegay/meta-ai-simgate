@@ -36,6 +36,9 @@ class WorldPlan(BaseModel):
     preset: str | None = None
     slope_deg: float | None = Field(default=None, ge=-89, le=89)
     roughness: float | None = Field(default=None, ge=0, le=1)
+    # an uploaded heightmap's width and height range for this scene, in metres; only numbers the user gave
+    size_m: float | None = Field(default=None, ge=1, le=1000)
+    relief_m: float | None = Field(default=None, ge=0, le=500)
 
     @model_validator(mode="after")
     def validate_registered_values(self) -> "WorldPlan":

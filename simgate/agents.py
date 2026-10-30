@@ -13,7 +13,7 @@ from .backends import REGISTRY, describe
 from .backends.base import BuildResult, Simulator
 from .batch import Variation, _validate_variation
 from .spec import SceneSpec
-from .terrain_data import list_presets
+from .terrain_data import list_presets, resizable
 
 SCHEMA_HINT = json.dumps(SceneSpec.model_json_schema(), separators=(",", ":"))
 
@@ -139,7 +139,8 @@ def presets_text() -> str:
     if not found:
         return "(none installed)"
     return "\n".join(f"- {name}: {m['label']} ({m.get('body', '?')}, {m['size_m']:.0f} m square, "
-                     f"{m['relief_m']:.1f} m relief, typical slope {m.get('typical_slope_deg', '?')}°)" for name, m in found.items())
+                     f"{m['relief_m']:.1f} m relief, typical slope {m.get('typical_slope_deg', '?')}°"
+                     f"{'; uploaded heightmap, resizable' if resizable(m) else ''})" for name, m in found.items())
 
 
 def planner_system() -> str:
