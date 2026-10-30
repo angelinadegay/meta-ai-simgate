@@ -9,6 +9,7 @@ import hashlib
 import io
 import json
 import os
+import posixpath
 import re
 import shutil
 import stat
@@ -285,9 +286,12 @@ def _check_model_xml(path: str, content: bytes) -> None:
 
 
 def _check_reference(path: str, attribute: str, value: str) -> None:
-    """A file or folder named inside a model must be relative and stay in the upload (URDF package:// paths
-    count from the upload's root)."""
-    reference = _PACKAGE_URI.sub("", value.strip().replace("\\", "/"))
+    """A file or folder named inside a model must be relative and stay in the upload, counted from the model's own
+    folder ("../meshes" from urdf/ is fine); URDF package:// paths count from the upload's root."""
+    raw = value.strip().replace("\\", "/")
+    reference = _PACKAGE_URI.sub("", raw)
+    base = "" if reference != raw else posixpath.dirname(path)
+    resolved = posixpath.normpath(posixpath.join(base, reference)) if reference else "."
     if (reference.startswith("/") or re.match(r"^[A-Za-z]:", reference) or "://" in reference
-            or ".." in PurePosixPath(reference).parts):
+            or resolved == ".." or resolved.startswith("../")):
         raise UploadError(f"{path!r}: {attribute}={value!r} points outside the upload folder.")

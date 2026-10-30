@@ -259,9 +259,11 @@ button; one whose checks failed is shown as *not ready*, with the reasons. Behin
 - At most 50 MB per upload; a zip holds at most 500 files and may unpack to at most 200 MB, counted while unpacking.
 - Allowed file types only: `.xml .urdf .mjcf .stl .obj .msh .png .jpg .tif .tiff .onnx .yaml .yml .json .md .txt`.
   Code and pickles (`.py`, `.so`, executables, `.pt`/`.pth`) are refused.
-- No absolute paths, no `..`, no drive letters, no symbolic links; a rejected upload leaves nothing on disk.
+- No absolute paths, no `..` in stored file names, no drive letters, no symbolic links; a rejected upload leaves
+  nothing on disk.
 - YAML is read with `yaml.safe_load`; model XML may not declare a DOCTYPE or entities; MJCF `<plugin>` (native code)
-  is refused; every `file`, `filename`, `meshdir`, `texturedir` and `assetdir` must stay inside the upload.
+  is refused; every `file`, `filename`, `meshdir`, `texturedir` and `assetdir` must stay inside the upload, counted
+  from the model's own folder (`meshdir="../meshes"` from `urdf/` is fine).
 - Policies must be ONNX: a TorchScript `.pt` file can run arbitrary code when loaded. Export it on your own machine:
   ```python
   import torch
@@ -517,6 +519,7 @@ that test reports "skip" with the reason.
 | `uploaded_geotiff_and_png_terrains_become_presets` | A fake GeoTIFF (make_test_dtm.py) and a small PNG heightmap uploaded as terrains become presets that build and pass the physics checks; missing world, surface, size or height range come back as questions; the image's top is north; the Inspector reports size, relief and slopes and warns when it is too steep or too small; both appear as Library worlds with source "upload" |
 | `planner_names_an_uploaded_terrain_only_by_its_whole_name` | An uploaded terrain called "My hill" is chosen for "a rover on my hill" but not for "make my rover faster" |
 | `uploaded_urdf_cart_is_inspected_checked_and_listed` | A URDF cart with a mesh is converted to MJCF from upload files only, gets motors, is measured (mass, wheels, mesh), drafted as wheeled, stands, drives 0.5 m, is listed with its wheel controller and reaches a goal in a scene; a missing mesh is refused |
+| `urdf_laid_out_like_unitrees_is_accepted` | A URDF in urdf/ with its own `<mujoco>` block and `meshdir="../meshes"` is accepted and inspected; a reference that leaves the upload is still refused |
 | `inspector_questions_are_answered_without_a_reupload` | A cart whose names don't say which end is the front asks "Which way is forward"; it isn't listed until the answer ("-x") turns it around, and a bad answer is refused |
 | `uploaded_mjcf_quadruped_gets_a_baseline_gait` | An MJCF quadruped (scene parts dropped) gets a baseline gait in diagonal pairs, labelled as such |
 | `inspector_flags_wrong_units` | A robot 8 mm tall gets the mm/inches warning and isn't listed |

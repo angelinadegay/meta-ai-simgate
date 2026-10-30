@@ -13,6 +13,7 @@
 """
 import json
 import math
+import posixpath
 import re
 import shutil
 import tempfile
@@ -103,8 +104,8 @@ def _resolve(reference: str, base_dir: str, files: set[str]) -> str | None:
     """The upload file a model references: relative to the model's folder (URDF package:// paths from the
     upload's root), else a unique file with that name."""
     reference = re.sub(r"^package://[^/]+/", "", reference.replace("\\", "/"))
-    for candidate in (str(PurePosixPath(base_dir) / reference) if base_dir else reference, reference):
-        normal = str(PurePosixPath(*[p for p in PurePosixPath(candidate).parts if p != "."])) if candidate else ""
+    for candidate in (posixpath.join(base_dir, reference) if base_dir else reference, reference):
+        normal = posixpath.normpath(candidate) if candidate else ""   # "urdf/../meshes/a.stl" -> "meshes/a.stl"
         if normal in files:
             return normal
     named = [path for path in files if PurePosixPath(path).name == PurePosixPath(reference).name]
@@ -136,8 +137,15 @@ def load_robot(folder: Path, files: list[str]) -> tuple[mujoco.MjModel, str, dic
         joint = ET.SubElement(root, "joint", name="simgate_anchor_joint", type="fixed")
         ET.SubElement(joint, "parent", link="simgate_anchor")
         ET.SubElement(joint, "child", link=roots[0])
-        extension = ET.SubElement(root, "mujoco")
-        ET.SubElement(extension, "compiler", discardvisual="false", fusestatic="false", strippath="false")
+        extension = root.find("mujoco")   # many URDFs carry their own <mujoco> block; there may be only one
+        if extension is None:
+            extension = ET.SubElement(root, "mujoco")
+        compiler = extension.find("compiler")
+        if compiler is None:
+            compiler = ET.SubElement(extension, "compiler")
+        for folder_attribute in ("meshdir", "assetdir", "texturedir"):   # mesh filenames now name upload files exactly
+            compiler.attrib.pop(folder_attribute, None)
+        compiler.attrib.update(discardvisual="false", fusestatic="false", strippath="false")
         text, assets = ET.tostring(root, encoding="unicode"), {path: read(path) for path in files}
     else:
         compiler = root.find("compiler")

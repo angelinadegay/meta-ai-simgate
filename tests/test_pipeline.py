@@ -3132,6 +3132,26 @@ def test_uploaded_urdf_cart_is_inspected_checked_and_listed():
         assert missing.status_code == 400 and "isn't in the upload" in missing.json()["error"]
 
 
+def test_urdf_laid_out_like_unitrees_is_accepted():
+    """Real URDFs often sit in urdf/ next to meshes/, with their own <mujoco> block and meshdir="../meshes"."""
+    import pytest
+
+    from simgate.library.uploads import UploadError, save_upload
+
+    urdf = cart_urdf().replace(b'<robot name="cart">', b'<robot name="cart">\n  <mujoco><compiler meshdir="../meshes" '
+                               b'discardvisual="false"/></mujoco>').replace(b"package://cart/meshes/body.stl", b"../meshes/body.stl")
+    folder, uploads_dir, client = _robot_uploads()
+    with folder, uploads_dir:
+        answer = client.post("/upload", data={**ROBOT_FORM, "name": "Cart in urdf folder"},
+                             files=[("files", ("urdf/cart.urdf", urdf)), ("files", ("meshes/body.stl", MESH.read_bytes()))])
+        assert answer.status_code == 200, answer.text
+        robot = answer.json()["robot"]
+        assert robot["status"] == "listed" and robot["facts"]["mesh_files"] == 1 and robot["draft"]["kind"] == "wheeled"
+        escape = urdf.replace(b'meshdir="../meshes"', b'meshdir="../../outside"')
+        with pytest.raises(UploadError, match="points outside the upload folder"):
+            save_upload("robot", [("urdf/cart.urdf", escape)], "Escape", "Me", "MIT")
+
+
 def test_inspector_questions_are_answered_without_a_reupload():
     from simgate.library import LibraryRegistry
 
