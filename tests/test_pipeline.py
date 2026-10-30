@@ -3475,6 +3475,11 @@ def test_library_page_offers_uploads():
                    'agent: kind === "policy" ? "Adapter" : "Inspector"', 'agent: "Checker"', 'badge uploaded', '"not ready"',
                    'use.textContent = "Use"', "answerChips(row, kind, upload.id, question)", "ondrop"):
         assert needed in page, needed
+    # the side panel stays usable: the chat log shrinks and scrolls, and the open Library scrolls inside itself
+    import re
+
+    assert re.search(r"#log \{[^}]*min-height: 0;[^}]*overflow-y: auto", page)
+    assert re.search(r"#libraryPanel \{[^}]*max-height: 45%;[^}]*overflow-y: auto", page)
 
 
 def test_library_endpoint_shows_uploads_with_their_state():
