@@ -32,6 +32,7 @@ VOCABULARY = {"base_ang_vel": "ang_vel", "base_lin_vel": "lin_vel", "projected_g
 BlockName = Literal["base_ang_vel", "base_lin_vel", "projected_gravity", "command", "joint_pos", "joint_vel",
                     "last_action", "clock", "height_scan"]
 NUMBER_QUESTIONS = {"clock_period_s": (0.1, 5.0), "action_scale": (0.001, 10.0), "control_dt": (0.001, 0.2)}
+CHOICE_QUESTIONS = {"default_angles": ("robot pose", "zeros")}   # the robot's own default pose, or all zero
 STAND_S, WALK_S, WALK_GOAL_M, WALK_COMMAND = 2.0, 4.0, 0.5, 0.5
 
 
@@ -44,7 +45,7 @@ class BlockDraft(BaseModel):
 
 class PolicyQuestion(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    field: Literal["clock_period_s", "action_scale", "control_dt"]
+    field: Literal["clock_period_s", "action_scale", "control_dt", "default_angles"]
     question: str = Field(min_length=1, max_length=200)
     choices: list[str] = []          # suggestions; any number in range is accepted
 
@@ -60,7 +61,7 @@ class PolicyDraft(BaseModel):
     observation: list[BlockDraft] = Field(min_length=1)
     clock_period_s: float | None = Field(default=None, gt=0)
     action_scale: float | list[float]
-    default_angles: list[float]
+    default_angles: list[float] | None = None   # None only while a question asks for it
     kps: list[float]
     kds: list[float]
     control_dt: float | None = Field(default=None, gt=0)   # None only while a question asks for it
@@ -94,7 +95,9 @@ Rules:
 - control_dt is the policy's step in seconds: the config's simulation dt multiplied by its control decimation
   (e.g. 0.005 x 4 = 0.02). Leave it null only if the files don't say, and then ask a control_dt question.
 - Take numbers from the config. When something isn't in the files (e.g. the clock period), add a question for
-  clock_period_s, action_scale or control_dt (with suggested choices) instead of guessing.
+  clock_period_s, action_scale or control_dt (with suggested choices) instead of guessing. With no default joint
+  angles in the files, set default_angles to null and ask a default_angles question with choices
+  ["robot pose", "zeros"].
 Return only the JSON object."""
 
 
@@ -134,15 +137,18 @@ def config_facts(folder: Path, files: list[str]) -> dict:
 
 def robot_facts(robot_id: str) -> dict:
     robot = LibraryRegistry().robot(robot_id)
-    model = mujoco.MjModel.from_xml_path(str(PROJECT_ROOT / robot.mjcf_path)) if robot.mjcf_path and robot.source != "upload" else None
-    ranges = {}
+    model = mujoco.MjModel.from_xml_path(str(PROJECT_ROOT / robot.mjcf_path)) if robot.mjcf_path else None
+    ranges, pose = {}, {}
     if model is not None:
         for name in robot.joint_names:
             joint = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, name)
             if joint >= 0 and model.jnt_limited[joint]:
                 ranges[name] = [round(float(v), 4) for v in model.jnt_range[joint]]
+            if joint >= 0:   # the angle each joint has in the model's own default pose
+                pose[name] = round(float(model.qpos0[model.jnt_qposadr[joint]]), 6)
     return {"id": robot.id, "name": robot.name, "kind": robot.kind, "joint_names": robot.joint_names,
-            "joint_ranges": ranges, "mass_kg": robot.mass_kg, "standing_height_m": robot.standing_height_m}
+            "joint_ranges": ranges, "default_pose": pose, "mass_kg": robot.mass_kg,
+            "standing_height_m": robot.standing_height_m}
 
 
 # ── The draft: rules, the agent, and the check against FACTS ──────────────────
@@ -187,9 +193,8 @@ def rules_draft(found: dict) -> PolicyDraft:
         if period is None:
             questions.append(PolicyQuestion(field="clock_period_s", question="The policy reads a gait clock (sin/cos). "
                              "How long is one gait cycle, in seconds? (unitree_rl_gym uses 0.8 s)", choices=["0.8", "1.0", "0.6"]))
-    elif remaining > 0:
-        notes.append(f"{remaining} observation values aren't explained by the config (a height scan?).")
-        blocks.append(BlockDraft(name="height_scan", size=remaining, scale=1.0))
+    elif remaining:   # left as a size mismatch for the check to report; not guessed as a height scan
+        notes.append(f"The config explains {observations - remaining} of the ONNX's {observations} observation values.")
     dt = _first(flat, "simulation_dt", "sim_dt", "dt")
     decimation = _first(flat, "control_decimation", "decimation")
     control_dt = float(dt) * int(decimation) if dt and decimation else float(_first(flat, "control_dt", default=0.02))
@@ -197,9 +202,14 @@ def rules_draft(found: dict) -> PolicyDraft:
     if not _first(flat, "joint_names", "joint_order", "dof_names"):
         notes.append("Joint order assumed to be the robot's own joint order (the config names no joints).")
     zeros = [0.0] * actions
+    default_angles = _first(flat, "default_angles", "default_joint_angles")
+    if default_angles is None:
+        questions.append(PolicyQuestion(field="default_angles", question="The config gives no default joint angles "
+                         "(the pose the actions are added to). Use the robot's own default pose, or zeros?",
+                         choices=list(CHOICE_QUESTIONS["default_angles"])))
     return PolicyDraft(observation=blocks, clock_period_s=period if remaining == 2 else None,
                        action_scale=_first(flat, "action_scale", default=1.0),
-                       default_angles=_first(flat, "default_angles", "default_joint_angles", default=zeros),
+                       default_angles=default_angles,
                        kps=_first(flat, "kps", "stiffness", default=zeros), kds=_first(flat, "kds", "damping", default=zeros),
                        control_dt=round(control_dt, 6), joint_order=list(joint_order),
                        command_default=list(_first(flat, "cmd_init", "command_init", default=[0.5] + [0.0] * (commands - 1))),
@@ -241,8 +251,10 @@ def check_draft(draft: PolicyDraft, found: dict) -> list[str]:
         errors.append(f"joints {unknown} aren't joints of robot {robot['id']} (it has {robot['joint_names']})")
     if len(set(draft.joint_order)) != len(draft.joint_order):
         errors.append("joint_order names a joint twice")
+    if draft.default_angles is None and not any(q.field == "default_angles" for q in draft.questions):
+        errors.append("default_angles is missing: take them from the config or ask a default_angles question")
     for field in ("default_angles", "kps", "kds"):
-        if len(getattr(draft, field)) != len(draft.joint_order):
+        if getattr(draft, field) is not None and len(getattr(draft, field)) != len(draft.joint_order):
             errors.append(f"{field} has {len(getattr(draft, field))} values for {len(draft.joint_order)} joints")
     if isinstance(draft.action_scale, list) and len(draft.action_scale) != len(draft.joint_order):
         errors.append("action_scale must be one number or one per joint")
@@ -279,7 +291,7 @@ def _config_conflicts(draft: PolicyDraft, flat: dict) -> list[str]:
         errors.append("base_lin_vel is listed, but the config scales the other blocks and not lin_vel: "
                       "the policy probably doesn't read it")
     for key, field in (("action_scale", "action_scale"), ("kps", "kps"), ("kds", "kds"), ("default_angles", "default_angles")):
-        if key in flat and differs(getattr(draft, field), flat[key]):
+        if key in flat and getattr(draft, field) is not None and differs(getattr(draft, field), flat[key]):
             errors.append(f"{field} is {getattr(draft, field)}, but the config says {flat[key]}")
     dt, decimation = _first(flat, "simulation_dt", "sim_dt"), _first(flat, "control_decimation", "decimation")
     if dt and decimation and draft.control_dt is not None and abs(draft.control_dt - float(dt) * int(decimation)) > 1e-6:
@@ -434,12 +446,21 @@ def adapt_policy(record: UploadRecord, robot_id: str) -> dict:
 
 
 def answer_policy(record: UploadRecord, answers: dict) -> dict:
-    """Apply numeric answers (clock_period_s, action_scale, control_dt), re-check, list when nothing is open."""
+    """Apply answers (clock_period_s, action_scale, control_dt numbers; default_angles "robot pose" or "zeros"),
+    re-check, and list when nothing is open."""
     path = _state_path(record)
     if not path.is_file():
         raise UploadError(f"No adaptation found for upload {record.id}.")
     state = json.loads(path.read_text(encoding="utf-8"))
     for field, value in answers.items():
+        if field in CHOICE_QUESTIONS:
+            if value not in CHOICE_QUESTIONS[field]:
+                raise UploadError(f"{field} must be one of: {', '.join(CHOICE_QUESTIONS[field])}.")
+            pose = state["facts"]["robot"]["default_pose"]
+            state["draft"][field] = [pose.get(name, 0.0) if value == "robot pose" else 0.0 for name in state["draft"]["joint_order"]]
+            state["answers"][field] = value
+            state["questions"] = [q for q in state["questions"] if q["field"] != field]
+            continue
         if field not in NUMBER_QUESTIONS:
             raise UploadError(f"Can't set {field!r}.")
         try:

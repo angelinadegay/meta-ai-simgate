@@ -3183,6 +3183,13 @@ def test_inspector_flags_wrong_units():
         assert robot["status"] == "checks_failed"
         assert not next(c for c in robot["checks"] if c["name"] == "Mass and size are plausible")["passed"]
 
+        # a 30 cm box robot modelled in millimetres: 300 "metres" tall
+        in_mm = (b'<mujoco><worldbody><body name="box"><freejoint/><geom type="box" size="200 100 150" mass="5"/>'
+                 b'</body></worldbody></mujoco>')
+        robot = client.post("/upload", data={**ROBOT_FORM, "name": "Box in mm"}, files=[("files", ("box.xml", in_mm))]).json()["robot"]
+        assert robot["facts"]["height_m"] == 300.0 and "mm or inches" in robot["facts"]["units_warning"]
+        assert robot["status"] == "checks_failed"
+
 
 def test_inspector_model_draft_is_checked_against_facts():
     import json
@@ -3357,6 +3364,56 @@ def test_adapter_checks_explain_a_wrong_observation_order():
             assert not (Path(folder.name) / "policy" / policy["upload_id"] / "policy_card.json").exists()
     finally:
         config.MOCK_MODE, llm.chat = original_mock, original_chat
+
+
+def _g1_config(**changes):
+    """g1.yaml with some keys changed (None removes a key), as uploaded bytes."""
+    import yaml
+
+    config = yaml.safe_load((G1_DEPLOY / "deploy_mujoco/configs/g1.yaml").read_text(encoding="utf-8"))
+    for key, value in changes.items():
+        if value is None:
+            config.pop(key)
+        else:
+            config[key] = value
+    return yaml.safe_dump(config).encode()
+
+
+def test_policy_without_default_angles_asks_for_them():
+    folder, uploads_dir, client = _robot_uploads()
+    with folder, uploads_dir:
+        files = [G1_POLICY_FILES[0], ("files", ("g1.yaml", _g1_config(default_angles=None)))]
+        answer = client.post("/upload", data={**POLICY_FORM, "robot_id": "g1"}, files=files).json()
+        policy = answer["policy"]
+        asked = {q["field"]: q for q in policy["questions"]}
+        assert policy["status"] == "needs_answers" and set(asked) == {"default_angles", "clock_period_s"}
+        assert asked["default_angles"]["choices"] == ["robot pose", "zeros"]
+        url = f"/upload/policy/{answer['upload']['id']}/answers"
+        assert client.post(url, json={"answers": {"default_angles": "crouch"}}).status_code == 400
+        answered = client.post(url, json={"answers": {"default_angles": "robot pose", "clock_period_s": 0.8}}).json()["policy"]
+        pose = answered["facts"]["robot"]["default_pose"]
+        assert answered["questions"] == [] and answered["status"] in ("listed", "checks_failed")
+        assert answered["draft"]["default_angles"] == [pose[name] for name in answered["draft"]["joint_order"]]
+        assert answered["answers"]["default_angles"] == "robot pose"
+
+
+def test_policy_whose_onnx_sizes_dont_fit_is_refused_with_the_numbers():
+    folder, uploads_dir, client = _robot_uploads()
+    with folder, uploads_dir:
+        # the config describes 2 command values, so its blocks add up to 44 (no clock fits): the ONNX input has 47
+        files = [G1_POLICY_FILES[0], ("files", ("g1.yaml", _g1_config(cmd_scale=[2.0, 2.0], cmd_init=[0.5, 0.0])))]
+        policy = client.post("/upload", data={**POLICY_FORM, "robot_id": "g1"}, files=files).json()["policy"]
+        assert policy["status"] == "unusable"
+        assert "observation block sizes add up to 44, but the ONNX input has 47 values" in " ".join(policy["errors"])
+
+        cart = client.post("/upload", data={**ROBOT_FORM, "name": "Cart"}, files=[("files", ("cart.urdf", cart_urdf(mesh=False)))]).json()
+        policy = client.post("/upload", data={**POLICY_FORM, "name": "G1 walk on a cart", "robot_id": cart["upload"]["id"]},
+                             files=G1_POLICY_FILES).json()["policy"]
+        assert policy["status"] == "unusable"
+        assert "joint_order has 4 joints, but the ONNX output has 12 actions" in " ".join(policy["errors"])
+        states = {upload["name"]: upload for upload in client.get("/library").json()["uploads"]}
+        assert states["G1 walk on a cart"]["status"] == "not ready"
+        assert any("12 actions" in reason for reason in states["G1 walk on a cart"]["reasons"])
 
 
 def test_policy_runtime_reads_base_linear_velocity_in_the_body_frame():

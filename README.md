@@ -80,7 +80,7 @@ the path in the order given unless the request says to scatter them or names a p
 one-tool-per-model-turn loop or 12-call limit.
 
 After a failed run, "why did it fail?" (or "prove it", "what caused it") plans the **diagnose** workflow and
-"fix it", "make it pass" or "what would work" plans **redesign** (sections 10 and 11). If the model picks another
+"fix it", "make it pass" or "what would work" plans **redesign** (sections 11 and 12). If the model picks another
 workflow for such a request after a failed run, a code guard switches to the right one and says so. "use this
 design" applies the last redesign's winner through the typed edit path without a model call.
 
@@ -211,7 +211,8 @@ steps in the event tree.
 
 - Open **Library** to browse the shipped robot, policy and world cards. Choose a robot, one of its
   compatible policies, and a world, then apply the selection before describing or rebuilding a robot
-  scene. The panel displays each card's license and credit. Upload controls are placeholders.
+  scene. The panel displays each card's license and credit. Upload your own terrains, robots and policies from the
+  same panel (section 9).
 - The library includes the G1 humanoid and its trained walking policy, alongside the built-in rover and
   walkers. Prompts such as *"G1 humanoid on flat ground"* select the registered G1 robot and
   `g1_walking` policy; the planner is given the installed IDs and must not invent library entries.
@@ -233,7 +234,76 @@ steps in the event tree.
   browser sends shared mesh assets once and draws the G1 meshes as BufferGeometry, positioned from
   MuJoCo geom poses so asset offsets are not applied a second time.
 
-### 9. Stress test (robots)
+### 9. Bring your own: terrains, robots and policies
+
+Upload a **world** (terrain), a **robot** (its body) or a **policy** (a trained brain for a Library robot). Agents
+inspect it, write its Library card, ask when they're unsure, test it, and then it appears in the Library to use like
+any built-in item: in plans, races, stress tests, diagnose and redesign.
+
+**How to upload.** Open **Library**, pick the tab and press **Upload robot**, **Upload policy** or **Upload world**.
+Drop files (or one `.zip`) on the form or choose them, and fill in a name, a credit and a license (all three are
+required and shown on the card). A policy needs the Library robot it drives; a world asks which world it's on and
+what the ground is like. The chat shows the work as agent steps: **Upload** → **Inspector** or **Adapter** (the
+FACTS it measured and the draft card) → **Checker** (each check). Questions come as quick-reply chips, and an answer
+updates the card without a re-upload. A listed item gets an *uploaded* badge, its credit and license, and a **Use**
+button; one whose checks failed is shown as *not ready*, with the reasons. Behind the panel: `POST /upload`,
+`POST /upload/{robot|policy}/{id}/answers` and `GET /library`.
+
+| Upload | Files | What happens |
+| --- | --- | --- |
+| World | A GeoTIFF elevation model in a metric projection, or a square greyscale PNG/JPG heightmap | A GeoTIFF goes through the HiRISE converter's path (patch picking, hole filling, north up). A heightmap needs its width and height range in metres; black is the lowest point and the image's top edge is north. |
+| Robot | MJCF (`.xml`/`.mjcf`) or URDF, with its meshes (`.stl`, `.obj`, `.msh`) | Compiled with MuJoCo from upload files only (a URDF is converted with `mj_saveLastXML`), then inspected and tested. |
+| Policy | An ONNX model plus a yaml/json config and/or a README | Read in code, adapted to the chosen robot's joints by name, and tested on that robot. |
+
+**Safety rules.** Nothing uploaded is ever run.
+- At most 50 MB per upload; a zip holds at most 500 files and may unpack to at most 200 MB, counted while unpacking.
+- Allowed file types only: `.xml .urdf .mjcf .stl .obj .msh .png .jpg .tif .tiff .onnx .yaml .yml .json .md .txt`.
+  Code and pickles (`.py`, `.so`, executables, `.pt`/`.pth`) are refused.
+- No absolute paths, no `..`, no drive letters, no symbolic links; a rejected upload leaves nothing on disk.
+- YAML is read with `yaml.safe_load`; model XML may not declare a DOCTYPE or entities; MJCF `<plugin>` (native code)
+  is refused; every `file`, `filename`, `meshdir`, `texturedir` and `assetdir` must stay inside the upload.
+- Policies must be ONNX: a TorchScript `.pt` file can run arbitrary code when loaded. Export it on your own machine:
+  ```python
+  import torch
+  policy = torch.jit.load("policy.pt", map_location="cpu").eval()   # run this on your own machine
+  observation = torch.zeros(1, NUM_OBSERVATIONS)                      # the size your policy expects
+  torch.onnx.export(policy, observation, "policy.onnx", input_names=["observation"],
+                    output_names=["action"], opset_version=17)
+  ```
+- Uploads are stored under `simgate/library/uploads/<type>/<id>/` (the id is the name plus a content hash), stay on
+  the machine they were made on (git-ignored), and are listed with source `upload`. `SIMGATE_UPLOADS_DIR` moves the
+  folder.
+
+**How the agents inspect it.** In each case code measures the FACTS and an agent (the planner model; rules in mock
+mode) only drafts what needs judgment. Its draft is checked against the FACTS in code, with one retry that shows it
+the exact errors, and the rules draft is used if it is still wrong.
+- **Terrain:** the Inspector reports size, relief and typical (95th percentile) and maximum slope, and warns when the
+  ground is steeper than walkers (20°) or rovers (25°) usually climb or smaller than 10 m across.
+- **Robot:** SimGate stores it with one root body and a free joint, turned so forward is +x, every joint named, and
+  motors added (with the URDF's effort limits) if it has no actuators. FACTS: bodies, joints (type, range, axis),
+  actuators (type, gear, ranges), mass, bounding box (a robot under 5 cm or over 5 m tall gets a "mm or inches?"
+  warning), meshes, candidate feet and wheels, and name hints. The Inspector drafts its kind, forward axis, wheels or
+  legs and which controller fits; code measures wheel sides, radii and spin, and each leg's gait phase. Checks before
+  it is listed: it compiles, mass and size are plausible, it stands 1 s, a wheeled robot drives 0.5 m with the wheel
+  controller, and a legged robot's simple gait is tried and labelled *baseline gait* (it may walk badly). A robot
+  without a trained policy gets a built-in controller: the wheel controller, the baseline gait, or holding its pose.
+- **Policy:** FACTS are the ONNX inputs and outputs (and an LSTM's state), the config's keys and values, and the
+  robot's joints and default pose. The Adapter drafts the card in a fixed vocabulary of observation blocks
+  (`base_ang_vel`, `base_lin_vel`, `projected_gravity`, `command`, `joint_pos`, `joint_vel`, `last_action`, `clock`;
+  `height_scan` is refused as unsupported), with scales, action scale, default angles, gains, control step, joint
+  order and commands. Anything the files don't give (the clock period, missing default angles) becomes a question.
+  Checks: the blocks add up to the ONNX input, the actions match the output and the joints mapped by name, the policy
+  loads, it stands 2 s at command 0 and walks 0.5 m forward in 4 s. A failure says what is likely wrong, for example
+  "the observation order or scales (the robot falls immediately)".
+
+**The golden test.** The G1's own `motion.onnx` and `g1.yaml`, uploaded as a user would for robot `g1`, must give a
+card equal to the shipped G1 card field by field, and the G1 must walk with it. `g1.yaml` doesn't contain the gait
+clock's period (Unitree's `deploy_mujoco.py` hard-codes 0.8 s), so the Adapter asks for it; after the answer "0.8"
+every field matches and the G1 walks about 1.9 m in the 4 s check. This shows the Adapter works on a real policy.
+With gpt-4o-mini as the planner model, the model's own drafts were rejected by the checks in our runs, so the rules
+draft was used; the checks are what keep a wrong draft out of the Library.
+
+### 10. Stress test (robots)
 
 - With a robot scene open, click **Stress test** or ask *"stress test"*, *"how robust?"*,
   *"test it under different conditions"*, or *"will it work on Mars?"*. The unchanged scene runs first
@@ -253,7 +323,7 @@ steps in the event tree.
   about 5 MB). Slope, obstacle-scale and seed variations change geometry, so they remain in the report
   but are marked **not in ghost view**. The follow camera tracks the baseline.
 
-### 10. Prove why it failed
+### 11. Prove why it failed
 
 After a failed run, ask *"Why did it fail?"* (or click the chip). The agents test their own explanation instead
 of guessing:
@@ -289,7 +359,7 @@ of guessing:
 **Budget:** at most 5 reruns in total, including the reproduction. In a multi-robot scene one robot is diagnosed
 (the first that failed, or the one named), with the others unchanged.
 
-### 11. Make it pass
+### 12. Make it pass
 
 Ask *"Make it pass"* (or *"fix it"*, *"what would work?"*), optionally with limits such as *"keep it under
 15 kg"*, *"keep 4 wheels"*, *"only change the wheels"* or *"don't change the speed"*. The agents change the
@@ -331,7 +401,7 @@ runs tried and each round's strategy). Every decision appears in the timeline wi
 shows Explainer → Batch runner → Explainer for a diagnosis and Designer → Batch runner → Checker → Designer for a
 redesign.
 
-### 12. Model support
+### 13. Model support
 
 The prototype works with any OpenAI-compatible endpoint, configured in `.env`:
 
@@ -343,10 +413,11 @@ The prototype works with any OpenAI-compatible endpoint, configured in `.env`:
 
 Without a key, it runs in mock mode.
 
-### 13. Tests
+### 14. Tests
 
-`python tests/test_pipeline.py` runs 75 offline tests. The optional real-terrain integration test skips when
-`rasterio` is unavailable.
+`python tests/test_pipeline.py` runs 124 offline tests (simulations, the agents with scripted models, uploads and
+the page's wiring). rasterio is in requirements.txt, so the real-terrain integration test runs too; without it
+that test reports "skip" with the reason.
 
 | Test | Checks that |
 | --- | --- |
@@ -458,7 +529,22 @@ Without a key, it runs in mock mode.
 | `library_page_offers_uploads` | The Library's Upload buttons open a working form (drag-and-drop or file picker; name, credit and license required; robot picker for policies) and show Upload → Inspector/Adapter → Checker steps, question chips, "uploaded"/"not ready" badges and a Use button |
 | `library_endpoint_shows_uploads_with_their_state` | GET /library lists uploaded cards and each upload's state: listed, needs answers (with its questions), or not ready (with the failed checks) |
 | `an_uploaded_robot_is_usable_everywhere` | An uploaded cart is offered to the Director by id, planned by name, titled by its name, raced, run with its own climb limits, diagnosed, redesigned by command speed only, and stress-tested in worker processes |
-
+| `explainer_uses_code_facts_and_retries_contradictions` | The Explainer gets a FACTS block built in code (terrain, tilt words); a reply calling hills "flat" gets one retry with the exact problem, and a 56.9° tilt called stable twice falls back to the rules text |
+| `explainers_get_each_robots_kind_and_mark_untested_gaits` | Explainers see each robot's kind and only the settings it has (no gait for a rover, no wheel speed for a walker); gait numbers other than the tested 2.0 Hz / 15° are marked "untested settings" |
+| `diagnose_conclusion_opening_is_code_and_contradictions_are_rejected` | The diagnosis opening ("Confirmed: X." or "No single tested cause explains it.") is written in code; a reply contradicting it gets one retry, then the rules text |
+| `less_slip_without_getting_closer_is_ruled_out` | Less slip without getting closer is "ruled out" with a side note; "partly" needs 30% less distance left or an avoided fall |
+| `robustness_decides_the_winner` | A design that passes only 1/3 robustness checks loses to the next-best that passes 3/3; if none holds up, the best is shown as fragile and can still be applied |
+| `race_diagnosis_and_redesign_target_one_robot` | In a race, "why did it fail?" diagnoses the robot that failed (or the one named; a winner has nothing to explain) and redesign changes only that robot |
+| `failure_chips_name_the_robot_that_failed` | After a race the chips name the robot that failed ("Why did the Walker fail?", "Make the Walker pass"); none when every robot arrived |
+| `race_on_an_existing_course_builds_and_checks` | A race on an open course builds, checks starts and goals against the obstacles, and stress-tests without errors |
+| `stress_test_on_a_race_reports_each_robot` | A race's stress test runs every variation on every robot, reports one cell per robot, and a payload reaches each of them |
+| `race_stress_report_counts_each_robot` | The race stress report counts passes per robot ("Rover: 5/8 · Walker: 2/8") and never marks a row failed because one robot failed |
+| `mock_stress_explainer_reads_each_racer` | The mock stress explanation gives each racer's pass count and its baseline outcome |
+| `mixed_race_time_limit_uses_the_slowest_robot` | A rover and walker race gets the walker's longer time limit, and reruns keep it |
+| `crashed_runs_are_a_system_problem_not_physics` | Crashed stress runs are reported as a system problem and left out of the analysis; if all crash, there is no Explainer call |
+| `mock_tips_fit_the_scene` | Mock tips fit the scene: a course suggests wheels or legs, flat ground never "make the slope steeper", a 4-legged walker "use six legs" |
+| `policy_without_default_angles_asks_for_them` | A policy config without default angles gets a question ("robot pose" or "zeros"); the answer fills them from the robot's own pose and a bad answer is refused |
+| `policy_whose_onnx_sizes_dont_fit_is_refused_with_the_numbers` | A config that explains 44 of the ONNX's 47 inputs, or a 12-action policy for a 4-joint robot, is refused with those numbers and shown as not ready |
 ---
 
 ## Quick start
@@ -476,7 +562,6 @@ To use a model, copy `.env.example` to `.env` and fill in a base URL, key and mo
 To import real terrain:
 
 ```bash
-pip install rasterio scipy
 python scripts/hirise_to_simgate.py --name jezero --label "Jezero Crater, Mars" --size-m 40 \
   --input https://astrogeo-ard.s3.us-west-2.amazonaws.com/mars/mro/hirise/controlled/dtm/ESP_045994_1985_ESP_046060_1985/DTEEC_045994_1985_046060_1985_U01.tif
 ```
@@ -514,6 +599,11 @@ Things to try:
 | `simgate/redesign.py` | Make it pass: bounded design search, constraints, robustness checks |
 | `simgate/library/` | Validated robot, policy and world cards and filesystem registry |
 | `simgate/policy_runtime.py` | Named-joint policy inference and PD control |
+| `simgate/simple_control.py` | Built-in controllers for uploaded robots: wheels, baseline gait, held pose |
+| `simgate/library/uploads.py` | Safe upload storage: size, file type, path and content checks |
+| `simgate/library/inspector.py` | The Inspector: uploaded robot → normalized MJCF, FACTS, draft card, checks |
+| `simgate/library/adapter.py` | The Adapter: uploaded ONNX policy → policy card for a Library robot, checks |
+| `simgate/library/terrain_upload.py`, `simgate/terrain_import.py` | Uploaded GeoTIFF/heightmap → terrain preset and the Inspector's report |
 | `simgate/orchestrator.py` | Runs a session and streams events to the browser |
 | `simgate/backends/` | One file per simulator (`mujoco_backend.py`, `opensees_backend.py`) |
 | `simgate/terrain_data.py` | Loads real-terrain presets |
@@ -527,6 +617,10 @@ To add a simulator: add a domain to `SceneSpec`, subclass `Simulator` in `backen
 ## Known limits
 
 - Robots steer straight at the goal and go over obstacles; there's no route planning around them yet.
+- Uploaded robots: the baseline gait is a simple open-loop gait and may walk badly; MJCF equality constraints,
+  tendons and texture images in an upload aren't used; slip is measured only on built-in feet and wheels.
+- The Adapter's rules know legged_gym / unitree_rl_gym deploy configs; other conventions rely on the planner model
+  or the user's answers. A config that names no joints is mapped in the robot's own joint order (noted on the card).
 - Gap widths snap to the terrain grid (about 0.13 m steps on a 20 m terrain); the measured width is reported.
 - The built-in walkers use a fixed rhythmic gait. The G1 humanoid uses a trained policy but was trained
   for flat Earth conditions; the 4-legged built-in walker falls on side slopes
@@ -542,7 +636,6 @@ To add a simulator: add a domain to `SceneSpec`, subclass `Simulator` in `backen
 ## Planned next
 
 - Steering around obstacles (route planning)
-- Upload your own robot (MJCF, URDF) and a trained ONNX policy, wired up by inspector and adapter agents
 - Additional robot and policy library entries
 - Quick-tune swarm, and voice editing if time allows
 
