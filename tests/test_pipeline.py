@@ -2,12 +2,24 @@
 
 They run offline in MOCK mode unless you've configured a model.
 """
+import atexit
 import math
+import os
+import shutil
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+# The tests see an empty uploads folder, never the files you uploaded while using the app. It sits inside the real
+# uploads folder (git-ignored) so project-relative mesh paths still resolve, and goes away when the run ends.
+if not os.getenv("SIMGATE_UPLOADS_DIR"):
+    _real_uploads = Path(__file__).resolve().parent.parent / "simgate" / "library" / "uploads"
+    _real_uploads.mkdir(parents=True, exist_ok=True)
+    os.environ["SIMGATE_UPLOADS_DIR"] = tempfile.mkdtemp(dir=_real_uploads, prefix=".test-session-")
+    atexit.register(shutil.rmtree, os.environ["SIMGATE_UPLOADS_DIR"], ignore_errors=True)
 
 from simgate import agents  # noqa: E402
 from simgate.backends.mujoco_backend import MuJoCoSimulator  # noqa: E402
