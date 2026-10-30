@@ -311,6 +311,8 @@ draft was used; the checks are what keep a wrong draft out of the Library.
   *"test it under different conditions"*, or *"will it work on Mars?"*. The unchanged scene runs first
   as **Baseline**, followed by up to 23 variations in parallel. Each run has a 120-second timeout;
   failed or timed-out runs appear as errors instead of aborting the batch.
+- **Repeat ×3** (the chip after a stress test, or *"repeat ×3"*, *"how reliable is it?"*, *"stress test, repeat"*)
+  runs every row on 2 more seeds and shows each row's pass rate (see section 13).
 - The planner can vary gravity, surface, friction, added payload, slope angle (slope terrain only),
   obstacle scale (when obstacles exist), lateral push and terrain seed. Surface changes reset friction
   to the surface preset. Gravity changes the gravity value directly and does not change the body/world,
@@ -330,8 +332,9 @@ draft was used; the checks are what keep a wrong draft out of the Library.
 After a failed run, ask *"Why did it fail?"* (or click the chip). The agents test their own explanation instead
 of guessing:
 
-1. **Reproduce:** the unchanged scene runs again. If it now passes, the answer is "the failure didn't reproduce"
-   and nothing else runs.
+1. **Reproduce:** the unchanged scene runs again, on the original seed and on a second one (section 13). If it
+   passes on the original seed, the answer is "the failure didn't reproduce" and nothing else runs. If it fails only
+   on the original seed, the timeline says the failure itself is borderline.
 2. **Hypotheses:** the Explainer proposes 2–4 causes, each tested by changing exactly **one** thing. Only these
    experiments are allowed: slipping → a rock surface (or friction +50%); low gravity → 9.81 m/s²; steep ground →
    10° less slope (slope terrain) or the same scene on flat ground (generated hills, rocks or craters); an obstacle
@@ -358,7 +361,13 @@ of guessing:
    one retry with the exact problem, then the rules text is used. Unless a combination was tested, it notes that
    causes which only matter together could be missed.
 
-**Budget:** at most 5 reruns in total, including the reproduction. In a multi-robot scene one robot is diagnosed
+**Seeds:** every experiment runs on both seeds, and each seed is judged against the unchanged scene on that seed.
+When the two seeds give different verdicts the cause is marked **uncertain** (a grey-amber badge), the code-written
+opening of the conclusion says so ("Uncertain: slipping (the 2 seeds disagreed)."), and a model conclusion that calls
+it confirmed or ruled out is sent back.
+
+**Budget:** at most 8 reruns in total, counting each seed, including the two reproductions: typically 2 causes and a
+control, each on 2 seeds. In a multi-robot scene one robot is diagnosed
 (the first that failed, or the one named), with the others unchanged.
 
 ### 12. Make it pass
@@ -387,7 +396,7 @@ adjustment is shown.
 - **Winner:** the smallest change that passes (each numeric knob counted as a share of its range, a choice such
   as 6 wheels as 0.5; fewer changed knobs win ties).
 - **Robustness:** the winner reruns on 3 nearby conditions inside the same world (terrain/obstacle seed +1 and +2,
-  friction −10%) and is reported as "passes 3/3" or which failed. A design is the winner only if it passes at least
+  friction −10%) and is reported as "passes 3/3 (95% CI 44–100%)" or which failed. A design is the winner only if it passes at least
   2 of the 3; otherwise the next-best passing design is tried. If none qualifies, the result says "found a design
   that passed once but isn't reliable (1/3)" and shows it as **fragile**, not as the winner; the button then reads
   *"Use fragile design"* and still applies it.
@@ -403,7 +412,32 @@ runs tried and each round's strategy). Every decision appears in the timeline wi
 shows Explainer → Batch runner → Explainer for a diagnosis and Designer → Batch runner → Checker → Designer for a
 redesign.
 
-### 13. Model support
+### 13. Honest uncertainty
+
+One run says what happened once. SimGate says how sure a result is, and what it cost to find out.
+
+- **Seeds.** `simgate/reliability.py` runs the same condition on several seeds in parallel through the batch runner.
+  Seed 0 is the condition exactly as it is (the run you saw). Each further seed changes the terrain and obstacle
+  randomness (terrain seed + 1, + 2, …) and nudges each robot's start by up to ±1 cm and its heading by up to ±1°
+  (`perturb_seed`; the goal and the course stay put).
+- **Counting.** For each condition: passes, rate, a **Wilson 95% interval** (honest for small counts: 3 of 3 is
+  44–100%, not "100%"), the mean ± spread of the key number (distance left to the goal, or forward progress without
+  one), and a label: **reliable pass** (every seed passed), **reliable fail** (none did) or **borderline** (mixed).
+  A crashed run is a system problem, not a result: it is left out of the count and reported.
+- **Where it shows.**
+
+  | Analysis | What changes |
+  | --- | --- |
+  | Prove why it failed | Every reproduction and experiment runs on 2 seeds; seeds that disagree make the verdict *uncertain* (section 11). |
+  | Make it pass | The robustness check reads "passes 3/3 (95% CI 44–100%)"; a winner still needs at least 2 of 3. |
+  | Stress test | Optional **Repeat ×3**: each row on 3 seeds, with its pass count, interval, label and the key number's mean ± spread; the explanation ends with how many rows are reliable passes, borderline or reliable fails. |
+
+- **Cost.** Every request reports what it used: simulation runs, wall time and model calls, e.g.
+  *"12 runs · 48 s · 3 model calls"*. It is shown on the Diagnosis, Redesign and Report cards and under the reply in
+  the chat. Runs are counted when the batch runner starts them (and for each streamed run); model calls are counted
+  in the model client.
+
+### 14. Model support
 
 The prototype works with any OpenAI-compatible endpoint, configured in `.env`:
 
@@ -415,9 +449,9 @@ The prototype works with any OpenAI-compatible endpoint, configured in `.env`:
 
 Without a key, it runs in mock mode.
 
-### 14. Tests
+### 15. Tests
 
-`python tests/test_pipeline.py` runs 126 offline tests (simulations, the agents with scripted models, uploads and
+`python tests/test_pipeline.py` runs 129 offline tests (simulations, the agents with scripted models, uploads and
 the page's wiring). rasterio is in requirements.txt, so the real-terrain integration test runs too; without it
 that test reports "skip" with the reason.
 
@@ -439,7 +473,7 @@ that test reports "skip" with the reason.
 | `plan_workflow_expands_race_and_runs_only_when_requested` | A 3-rover race asks before running, and a requested run is handed to the session to stream |
 | `run_now_race_streams_frames_before_metrics` | A race the user asked to run streams run_start and frames before metrics, then the leaderboard and explanation, like an approved run |
 | `plan_workflow_bounds_visible_repairs_and_asks_before_running` | Repair events form a visible Checker → Builder → Checker chain with each failure reported once, stop after three attempts and never run failed scenes |
-| `diagnose_confirms_the_step_and_rules_out_low_gravity` | On Mars a 0.2 m step stops the rover: diagnose reproduces it, confirms the obstacle and rules out low gravity, within 5 reruns |
+| `diagnose_confirms_the_step_and_rules_out_low_gravity` | On Mars a 0.2 m step stops the rover: diagnose reproduces it, confirms the obstacle and rules out low gravity on both seeds, within 8 reruns, and reports its cost |
 | `diagnose_confirms_slipping_on_an_icy_slope` | On a 25° ice slope, a rock surface alone makes it pass, so slipping is confirmed |
 | `diagnose_does_not_diagnose_a_passing_run` | A passing run gets a clear "nothing to explain" and no reruns |
 | `experiment_knobs_and_per_robot_metrics` | The experiment and design knobs change only what they name; one robot's numbers are read from a multi-robot run |
@@ -537,6 +571,9 @@ that test reports "skip" with the reason.
 | `explainers_get_each_robots_kind_and_mark_untested_gaits` | Explainers see each robot's kind and only the settings it has (no gait for a rover, no wheel speed for a walker); gait numbers other than the tested 2.0 Hz / 15° are marked "untested settings" |
 | `diagnose_conclusion_opening_is_code_and_contradictions_are_rejected` | The diagnosis opening ("Confirmed: X." or "No single tested cause explains it.") is written in code; a reply contradicting it gets one retry, then the rules text |
 | `less_slip_without_getting_closer_is_ruled_out` | Less slip without getting closer is "ruled out" with a side note; "partly" needs 30% less distance left or an avoided fall |
+| `wilson_interval_labels_and_seeded_repeats` | Wilson intervals match known values (3/3 → 44–100%), the reliable pass/borderline/reliable fail labels, a crashed run left out of the count, seed 0 unchanged and seed k adding terrain seed + k, and the start nudge staying within ±1 cm and ±1° and repeating for the same seed |
+| `diagnose_marks_a_verdict_the_seeds_disagree_on_uncertain` | With faked batch results, a cause that passes on one seed and not the other is "uncertain", the conclusion opens "Confirmed: obstacle. Uncertain: slipping (the 2 seeds disagreed).", the 8-rerun budget is used as 2 reproductions + 3 experiments × 2 seeds, a model conclusion calling it ruled out is rejected, and the cost is reported |
+| `stress_repeat_shows_pass_rates_and_every_card_shows_its_cost` | "Repeat ×3" after a stress test repeats it (not a rerun of the scene): every row gets 3 seeds with its pass count, interval and label, the explanation counts them, and the report and the turn report 9 runs; the page has a cost line on each analysis card and the uncertain badge |
 | `robustness_decides_the_winner` | A design that passes only 1/3 robustness checks loses to the next-best that passes 3/3; if none holds up, the best is shown as fragile and can still be applied |
 | `race_diagnosis_and_redesign_target_one_robot` | In a race, "why did it fail?" diagnoses the robot that failed (or the one named; a winner has nothing to explain) and redesign changes only that robot |
 | `failure_chips_name_the_robot_that_failed` | After a race the chips name the robot that failed ("Why did the Walker fail?", "Make the Walker pass"); none when every robot arrived |
@@ -599,7 +636,9 @@ Things to try:
 | `simgate/presets.py` | Reference gravity and friction values |
 | `simgate/agents.py` | Planner, Router, Builder and Explainer, each with a model or mock rules |
 | `simgate/batch.py` | Parallel robot-condition runs and compressed ghost tracks |
-| `simgate/diagnose.py` | Prove why: reproduce a failed run, test single-change hypotheses, verdicts and conclusion |
+| `simgate/diagnose.py` | Prove why: reproduce a failed run, test single-change hypotheses on 2 seeds, verdicts and conclusion |
+| `simgate/reliability.py` | Honest uncertainty: the same condition on several seeds, Wilson 95% interval, reliable pass / borderline / reliable fail |
+| `simgate/cost.py` | What a request cost: runs, wall time and model calls |
 | `simgate/redesign.py` | Make it pass: bounded design search, constraints, robustness checks |
 | `simgate/library/` | Validated robot, policy and world cards and filesystem registry |
 | `simgate/policy_runtime.py` | Named-joint policy inference and PD control |

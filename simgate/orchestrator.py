@@ -6,7 +6,7 @@ import asyncio
 import uuid
 from typing import Awaitable, Callable
 
-from . import agents
+from . import agents, cost
 from .backends.base import BuildResult, Check, Simulator, blocking_failures
 from .batch import crash_report, measured
 from .director import Director
@@ -35,8 +35,18 @@ class Session:
         await self.emit({"type": "agent", "agent": name, "status": status, "message": message})
 
     async def handle(self, text: str) -> None:
+        """One chat request, with what it cost (runs, wall time, model calls) sent after its result."""
+        with cost.track() as spent:
+            await self._handle(text)
+            if spent.runs or spent.model_calls:
+                await self.emit({"type": "cost", "cost": spent.snapshot()})
+
+    async def _handle(self, text: str) -> None:
         try:
-            if self.build is not None and agents.is_run_anyway(text):
+            if (self.spec is not None and self.spec.domain == "robot_terrain"
+                    and agents.is_stress_repeat(text)):   # "repeat ×3" is a repeated stress test, not a rerun
+                await self.run_stress(text)
+            elif self.build is not None and agents.is_run_anyway(text):
                 self.awaiting_approval = False
                 await self.run()
             elif self.build is not None and blocking_failures(self.checks) and (
@@ -184,6 +194,7 @@ class Session:
 
     async def _stream(self, spec: SceneSpec, sim: Simulator, build: BuildResult) -> dict:
         """Run a scene, streaming run_start, frames and metrics to the browser; returns the metrics."""
+        cost.add_runs(1)
         await self.emit({"type": "run_start", "duration_s": spec.duration_s})
         queue: asyncio.Queue = asyncio.Queue()
         loop = asyncio.get_running_loop()
@@ -381,6 +392,8 @@ class Session:
         await self.emit({"type": "batch_done", "total": len(results), "passed": passed,
                          "failed": len(results) - passed})
         await self.agent("Batch runner", "done", f"{len(results)}/{len(results)} done.")
+        repeats = agents.STRESS_REPEATS if agents.is_stress_repeat(text) else 1
+        repeated = await self._repeat_rows(spec, variations, results, repeats) if repeats > 1 else {}
         rows = []
         for result in results:
             summary = result.get("summary") or {}
@@ -391,6 +404,8 @@ class Session:
                 row["robots"] = {robot_id: {**robot, "metrics": self._row_metrics((summary.get("robots") or {}).get(robot_id) or {})}
                                  for robot_id, robot in (result.get("robots") or {}).items()}
                 row["passed"] = None
+            if result["id"] in repeated:
+                row["reliability"] = repeated[result["id"]]
             rows.append(row)
         columns = [{"id": entry.id, "label": entry.label, "kind": entry.robot.kind} for entry in spec.robots]
         race = {}
@@ -399,7 +414,9 @@ class Session:
             counts = {column["id"]: sum(bool(row["robots"].get(column["id"], {}).get("passed")) for row in ran) for column in columns}
             race = {"robots": columns, "robot_passed": counts,
                     "overall": " · ".join(f"{column['label']}: {counts[column['id']]}/{len(ran)}" for column in columns)}
-        await self.emit({"type": "report", "rows": rows, "passed": passed, "total": len(results), **race})
+        spent = cost.current()
+        await self.emit({"type": "report", "rows": rows, "passed": passed, "total": len(results), "repeats": repeats,
+                         **race, **({"cost": spent.snapshot()} if spent else {})})
         crashed = crash_report(results)
         if crashed:   # a system problem, not physics: shown as a warning and kept out of the analysis
             await self.emit({"type": "step", "id": f"crash-{uuid.uuid4().hex[:8]}", "parent_id": None,
@@ -411,7 +428,32 @@ class Session:
         await self.agent("Explainer", "working", "Finding the pattern across the stress runs…")
         explanation = await asyncio.to_thread(agents.explain_stress, spec, results)
         await self.agent("Explainer", "done", "Stress-test pattern summarized.")
-        await self.emit({"type": "explanation", "message": explanation})
+        if repeated:   # how sure each row is, counted in code
+            labels = [summary["label"] for summary in repeated.values()]
+            explanation += (f" Repeated on {repeats} seeds: " + ", ".join(
+                f"{labels.count(name)} {name}" for name in ("reliable pass", "borderline", "reliable fail")
+                if labels.count(name)) + ".")
+        await self.emit({"type": "explanation", "message": explanation,
+                         **({} if repeated else {"chips": ["Repeat ×3"]})})
+
+    async def _repeat_rows(self, spec: SceneSpec, variations: list[dict], results: list[dict],
+                           repeats: int) -> dict[str, dict]:
+        """Every row that ran, on repeats - 1 more seeds: its pass count and rate, Wilson 95% interval, label
+        (reliable pass, borderline, reliable fail) and the key metric's mean ± spread, by row id."""
+        from . import reliability
+
+        ran = [(result, None if result["id"] == "run-0" else variations[int(result["id"].removeprefix("run-")) - 1])
+               for result in results if not result.get("error")]
+        await self.agent("Batch runner", "working", f"Repeating {len(ran)} rows on {repeats - 1} more seeds…")
+        more = await asyncio.to_thread(reliability.run_seeded, spec, [variation for _, variation in ran], repeats, None, 1)
+        repeated = {}
+        for (result, _), extra in zip(ran, more):
+            runs = [result, *extra]
+            repeated[result["id"]] = reliability.summarize(runs)
+            if len(spec.robots) > 1:   # a race: each robot's own rate too
+                repeated[result["id"]]["robots"] = {entry.id: reliability.summarize(runs, entry.id) for entry in spec.robots}
+        await self.agent("Batch runner", "done", f"Repeated {len(ran)} rows on {repeats} seeds in total.")
+        return repeated
 
     @staticmethod
     def _row_metrics(summary: dict) -> dict:

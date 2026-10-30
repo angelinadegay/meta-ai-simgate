@@ -514,6 +514,7 @@ def test_run_now_race_streams_frames_before_metrics():
         config.MOCK_MODE = original_mock
         llm.chat = original_chat
 
+    events = [event for event in events if event["type"] != "cost"]   # what the request cost comes last
     types = [event["type"] for event in events]
     assert "run_start" in types and "frames" in types and "metrics" in types
     assert types.index("run_start") < types.index("frames") < types.index("metrics")
@@ -689,6 +690,7 @@ def test_failing_scene_runs_only_with_run_anyway():
             assert not session.awaiting_approval
             for text in ("run", "run again"):
                 await session.handle(text)
+                events[:] = [event for event in events if event["type"] != "cost"]
                 assert events[-1]["type"] == "question"
                 assert events[-1]["message"] == (
                     "This scene still fails: Deliberately failing check (forced). "
@@ -700,7 +702,7 @@ def test_failing_scene_runs_only_with_run_anyway():
 
     events = asyncio.run(scenario())
     assert FailingSimulator.runs == 1
-    assert [event["type"] for event in events][-1] == "explanation"
+    assert [event["type"] for event in events if event["type"] != "cost"][-1] == "explanation"
 
 
 def test_plan_workflow_preserves_structural_scene_support():
@@ -1505,6 +1507,8 @@ def test_diagnose_confirms_the_step_and_rules_out_low_gravity():
         ("Batch runner", "reproduce"), ("Explainer", "hypotheses"), ("Batch runner", "experiments"),
         ("Explainer", "decision"), ("Explainer", "conclusion")]
     assert report["decisions"] == [{"agent": "Explainer", "decision": "conclude", "reason": "obstacle passed on its own."}]
+    assert all(h["seed_verdicts"] == [h["verdict"]] * 2 for h in report["hypotheses"])   # both seeds agree here
+    assert report["cost"]["runs"] == report["runs"] and report["cost"]["text"].startswith(f"{report['runs']} runs · ")
 
 
 def test_diagnose_confirms_slipping_on_an_icy_slope():
@@ -1576,6 +1580,8 @@ def test_redesign_finds_the_smallest_passing_design_and_keeps_the_world():
     winner = report["winner"]
     assert winner is not None and set(winner["changes"]) <= {"wheel_radius", "wheels"}, winner
     assert winner["robustness"]["total"] == 3 and winner["robustness"]["passed"] >= 2
+    assert f"Robustness: passes {winner['robustness']['passed']}/3 (95% CI " in report["message"]
+    assert report["cost"]["runs"] >= report["tried_count"] + report["robustness_runs"]
     assert report["tried_count"] <= 12 and "passes" in report["message"] and "use this design" in report["message"]
     world = pin_task(spec, summary)
     _, designed, _ = _validate_variation(world, {"robot": winner["changes"]})
@@ -1661,12 +1667,12 @@ def test_model_explainer_decisions_are_validated_bounded_and_visible():
                      terrain=Terrain(kind="flat", roughness=0), robot=Robot(kind="rover"),
                      obstacles=[Obstacle(kind="step", height_m=0.2)]).fill_defaults()
     summary = failed_run(spec)
+    # Two causes on 2 seeds each leave room in the 8-rerun budget for one follow-up (three causes would use it all).
     chat, calls = scripted_models({
         "candidate\ncauses": [json.dumps({"hypotheses": [
-            {"cause": "low gravity", "why": "gravity is 3.71 m/s²", "intervention": {"gravity": 9.81}},
+            {"cause": "low gravity", "why": "gravity is 3.71 m/s²", "intervention": {"gravity": 9.81}, "control": True},
             {"cause": "wheels too small", "why": "stopped at a 0.2 m step", "intervention": {"wheel_radius": 0.3}},
-            {"cause": "step height", "why": "stuck 7.9 m short at the 0.2 m step", "intervention": {"obstacle_scale": 0.9}},
-            {"cause": "slipping", "why": "slip was 1%", "intervention": {"surface": "rock"}, "control": True}]})],
+            {"cause": "step height", "why": "stuck 7.9 m short at the 0.2 m step", "intervention": {"obstacle_scale": 0.9}}]})],
         "deciding what to do": [
             json.dumps({"decision": "test more", "reason": "The step only partly explains it; trying a lower step.",
                         "next": [{"cause": "step height (stronger)", "intervention": {"obstacle_scale": 0.25}},
@@ -1955,7 +1961,7 @@ def test_full_session_why_then_make_it_pass():
                      "use this design", "run"):
             start = len(events)
             await session.handle(text)
-            turns.setdefault(text, []).append(events[start:])
+            turns.setdefault(text, []).append([e for e in events[start:] if e["type"] != "cost"])   # the cost closes it
         return session, turns
 
     session, turns = asyncio.run(flow())
@@ -1990,7 +1996,8 @@ def test_full_session_why_then_make_it_pass():
 
 
 def session_turns(*texts):
-    """Run messages through orchestrator.Session (the browser's path); return the session and each turn's events."""
+    """Run messages through orchestrator.Session (the browser's path); return the session and each turn's events.
+    The cost event that closes a turn is kept apart, in session.costs (one per turn, None without one)."""
     import asyncio
 
     from simgate.orchestrator import Session
@@ -2002,10 +2009,13 @@ def session_turns(*texts):
             events.append(event)
 
         session = Session(emit)
+        session.costs = []
         for text in texts:
             start = len(events)
             await session.handle(text)
-            turns.append(events[start:])
+            turn = events[start:]
+            session.costs.append(next((e["cost"] for e in turn if e["type"] == "cost"), None))
+            turns.append([e for e in turn if e["type"] != "cost"])
         return session, turns
 
     return asyncio.run(flow())
@@ -2123,7 +2133,8 @@ def test_crashed_runs_are_a_system_problem_not_physics():
         diagnose.run_batch = real
     report = next(e["report"] for e in why if e["type"] == "diagnosis")
     assert report["reproduced"] and report["outcome"] == "crashed"
-    assert report["conclusion"].startswith(f"{len(report['hypotheses'])} of {len(report['hypotheses'])} runs crashed")
+    runs = len(report["hypotheses"]) * diagnose.SEEDS   # every experiment ran on each seed, and every run crashed
+    assert report["conclusion"].startswith(f"{runs} of {runs} runs crashed")
     tools = [e["tool"] for e in why if e["type"] == "step" and e["status"] != "working"]
     assert "crashed" in tools and "decision" not in tools and "conclusion" not in tools
 
@@ -2343,8 +2354,9 @@ def test_less_slip_without_getting_closer_is_ruled_out():
     before, after = slipping["key_numbers"]["distance_left_m"]
     assert after > 0.7 * before and slipping["key_numbers"]["slip"][1] <= 0.5 * slipping["key_numbers"]["slip"][0]
     assert slipping["verdict"] == "ruled out"   # slip fell, but it got no closer
-    assert slipping["numbers_text"].endswith(
-        f"slip fell from {slipping['key_numbers']['slip'][0]:.0%} to {slipping['key_numbers']['slip'][1]:.0%}, but it got no closer")
+    assert slipping["numbers_text"].endswith(   # then how the 2 seeds compared
+        f"slip fell from {slipping['key_numbers']['slip'][0]:.0%} to {slipping['key_numbers']['slip'][1]:.0%}, but it got no "
+        "closer; same on 2 seeds")
     assert "Ruled out: slipping" in report["conclusion"] and "partly" not in report["conclusion"]
 
     base = {"passed": False, "final_distance_m": 10.0, "flipped": True, "slip_ratio": 0.4}
@@ -2390,6 +2402,124 @@ def test_robustness_decides_the_winner():
     for name, value in report["fragile"]["changes"].items():
         assert getattr(session.spec.robots[0].robot, name) == value
     assert not [e for e in use if e["type"] == "error"]
+
+
+def test_wilson_interval_labels_and_seeded_repeats():
+    import re
+
+    from simgate.backends.mujoco_backend import MuJoCoSimulator as Sim
+    from simgate.reliability import ci_text, label, seeded, summarize, wilson
+
+    def close(interval, expected):
+        return all(abs(a - b) < 5e-4 for a, b in zip(interval, expected))
+
+    assert close(wilson(3, 3), (0.4385, 1.0)) and close(wilson(0, 3), (0.0, 0.5615))
+    assert close(wilson(1, 2), (0.0945, 0.9055)) and close(wilson(8, 10), (0.4902, 0.9433))
+    assert wilson(0, 0) == (0.0, 1.0)   # nothing ran: nothing is known
+    assert [label(p, n) for p, n in ((3, 3), (0, 3), (1, 3), (0, 0))] == ["reliable pass", "reliable fail", "borderline", "not tested"]
+    assert ci_text(3, 3) == "passes 3/3 (95% CI 44–100%)" and ci_text(2, 3) == "passes 2/3 (95% CI 21–94%)"
+
+    def run(passed, distance=None, error=None):
+        summary = {"goal_reached": passed, "final_distance_m": distance} if distance is not None else {}
+        return {"passed": passed, "summary": summary, **({"error": error} if error else {})}
+
+    mixed = summarize([run(True, 0.5), run(False, 2.5), run(False, 1.5), run(False, None, "RuntimeError: boom")])
+    assert (mixed["passed"], mixed["total"], mixed["label"]) == (1, 3, "borderline"), mixed   # a crash isn't a result
+    assert mixed["metric"] == {"name": "distance_left_m", "mean": 1.5, "spread": 1.0} and mixed["crashed"].startswith("1 of 4")
+
+    spec = SceneSpec(domain="robot_terrain", terrain=Terrain(kind="hills", seed=4), robot=Robot(kind="rover")).fill_defaults()
+    assert seeded(spec, {"surface": "ice"}, 0) == {"surface": "ice"}   # seed 0 is the condition exactly as it is
+    assert seeded(spec, {"surface": "ice"}, 2) == {"surface": "ice", "seed": 6, "perturb_seed": 2}
+
+    def rover_pose(scene):
+        xml = Sim().template(scene)[0]
+        found = re.search(r'<body name="rover" pos="([-\d.]+) ([-\d.]+) [-\d.]+" quat="([-\d.]+) 0 0 ([-\d.]+)"', xml)
+        return [float(value) for value in found.groups()]
+
+    still, nudged = rover_pose(spec), rover_pose(spec.model_copy(update={"perturb_seed": 1}))
+    assert still != nudged and all(abs(a - b) <= 0.0101 for a, b in zip(still[:2], nudged[:2]))   # within ±1 cm
+    import math
+
+    turned = abs(math.degrees(2 * (math.atan2(still[3], still[2]) - math.atan2(nudged[3], nudged[2]))))
+    assert 0 < turned <= 1.0001   # and within ±1°
+    assert rover_pose(spec.model_copy(update={"perturb_seed": 1})) == nudged   # the same seed, the same nudge
+
+
+def test_diagnose_marks_a_verdict_the_seeds_disagree_on_uncertain():
+    from simgate import diagnose
+
+    spec = step_course(0.2)
+
+    def result(label, passed, distance):
+        return {"id": "run-x", "label": label, "changes": {}, "passed": passed, "reason": "",
+                "summary": {"goal_reached": passed, "final_distance_m": distance, "flipped": False, "slip_ratio": 0.1}}
+
+    # the unchanged scene fails on both seeds; experiment 1 passes on both, experiment 2 only on seed 1, 3 on neither
+    outcomes = {"Experiment 1": (True, True), "Experiment 2": (True, False), "Experiment 3": (False, False)}
+    batches = []
+
+    def fake_batch(spec, variations, on_result=None, timeout=None, baseline=True):
+        batches.append([v["label"] for v in variations])
+        rows = [result("Baseline", False, 8.0)] if baseline else []
+        for variation in variations:
+            name, _, seed = variation["label"].partition(", seed ")
+            passed = name in outcomes and outcomes[name][1 if seed else 0]
+            rows.append(result(variation["label"], passed, 0.4 if passed else 8.0))
+        return rows
+
+    hypotheses = [{"cause": "obstacle", "why": "stopped at the step", "intervention": {"obstacle_scale": 0.5}},
+                  {"cause": "slipping", "why": "slid 10%", "intervention": {"surface": "rock"}},
+                  {"cause": "too fast", "why": "nothing points to speed", "intervention": {"speed_scale": 0.6}, "control": True}]
+    real_batch, real_rules = diagnose.run_batch, diagnose.rule_hypotheses
+    try:
+        diagnose.run_batch, diagnose.rule_hypotheses = fake_batch, lambda spec, metrics: [dict(h) for h in hypotheses]
+        report = diagnose.diagnose(spec, {"goal_reached": False, "final_distance_m": 8.0, "flipped": False})
+    finally:
+        diagnose.run_batch, diagnose.rule_hypotheses = real_batch, real_rules
+    verdicts = {h["cause"]: (h["verdict"], h["seed_verdicts"]) for h in report["hypotheses"]}
+    assert verdicts == {"obstacle": ("confirmed", ["confirmed", "confirmed"]),
+                        "slipping": ("uncertain", ["confirmed", "ruled out"]),
+                        "too fast": ("ruled out", ["ruled out", "ruled out"])}, verdicts
+    assert report["runs"] == diagnose.MAX_RERUNS == 8 and report["seeds"] == 2
+    assert batches[0] == ["Baseline, seed 2"] and len(batches[1]) == 6   # 2 reproductions, then 3 experiments × 2 seeds
+    slipping = next(h for h in report["hypotheses"] if h["cause"] == "slipping")
+    assert "seeds disagree: confirmed on seed 1, ruled out on seed 2" in slipping["numbers_text"]
+    assert report["conclusion"].startswith("Confirmed: obstacle. Uncertain: slipping (the 2 seeds disagreed).")
+    assert "takes more runs" in report["conclusion"]
+    assert set(report["cost"]) >= {"runs", "wall_s", "model_calls", "text"}
+
+    from simgate.diagnose import contradictions   # the model may not settle what the seeds left open
+    uncertain = [{"cause": "slipping", "verdict": "uncertain"}]
+    assert contradictions("Slipping was ruled out by the experiment.", uncertain)
+    assert not contradictions("Slipping helped on one seed only, so more runs are needed.", uncertain)
+
+
+def test_stress_repeat_shows_pass_rates_and_every_card_shows_its_cost():
+    from unittest.mock import patch
+
+    conditions = [{"label": "Ice", "surface": "ice"}, {"label": "Heavier", "payload_kg": 5}]
+    with patch("simgate.agents.plan_stress", return_value=conditions):
+        session, (_, single, repeated) = session_turns("Rover obstacle course with a big step", "stress test", "Repeat ×3")
+    explained = next(e for e in single if e["type"] == "explanation")
+    assert explained["chips"] == ["Repeat ×3"]   # the offer to repeat, not a rerun of the scene
+    assert not [e for e in repeated if e["type"] == "run_start"], "\"Repeat ×3\" is a repeated stress test, not a rerun"
+
+    report = next(e for e in repeated if e["type"] == "report")
+    assert report["repeats"] == 3 and len(report["rows"]) == 3
+    for row in report["rows"]:
+        rate = row["reliability"]
+        assert rate["total"] == 3 and rate["label"] in ("reliable pass", "borderline", "reliable fail")
+        assert rate["text"].startswith(f"passes {rate['passed']}/3 (95% CI ") and rate["metric"]["name"]
+    assert "Repeated on 3 seeds:" in next(e for e in repeated if e["type"] == "explanation")["message"]
+    assert report["cost"]["runs"] == 3 + 3 * 2   # each row once, then twice more
+    assert session.costs[2]["runs"] == 9 and session.costs[2]["text"].startswith("9 runs · ")
+    assert session.costs[0] is None   # building a scene in mock mode runs nothing and asks no model
+
+    page = (Path(__file__).resolve().parent.parent / "static" / "vendor" / "index.html").read_text(encoding="utf-8")
+    for card in ("diagnosisCost", "redesignCost", "reportCost"):
+        assert f'class="cost-line" id="{card}"' in page and f'showCost("{card}"' in page, card
+    assert '.verdict.uncertain' in page and 'uncertain: "? uncertain"' in page and 'case "cost":' in page
+    assert "reliabilityText(rel)" in page
 
 
 def test_race_stress_report_counts_each_robot():

@@ -31,6 +31,9 @@ def chat(messages: list[dict], model: str | None = None, temperature: float = 0.
     kwargs = {"model": model or config.PLANNER_MODEL, "messages": messages}
     if sends_temperature():
         kwargs["temperature"] = temperature
+    from . import cost
+
+    cost.add_model_call()
     resp = client().chat.completions.create(**kwargs)
     return resp.choices[0].message.content or ""
 

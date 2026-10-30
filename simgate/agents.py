@@ -503,7 +503,16 @@ STRESS_REQUEST = re.compile(
 
 
 def is_stress_test(text: str) -> bool:
-    return bool(STRESS_REQUEST.search(text))
+    return bool(STRESS_REQUEST.search(text)) or is_stress_repeat(text)
+
+
+STRESS_REPEAT = re.compile(r"\brepeat\s*(?:[×x]\s*\d|it\s+\d|\d+\s*times)|\bhow reliable\b|\b(?:stress[- ]tests?|how robust)\b.*\brepeat", re.I)
+STRESS_REPEATS = 3
+
+
+def is_stress_repeat(text: str) -> bool:
+    """A stress test whose rows each run on 3 seeds: "repeat ×3", "how reliable is it?", "stress test, repeat"."""
+    return bool(STRESS_REPEAT.search(text))
 
 
 def is_approval(text: str) -> bool:

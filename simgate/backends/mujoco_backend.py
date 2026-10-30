@@ -154,6 +154,19 @@ def resolve_mission(spec: SceneSpec, H: np.ndarray) -> dict:
             "radius": ms.goal_radius_m if ms else 1.0, "clamped": clamped}
 
 
+PERTURB_M, PERTURB_DEG = 0.01, 1.0   # the start nudge for repeated runs of one condition (SceneSpec.perturb_seed)
+
+
+def perturbed(spec: SceneSpec, index: int, start: tuple[float, float], heading_deg: float) -> tuple[tuple[float, float], float]:
+    """Robot ``index``'s spawn point and heading, nudged by up to ±1 cm and ±1° when the scene has a perturb_seed.
+    The mission (its reported start and goal) and the course stay where they are."""
+    if not spec.perturb_seed:
+        return start, heading_deg
+    rng = np.random.default_rng([spec.perturb_seed, index])
+    dx, dy = rng.uniform(-PERTURB_M, PERTURB_M, 2)
+    return (start[0] + float(dx), start[1] + float(dy)), heading_deg + float(rng.uniform(-PERTURB_DEG, PERTURB_DEG))
+
+
 def yaw_quat(heading_deg: float) -> str:
     h = math.radians(heading_deg) / 2
     return f"{math.cos(h):.5f} 0 0 {math.sin(h):.5f}"
@@ -790,23 +803,23 @@ class MuJoCoSimulator(Simulator):
             robot_spec = spec.model_copy(deep=True)
             robot_spec.robot = entry.robot.model_copy(deep=True)
             mission = self.missions[entry.id]
-            sx, sy = mission["start"]
+            (sx, sy), heading = perturbed(spec, robot_index, mission["start"], mission["heading_deg"])
             if entry.robot.kind == "walker":
                 sz = height_at(H, terrain.size_m, sx, sy, footprint_radius(entry.robot)) + walker_stand_height(entry.robot) + 0.05
-                body, actuators = walker_xml(robot_spec, (sx, sy, sz), mission["heading_deg"])
+                body, actuators = walker_xml(robot_spec, (sx, sy, sz), heading)
                 body, actuators = _prefix_builtin_parts(body, actuators, prefix)
             elif entry.robot.kind == "library":
                 robot_card = LibraryRegistry().robot(entry.robot.robot_id)
                 sz = height_at(H, terrain.size_m, sx, sy, footprint_radius(entry.robot)) + robot_card.standing_height_m
                 body, actuators, meshes, defaults, asset_root = _library_robot_parts(
-                    robot_spec, (sx, sy, sz), mission["heading_deg"], prefix
+                    robot_spec, (sx, sy, sz), heading, prefix
                 )
                 compiler_assets.add(asset_root)
                 mesh_xml.append(meshes)
                 defaults_xml.append(defaults)
             else:
                 sz = height_at(H, terrain.size_m, sx, sy, footprint_radius(entry.robot)) + entry.robot.wheel_radius + 0.1
-                body, actuators = rover_xml(robot_spec, (sx, sy, sz), mission["heading_deg"])
+                body, actuators = rover_xml(robot_spec, (sx, sy, sz), heading)
                 body, actuators = _prefix_builtin_parts(body, actuators, prefix)
             body = _robot_collision_masks(body, robot_index, count)
             robot_xml.append(body)
@@ -875,7 +888,7 @@ class MuJoCoSimulator(Simulator):
             obstacle_xml, self.course = course.build_geoms(slots, H, t.size_m, t.seed)
             obstacle_xml += "\n" if obstacle_xml else ""
         half = t.size_m / 2
-        (sx, sy), yaw = mission["start"], mission["heading_deg"]
+        (sx, sy), yaw = perturbed(spec, 0, mission["start"], mission["heading_deg"])
         mesh_xml, defaults_xml, compiler_xml = "", "", ""
         if spec.robot.kind == "walker":
             sz = height_at(H, t.size_m, sx, sy, footprint_radius(spec.robot)) + walker_stand_height(spec.robot) + 0.05

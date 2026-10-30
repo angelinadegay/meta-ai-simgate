@@ -120,6 +120,10 @@
   .verdict { align-self: start; padding: 1px 7px; border-radius: 99px; font-size: 11px; font-weight: 600; white-space: nowrap; background: var(--panel-2); color: var(--muted); border: 1px solid var(--line); }
   .verdict.confirmed { background: rgba(52,211,153,.15); color: var(--ok); border-color: transparent; }
   .verdict.partly { background: rgba(251,191,36,.15); color: var(--warn); border-color: transparent; }
+  .verdict.uncertain { background: rgba(148,163,184,.14); color: #d4b46a; border: 1px dashed rgba(251,191,36,.45); }   /* the seeds disagreed */
+  .cost-line { margin-top: 8px; color: var(--muted); font-size: 11px; font-family: 'JetBrains Mono', monospace; }
+  .cost-line:empty { display: none; }
+  .msg .cost-note { display: block; margin-top: 4px; color: var(--muted); font-size: 11px; font-family: 'JetBrains Mono', monospace; }
   .analysis-lines { margin: 6px 0 0; color: var(--muted); font-size: 11.5px; }
   .analysis-text { margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--line); }
   .design-table { width: 100%; border-collapse: collapse; margin-bottom: 6px; }
@@ -134,8 +138,10 @@
   .stress-row { display: grid; grid-template-columns: 12px 1fr; gap: 0 7px; width: 100%; padding: 6px 7px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel-2); color: var(--text); font: inherit; text-align: left; }
   .stress-row .dot { grid-row: span 2; padding-top: 1px; color: var(--bad); }
   .stress-row.pass .dot { color: var(--ok); }
+  .stress-row.borderline .dot { color: var(--warn); }
+  .stress-row .reliability { color: var(--text); }
   .stress-row.race .dot { visibility: hidden; }
-  .stress-row small { color: var(--muted); }
+  .stress-row small { grid-column: 2; color: var(--muted); }   /* under the label, not in the dot's column */
   .stress-row .robot-cells { grid-column: 2; display: grid; grid-template-columns: repeat(var(--robots), minmax(0, 1fr)); gap: 6px; }
   .stress-row .robot-cells span { font-size: 0.85em; }
   .stress-row .robot-cells .pass { color: var(--ok); } .stress-row .robot-cells .fail { color: var(--bad); }
@@ -245,10 +251,10 @@
       <div class="card" id="checksCard" hidden><h3>Physics checks</h3><div id="checks"></div></div>
       <div class="card" id="metricsCard" hidden><h3>Results</h3><div id="badge" hidden></div><div class="kv" id="metrics"></div></div>
       <div class="card" id="leaderboardCard" hidden><h3>Leaderboard</h3><div id="leaderboardRows"></div></div>
-      <div class="card" id="diagnosisCard" hidden><h3>Diagnosis</h3><div id="diagnosisRows"></div><div class="analysis-lines" id="diagnosisDecisions"></div><div class="analysis-text" id="diagnosisConclusion"></div></div>
+      <div class="card" id="diagnosisCard" hidden><h3>Diagnosis</h3><div id="diagnosisRows"></div><div class="analysis-lines" id="diagnosisDecisions"></div><div class="analysis-text" id="diagnosisConclusion"></div><div class="cost-line" id="diagnosisCost"></div></div>
       <div class="card" id="redesignCard" hidden><h3>Redesign</h3><div id="redesignBody"></div>
-        <div class="card-actions" id="redesignActions"><button type="button" class="chip primary" id="useDesign">Use this design</button><button type="button" class="chip" id="showRuns">Show runs</button></div></div>
-      <div class="card" id="reportCard" hidden><h3>Report card</h3><div id="reportCounts"></div><div id="reportRows"></div><div id="stressExplanation"></div></div>
+        <div class="card-actions" id="redesignActions"><button type="button" class="chip primary" id="useDesign">Use this design</button><button type="button" class="chip" id="showRuns">Show runs</button></div><div class="cost-line" id="redesignCost"></div></div>
+      <div class="card" id="reportCard" hidden><h3>Report card</h3><div id="reportCounts"></div><div id="reportRows"></div><div id="stressExplanation"></div><div class="cost-line" id="reportCost"></div></div>
     </div>
     <div class="hud" id="player" hidden>
       <div class="card">
@@ -730,6 +736,12 @@ ws.onmessage = (m) => {
       break;
     }
     case "error": addMsg(ev.message, "err"); break;
+    case "cost": {   // the request's total: on the card it produced, and under the last reply
+      if (costLine) { costLine.textContent = ev.cost.text; costLine = null; }
+      const last = [...log.querySelectorAll(".msg.bot")].pop();
+      if (last) last.appendChild(textEl("span", ev.cost.text, "cost-note"));
+      break;
+    }
     case "reset":
       log.replaceChildren(); stepRows.clear(); countedSteps.clear(); agentNodes.clear(); initAgentGraph();
       current = null; frames = []; $("empty").hidden = false; $("checksCard").hidden = true; $("metricsCard").hidden = true;
@@ -744,7 +756,12 @@ ws.onmessage = (m) => {
 ws.onclose = () => { $("mode").textContent = "Disconnected · reload the page"; };
 
 // ── Prove why / Make it pass ──
-const VERDICTS = { confirmed: "✓ confirmed", partly: "~ partly", "ruled out": "✕ ruled out", "not tested": "– not tested" };
+const VERDICTS = { confirmed: "✓ confirmed", partly: "~ partly", "ruled out": "✕ ruled out", "not tested": "– not tested",
+  uncertain: "? uncertain" };
+// What a request cost ("12 runs · 48 s · 3 model calls"): shown on the analysis card it produced, and updated with the
+// request's total when it ends.
+let costLine = null;
+function showCost(id, cost) { costLine = $(id); costLine.textContent = cost ? cost.text : ""; }
 function textEl(tag, text, cls) { const el = document.createElement(tag); el.textContent = text; if (cls) el.className = cls; return el; }
 function renderDiagnosis(r) {
   $("diagnosisCard").hidden = false; $("redesignCard").hidden = true;
@@ -760,6 +777,7 @@ function renderDiagnosis(r) {
   }
   for (const d of r.decisions || []) $("diagnosisDecisions").appendChild(textEl("div", `${d.agent}: ${d.reason}`));
   $("diagnosisConclusion").textContent = r.conclusion || "";
+  showCost("diagnosisCost", r.cost);
 }
 function renderRedesign(r) {
   $("redesignCard").hidden = false; $("diagnosisCard").hidden = true;
@@ -776,7 +794,8 @@ function renderRedesign(r) {
     }
     body.append(table, textEl("div", `Result: ${r.before || "failed"} → ${w.summary}`));
     if (w.robustness) body.appendChild(textEl("div", `Robustness: passes ${w.robustness.passed}/${w.robustness.total}`
-      + (w.robustness.failed.length ? ` (failed: ${w.robustness.failed.join(", ")})` : "")));
+      + (w.robustness.ci95 ? ` (95% CI ${Math.round(w.robustness.ci95[0] * 100)}–${Math.round(w.robustness.ci95[1] * 100)}%)` : "")
+      + (w.robustness.failed.length ? ` · failed: ${w.robustness.failed.join(", ")}` : "")));
     if (w.label) body.appendChild(textEl("div", `Untested gait: outside the tuned 2.0 Hz / 15° settings.`));
   } else {
     body.appendChild(textEl("div", r.message || "No design passed."));
@@ -788,6 +807,7 @@ function renderRedesign(r) {
   body.appendChild(lines);
   $("redesignActions").hidden = !w;
   $("useDesign").textContent = w && w.fragile ? "Use fragile design" : "Use this design";
+  showCost("redesignCost", r.cost);
 }
 $("useDesign").onclick = () => send($("useDesign").textContent.toLowerCase());
 $("showRuns").onclick = () => { addMsg("Show runs", "user"); ws.send(JSON.stringify({ type: "show_design" })); };
@@ -825,13 +845,21 @@ function stressMetricText(metrics) {
   return Object.entries(metrics || {}).map(([key, value]) =>
     `${names[key] || key}: ${key === "slip_ratio" ? `${Math.round(value * 100)}%` : `${value}${key.endsWith("_deg") ? "°" : key.endsWith("_s") ? " s" : key.endsWith("_m") ? " m" : ""}`}`).join(" · ");
 }
+// "2/3 passed · 95% CI 21–94% · borderline · distance left 1.2 ± 0.8 m"
+function reliabilityText(rel) {
+  const metric = rel.metric && rel.metric.mean !== null
+    ? ` · ${rel.metric.name === "distance_left_m" ? "distance left" : "progress"} ${rel.metric.mean} ± ${rel.metric.spread} m` : "";
+  return `${rel.passed}/${rel.total} passed · 95% CI ${Math.round(rel.ci95[0] * 100)}–${Math.round(rel.ci95[1] * 100)}% · ${rel.label}${metric}`;
+}
 function renderReport(report) {
   $("metricsCard").hidden = true; $("reportCard").hidden = false;
   $("reportCounts").textContent = report.overall || `${report.passed} of ${report.total} runs passed`;   // a race: per robot
   $("reportRows").replaceChildren();
   for (const row of report.rows) {
     const button = document.createElement("button"); button.type = "button";
-    button.className = `stress-row ${report.robots && row.robots ? "race" : row.passed ? "pass" : "fail"}`;
+    const rel = row.reliability;   // repeated on several seeds: how sure this row is
+    button.className = `stress-row ${report.robots && row.robots ? "race"
+      : rel ? { "reliable pass": "pass", borderline: "borderline" }[rel.label] || "fail" : row.passed ? "pass" : "fail"}`;
     const dot = document.createElement("i"); dot.className = "dot"; dot.textContent = "●";
     const label = document.createElement("strong"); label.textContent = row.label;
     const reason = document.createElement("span"); reason.textContent = row.reason;
@@ -843,22 +871,27 @@ function renderReport(report) {
       cells.style.setProperty("--robots", report.robots.length);
       for (const column of report.robots) {
         const cell = row.robots[column.id];
-        const span = textEl("span", cell ? `${column.label}: ${cell.passed ? "✓" : "✕"} ${cell.reason}` : `${column.label}: –`,
+        const robotRate = rel?.robots?.[column.id];
+        const span = textEl("span", cell ? `${column.label}: ${cell.passed ? "✓" : "✕"} ${cell.reason}`
+          + (robotRate ? ` (${robotRate.passed}/${robotRate.total})` : "") : `${column.label}: –`,
           cell ? (cell.passed ? "pass" : "fail") : "");
         if (cell) span.title = stressMetricText(cell.metrics);
         cells.appendChild(span);
       }
-      metrics.textContent = status;
+      metrics.textContent = [rel ? reliabilityText(rel) : "", status].filter(Boolean).join(" · ");
       button.append(cells, metrics);
     } else {
       metrics.textContent = [stressMetricText(row.metrics), status].filter(Boolean).join(" · ");
       button.append(reason, metrics);
+      if (rel) button.appendChild(textEl("small", reliabilityText(rel), "reliability"));
     }
     button.dataset.runId = row.id;
     button.disabled = !batchResults.get(row.id)?.ghostTrack;
     button.onclick = () => replayBatchRun(row.id);
     $("reportRows").appendChild(button);
   }
+  if (report.repeats > 1) $("reportCounts").textContent += ` · each row on ${report.repeats} seeds`;
+  showCost("reportCost", report.cost);
 }
 const LABELS = { obstacles_cleared: "Obstacles passed", goal_reached: "Reached goal", time_to_goal_s: "Time to goal (s)", final_distance_m: "Left to goal (m)",
   closest_distance_m: "Closest to goal (m)", path_length_m: "Path travelled (m)", path_efficiency: "Path efficiency", distance_m: "Distance (m)", forward_progress_m: "Forward progress (m)", climbed_m: "Climbed (m)", max_tilt_deg: "Max tilt (°)", flipped: "Tipped over", gravity: "Gravity (m/s²)", friction: "Friction",

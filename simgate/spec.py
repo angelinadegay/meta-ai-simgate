@@ -142,6 +142,9 @@ class SceneSpec(BaseModel):
     structure: Optional[Structure] = None
     load: Optional[Load] = None
     disturbance: Optional[Disturbance] = None
+    # repeated runs of the same condition (reliability): each robot starts up to ±1 cm and ±1° off, drawn from
+    # this seed; None places them exactly
+    perturb_seed: Optional[int] = Field(None, ge=1)
     duration_s: float = 8.0
     assumptions: list[str] = []         # defaults the agent chose, shown to the user
 

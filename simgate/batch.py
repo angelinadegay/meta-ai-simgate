@@ -29,6 +29,7 @@ class Variation(BaseModel):
     obstacle_scale: float | None = Field(default=None, gt=0, le=10)
     push_n: float | None = Field(default=None, gt=0, le=1000)
     seed: int | None = Field(default=None, ge=0)
+    perturb_seed: int | None = Field(default=None, ge=0)   # reliability: a ±1 cm / ±1° start nudge (0 = none)
     # Single-change experiments (Prove why) and design changes (Make it pass).
     remove_obstacle: str | None = Field(default=None, pattern=r"^obs\d+_[a-z]+$")
     no_push: bool | None = None
@@ -109,6 +110,8 @@ def _validate_variation(base_spec: SceneSpec, raw: dict) -> tuple[Variation, Sce
         if spec.terrain is None:
             raise ValueError("seed requires terrain.")
         spec.terrain.seed = knobs["seed"]
+    if "perturb_seed" in knobs:
+        spec.perturb_seed = knobs["perturb_seed"] or None
     if "push_n" in knobs:
         spec.disturbance = Disturbance(push_n=knobs["push_n"])
     if knobs.get("no_push"):
@@ -412,6 +415,9 @@ def run_batch(
             except (ValidationError, TypeError, ValueError) as exc:
                 store(_result_error(run_id, label, changes, f"Invalid variation: {exc}"))
 
+        from . import cost
+
+        cost.add_runs(len(jobs))
         for run_id, label, raw in jobs:
             future = executor.submit(_run_worker, run_id, label, base_json, raw)
             running[future] = (run_id, label, time.monotonic() + timeout)

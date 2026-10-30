@@ -7,11 +7,13 @@ from typing import Any, Callable, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from . import config, llm
+from . import config, cost, llm
 from .batch import _validate_variation, crash_report, run_batch
+from .reliability import seeded
 from .spec import SceneSpec
 
-MAX_RERUNS = 5          # reproduction + every experiment, in total
+SEEDS = 2               # every reproduction and experiment runs on 2 seeds (the original and one more)
+MAX_RERUNS = 8          # reproduction + every experiment, each counted once per seed, in total
 MAX_HYPOTHESES = 4
 MAX_DECISION_ROUNDS = 2
 MAX_FOLLOW_UPS = 2
@@ -105,6 +107,14 @@ def verdict(base: dict, after: dict) -> str:
     if after["passed"]:
         return "confirmed"
     return "partly" if _closer(base, after) or _fall_avoided(base, after) else "ruled out"
+
+
+def combine(seed_verdicts: list[str]) -> str:
+    """One verdict from each seed's: the same on every seed that ran, otherwise "uncertain" (the seeds disagree)."""
+    tested = [v for v in seed_verdicts if v != "not tested"]
+    if not tested:
+        return "not tested"
+    return tested[0] if len(set(tested)) == 1 else "uncertain"
 
 
 def _closer(base: dict, after: dict) -> bool:
@@ -370,14 +380,17 @@ def _emit(on_step: StepCallback | None, agent: str, tool: str, thought: str, res
         on_step({"agent": agent, "tool": tool, "thought": thought, "result": result, "status": status})
 
 
-def _run(spec: SceneSpec, interventions: list[dict], robot_id: str | None, baseline: bool) -> list[dict]:
+def _run(spec: SceneSpec, interventions: list[dict], robot_id: str | None) -> list[list[dict]]:
+    """Every experiment on every seed, in one parallel batch; one list of results (seed order) per experiment."""
     variations = []
     for index, intervention in enumerate(interventions, 1):
-        variation = {"label": f"Experiment {index}", **intervention}
+        change = dict(intervention)
         if robot_id is not None and any(k in intervention for k in ("speed_scale", "face_uphill")):
-            variation["robot_id"] = robot_id
-        variations.append(variation)
-    return run_batch(spec, variations, baseline=baseline)
+            change["robot_id"] = robot_id
+        for k in range(SEEDS):
+            variations.append({"label": f"Experiment {index}" + (f", seed {k + 1}" if k else ""), **seeded(spec, change, k)})
+    results = run_batch(spec, variations, baseline=False)
+    return [results[index * SEEDS:(index + 1) * SEEDS] for index in range(len(interventions))]
 
 
 # ── Decisions between batches ────────────────────────────────────────────────
@@ -403,7 +416,7 @@ Choose one:
 - "test more": up to 2 follow-up experiments, e.g. the top two causes together (two keys in one
   intervention) or a stronger version of one cause; each intervention uses only these keys: {knobs}
 - "can't tell": the results contradict each other
-You have {remaining} rerun(s) left. Reply with JSON only, in this shape (the values are placeholders showing the
+You have {remaining} experiment(s) left (each runs on {seeds} seeds). Reply with JSON only, in this shape (the values are placeholders showing the
 format, not suggestions):
 {{"decision":"<conclude|test more|can't tell>","reason":"<one sentence>","next":[{{"cause":"<a + b>","intervention":{{"<knob>":<value>}}}}]}}"""
 
@@ -479,7 +492,7 @@ def model_decision(spec: SceneSpec, hypotheses: list[dict], remaining: int, deci
     knobs = ", ".join(ALLOWED_KNOBS)
     results = [{"cause": h["cause"], "change": h["intervention"], "verdict": h["verdict"],
                 "numbers": describe_numbers(h["key_numbers"])} for h in hypotheses]
-    messages = [{"role": "system", "content": DECISION_SYSTEM.format(knobs=knobs, remaining=remaining)},
+    messages = [{"role": "system", "content": DECISION_SYSTEM.format(knobs=knobs, remaining=remaining, seeds=SEEDS)},
                 {"role": "user", "content": (facts_text + "\n\n" if facts_text else "") + json.dumps(results)}]
     reply, attempts = llm.chat_json(messages, config.PLANNER_MODEL, DecisionReply.model_validate)
     calls.append({"agent": "Explainer", "purpose": "decision", "attempts": attempts})
@@ -512,7 +525,9 @@ def _passed_how(summary: dict, robot_id: str | None) -> str:
 def opening(hypotheses: list[dict]) -> str:
     """The conclusion's first sentence, written in code from the verdicts so the model can't contradict them."""
     confirmed = [h["cause"] for h in hypotheses if h["verdict"] == "confirmed"]
-    return f"Confirmed: {_join(confirmed)}." if confirmed else "No single tested cause explains it."
+    uncertain = [h["cause"] for h in hypotheses if h["verdict"] == "uncertain"]
+    first = f"Confirmed: {_join(confirmed)}." if confirmed else "No single tested cause explains it."
+    return first + (f" Uncertain: {_join(uncertain)} (the {SEEDS} seeds disagreed)." if uncertain else "")
 
 
 def mock_conclusion(hypotheses: list[dict], outcome: str = "conclude") -> str:
@@ -533,6 +548,10 @@ def mock_explanation(hypotheses: list[dict], outcome: str = "conclude") -> str:
                          "got clearly better but still failed.")
     if ruled_out:
         sentences.append(f"Ruled out: {_join(ruled_out)} — changing {'it' if len(ruled_out) == 1 else 'each'} made no clear difference.")
+    uncertain = [h["cause"] for h in hypotheses if h["verdict"] == "uncertain"]
+    if uncertain:
+        sentences.append(f"{_join(uncertain).capitalize()} gave different results on the two seeds, so it takes more "
+                         "runs to say either way.")
     if not combined:
         sentences.append("Each cause was tested on its own, so causes that only matter together could be missed.")
     return " ".join(sentences)
@@ -548,7 +567,9 @@ Write only what comes after it: 2 to 4 plain sentences for a non-expert, using O
 the tested changes did or didn't help; say what was ruled out; mention causes that only partly explain it. Do not
 repeat the opening, do not name any other cause as confirmed or as the cause, and do not say that nothing or no
 single cause explains it when a cause is confirmed. Say that each cause was tested on its own, so causes that only
-matter together could be missed, unless a combined test is listed. No headings or lists."""
+matter together could be missed, unless a combined test is listed. Each change was tested on two seeds: a verdict
+"uncertain" means the seeds disagreed, so say more runs are needed and never call it confirmed or ruled out.
+No headings or lists."""
 
 _NONE_EXPLAINS = re.compile(r"\bnone of the (?:tested )?causes\b|\bno (?:single )?(?:tested )?cause\b|"
                             r"\bnothing (?:tested )?(?:fully )?explains\b|\bnot (?:fully )?explained by any\b", re.I)
@@ -563,6 +584,10 @@ def contradictions(text: str, hypotheses: list[dict]) -> list[str]:
         return [f'It says "{match.group(0)}", but {_join(confirmed)} is confirmed: it passed with only that change.']
     if not confirmed and (match := _CLAIMS_CAUSE.search(text)):
         return [f'It says "{match.group(0)}", but no tested cause is confirmed: none passed on its own.']
+    for cause in (h["cause"] for h in hypotheses if h["verdict"] == "uncertain"):
+        for sentence in re.split(r"(?<=[.!?])\s+", text):
+            if cause.lower() in sentence.lower() and (word := re.search(r"\b(confirmed|ruled out)\b", sentence, re.I)):
+                return [f'It calls {cause} "{word.group(0)}", but its two seeds disagreed: it is uncertain.']
     return []
 
 
@@ -604,18 +629,31 @@ def _tested(hypotheses: list[dict]) -> list[dict]:
     return [h for h in hypotheses if h.get("verdict") != "not tested"]
 
 
-def _experiment(spec: SceneSpec, items: list[dict], base: dict, robot_id: str | None, report: dict,
+def _seeds_text(seed_verdicts: list[str]) -> str:
+    tested = [v for v in seed_verdicts if v != "not tested"]
+    if len(set(tested)) > 1:
+        return "seeds disagree: " + ", ".join(f"{v} on seed {k + 1}" for k, v in enumerate(seed_verdicts))
+    return f"same on {len(tested)} seeds" if len(tested) > 1 else f"{len(tested)} of {len(seed_verdicts)} seeds ran"
+
+
+def _experiment(spec: SceneSpec, items: list[dict], bases: list[dict], robot_id: str | None, report: dict,
                 on_step: StepCallback | None, thought: str) -> None:
+    """Each experiment on every seed; each seed is judged against the unchanged scene on that seed."""
     _emit(on_step, "Batch runner", "experiments", thought.format(n=len(items)), "", "working")
-    results = _run(spec, [h["intervention"] for h in items], robot_id, baseline=False)
+    per_item = _run(spec, [h["intervention"] for h in items], robot_id)
+    results = [result for runs in per_item for result in runs]
     report["runs"] += len(results)
-    for item, result in zip(items, results):
-        after = result_metrics(result, robot_id)
-        item["verdict"] = verdict(base, after)
-        item["key_numbers"] = key_numbers(base, after)
-        item["improvement"] = improvement(base, after)
+    for item, runs in zip(items, per_item):
+        afters = [result_metrics(result, robot_id) for result in runs]
+        item["seed_verdicts"] = [verdict(base, after) for base, after in zip(bases, afters)]
+        item["verdict"] = combine(item["seed_verdicts"])
+        shown = next((k for k, after in enumerate(afters) if not after.get("error")), 0)   # numbers from the first seed that ran
+        item["key_numbers"] = key_numbers(bases[shown], afters[shown])
+        scores = [improvement(base, after) for base, after in zip(bases, afters) if not after.get("error")]
+        item["improvement"] = round(sum(scores) / len(scores), 3) if scores else -1.0
         item["change"] = describe_change(item["intervention"])
-        item["numbers_text"] = describe_numbers(item["key_numbers"])
+        item["numbers_text"] = "; ".join(filter(None, [describe_numbers(item["key_numbers"]),
+                                                        _seeds_text(item["seed_verdicts"])]))
     report["hypotheses"] += items
     _emit(on_step, "Batch runner", "experiments", "Experiments.",
           "; ".join(f"{h['cause']}: {h['verdict']} ({describe_numbers(h['key_numbers'])})" for h in items))
@@ -627,10 +665,18 @@ def _experiment(spec: SceneSpec, items: list[dict], base: dict, robot_id: str | 
 
 def diagnose(spec: SceneSpec, summary: dict, robot_id: str | None = None,
              on_step: StepCallback | None = None) -> dict:
-    """Reproduce a failed run, test 2–4 single-change hypotheses in parallel and report verdicts."""
+    """Reproduce a failed run, test 2–4 single-change hypotheses on 2 seeds each, in parallel, and report verdicts
+    and what it cost."""
+    with cost.track() as spent:
+        report = _diagnose(spec, summary, robot_id, on_step)
+        report["cost"] = spent.snapshot()
+    return report
+
+
+def _diagnose(spec: SceneSpec, summary: dict, robot_id: str | None, on_step: StepCallback | None) -> dict:
     original = robot_metrics(summary, robot_id)
     robot_id = original["robot_id"]
-    report: dict[str, Any] = {"type": "diagnosis", "robot_id": robot_id, "original": original,
+    report: dict[str, Any] = {"type": "diagnosis", "robot_id": robot_id, "original": original, "seeds": SEEDS,
                               "hypotheses": [], "decisions": [], "model_calls": [], "runs": 0}
     if original["passed"]:
         report.update(reproduced=None, conclusion=(
@@ -640,11 +686,16 @@ def diagnose(spec: SceneSpec, summary: dict, robot_id: str | None = None,
         return report
 
     spec = pin_task(spec, summary)
-    _emit(on_step, "Batch runner", "reproduce", "Rerunning the unchanged scene to check the failure repeats.", "", "working")
-    base_result = run_batch(spec, [])[0]
-    report["runs"] = 1
+    _emit(on_step, "Batch runner", "reproduce", "Rerunning the unchanged scene on 2 seeds to check the failure repeats.",
+          "", "working")
+    reproductions = run_batch(spec, [{"label": f"Baseline, seed {k + 1}", **seeded(spec, None, k)} for k in range(1, SEEDS)])
+    report["runs"] = len(reproductions)
+    base_result = reproductions[0]
     base = result_metrics(base_result, robot_id)
     report["reproduced_metrics"] = base
+    # each seed's experiments are judged against the unchanged scene on that seed (the original's if it crashed)
+    bases = [base] + [m if not m.get("error") else base for m in (result_metrics(r, robot_id) for r in reproductions[1:])]
+    report["reproduced_seeds"] = [not m.get("error") and not m["passed"] for m in (result_metrics(r, robot_id) for r in reproductions)]
     if base.get("error") or base["passed"]:
         message = (f"{crash_report([base_result])}. {SYSTEM_PROBLEM}, so nothing was tested." if base.get("error")
                    else "The failure didn't reproduce: the unchanged scene passed when rerun, so I stopped there.")
@@ -652,8 +703,14 @@ def diagnose(spec: SceneSpec, summary: dict, robot_id: str | None = None,
         report.update(reproduced=False, conclusion=message)
         return report
     report["reproduced"] = True
+    repeated = sum(report["reproduced_seeds"])
+    borderline = "" if repeated == SEEDS else (
+        f" It failed on {repeated} of {SEEDS} seeds, so the failure itself is borderline: an experiment can pass on a "
+        "seed where the unchanged scene passes too, and such verdicts come out uncertain.")
+    if borderline:
+        report["decisions"].append({"agent": "Batch runner", "decision": "borderline", "reason": borderline.strip()})
     _emit(on_step, "Batch runner", "reproduce", "Rerunning the unchanged scene.",
-          f"The failure reproduced ({base.get('outcome') or 'failed'}).")
+          f"The failure reproduced ({base.get('outcome') or 'failed'}).{borderline}")
 
     from .facts import facts, facts_block
 
@@ -669,19 +726,20 @@ def diagnose(spec: SceneSpec, summary: dict, robot_id: str | None = None,
     if not any(h.get("control") for h in hypotheses):
         extra = [h for h in rule_hypotheses(spec, base) if h.get("control")]
         hypotheses += [h for h in extra if h["intervention"] not in [x["intervention"] for x in hypotheses]][:1]
-    hypotheses = hypotheses[: min(MAX_HYPOTHESES, MAX_RERUNS - report["runs"])]
+    hypotheses = hypotheses[: min(MAX_HYPOTHESES, (MAX_RERUNS - report["runs"]) // SEEDS)]   # each one runs on every seed
     _emit(on_step, "Explainer", "hypotheses", "Proposing causes, each tested by changing one thing.",
           "; ".join(f"{h['cause']}{' (control)' if h.get('control') else ''}: {describe_change(h['intervention'])}"
                     for h in hypotheses))
 
-    _experiment(spec, hypotheses, base, robot_id, report, on_step, "Running {n} single-change experiments in parallel.")
+    _experiment(spec, hypotheses, bases, robot_id, report, on_step,
+                "Running {n} single-change experiments on " + f"{SEEDS} seeds each, in parallel.")
     if not _tested(report["hypotheses"]):   # every experiment crashed: nothing for the Explainer to read
         report["outcome"] = "crashed"
         report["conclusion"] = f"{report['crashed']}. {SYSTEM_PROBLEM}, so nothing was concluded."
         return report
     outcome = "conclude"
     for _ in range(MAX_DECISION_ROUNDS):
-        remaining = MAX_RERUNS - report["runs"]
+        remaining = (MAX_RERUNS - report["runs"]) // SEEDS   # experiments left, each on every seed
         recorded = len(report["decisions"])
         decided = None if config.MOCK_MODE else model_decision(
             spec, _tested(report["hypotheses"]), remaining, report["decisions"], report["model_calls"], facts_block(found))
@@ -703,7 +761,7 @@ def diagnose(spec: SceneSpec, summary: dict, robot_id: str | None = None,
             break
         for item in follow:
             item["follow_up"] = True
-        _experiment(spec, follow, base, robot_id, report, on_step, "Running {n} follow-up experiment(s).")
+        _experiment(spec, follow, bases, robot_id, report, on_step, "Running {n} follow-up experiment(s) on " + f"{SEEDS} seeds.")
     report["outcome"] = outcome
     report["conclusion"] = conclusion(_tested(report["hypotheses"]), report["model_calls"], outcome, found)
     if report.get("crashed"):
