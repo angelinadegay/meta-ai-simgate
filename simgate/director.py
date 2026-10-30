@@ -774,13 +774,16 @@ _NUMBER_WORDS = {
 
 def _rule_title(planned: SceneSpec, robots: list[dict[str, Any]]) -> str:
     """The rules planner's scene title; with several robots it names each one ("4-wheel rover and 6-legged walker")."""
+    if " on " in planned.title and sum(robot["count"] for robot in robots) == 1 and robots[0].get("robot_id"):
+        name = agents.library_robot_name(Robot(kind="library", robot_id=robots[0]["robot_id"]))   # e.g. an uploaded "Cart"
+        return f"{name[:1].upper()}{name[1:]} on {planned.title.split(' on ', 1)[1].rstrip('.')}."
     if sum(robot["count"] for robot in robots) <= 1 or " on " not in planned.title:
         return planned.title.rstrip(".") + "."
     count_words = {count: word for word, count in _NUMBER_WORDS.items()}
     names = []
     for robot in robots:
         if robot.get("robot_id"):
-            what = "G1 humanoid"
+            what = agents.library_robot_name(Robot(kind="library", robot_id=robot["robot_id"]))
         elif robot.get("kind") == "walker":
             what = f"{robot.get('legs') or 4}-legged walker"
         else:
@@ -790,18 +793,48 @@ def _rule_title(planned: SceneSpec, robots: list[dict[str, Any]]) -> str:
     return f"{listed[0].upper()}{listed[1:]} on {planned.title.split(' on ', 1)[1].rstrip('.')}."
 
 
+def _library_label(robot_id: str | None) -> str:
+    if robot_id == "g1":
+        return "G1"
+    try:
+        return LibraryRegistry().robot(robot_id).name
+    except ValueError:
+        return "Robot"
+
+
+def _uploaded_robot_mentions(source: str) -> list[tuple[int, int, str | None, dict[str, Any]]]:
+    """Uploaded Library robots named in the request by their whole name or id ("two Carts"):
+    (start, end, count word, robot plan)."""
+    registry = LibraryRegistry()
+    found = []
+    for card in registry.robots():
+        if card.source != "upload":
+            continue
+        policies = registry.compatible_policies(card.id)
+        item = {"robot_id": card.id, "policy_id": policies[0].id if policies else None, "label": card.name}
+        for word in {card.name.lower(), card.id}:
+            for match in re.finditer(rf"(?:\b(\d+|one|two|three|four|five|six)\s+)?\b{re.escape(word)}(?:e?s)?\b", source):
+                if not any(start < match.end() and match.start() < end for start, end, _, _ in found):
+                    found.append((match.start(), match.end(), match.group(1), item))
+    return found
+
+
 def _requested_robots(text: str, fallback: Robot | None) -> list[dict[str, Any]]:
     source = text.lower()
     pattern = re.compile(r"(?:(\d+|one|two|three|four|five|six)\s+)?(unitree(?:[\s-]+(?:g1|humanoid|robot)s?)?|g1s?|humanoids?|rovers?|walkers?|hexapods?)")
-    matches = list(pattern.finditer(source))
+    uploaded = _uploaded_robot_mentions(source)
+    matches = [match for match in pattern.finditer(source)   # a built-in word inside an uploaded robot's name isn't one
+               if not any(start < match.end() and match.start() < end for start, end, _, _ in uploaded)]
     if re.search(r"\bg1\s+humanoid\b", source):
         matches = [match for match in matches if not match.group(2).startswith("humanoid")]
+    mentions = sorted([(match.start(), match.group(1), match.group(2), None) for match in matches]
+                      + [(start, amount, None, item) for start, _, amount, item in uploaded], key=lambda m: m[0])
     parsed: list[dict[str, Any]] = []
-    for match in matches:
-        amount = match.group(1)
+    for _, amount, name, uploaded_item in mentions:
         count = int(amount) if amount and amount.isdigit() else _NUMBER_WORDS.get(amount, 1)
-        name = match.group(2)
-        if name.startswith(("g1", "humanoid", "unitree")):
+        if uploaded_item is not None:
+            item = uploaded_item
+        elif name.startswith(("g1", "humanoid", "unitree")):
             item = {"robot_id": "g1", "policy_id": "g1_walking", "label": "G1"}
         elif name.startswith("walker") or name.startswith("hexapod"):
             item = {"kind": "walker", "label": "Walker"}
@@ -815,7 +848,7 @@ def _requested_robots(text: str, fallback: Robot | None) -> list[dict[str, Any]]
     if not parsed:
         robot = fallback or Robot()
         if robot.kind == "library":
-            return [{"robot_id": robot.robot_id, "policy_id": robot.policy_id, "label": "G1"}]
+            return [{"robot_id": robot.robot_id, "policy_id": robot.policy_id, "label": _library_label(robot.robot_id)}]
         item = {"kind": robot.kind, "label": robot.kind.title()}
         if robot.kind == "walker":
             item["legs"] = robot.legs

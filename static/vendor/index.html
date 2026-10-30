@@ -57,6 +57,21 @@
   .library-item strong, .library-item span { display: block; }
   .library-item span { color: var(--muted); font-size: 11px; }
   .library-status { margin-top: 7px; color: var(--muted); font-size: 11px; }
+  .library-entry { display: flex; gap: 6px; align-items: stretch; }
+  .library-entry .library-item { flex: 1; min-width: 0; }
+  .library-entry .chip { align-self: center; }
+  .library-item.not-ready { border-color: var(--warn); cursor: default; }
+  .badge { display: inline-block; margin-left: 6px; padding: 0 6px; border: 1px solid currentColor; border-radius: 99px; font-size: 10px; font-weight: 500; }
+  .badge.uploaded { color: var(--accent); }
+  .badge.not-ready { color: var(--warn); }
+  .upload-form { display: grid; gap: 6px; margin-top: 8px; }
+  .upload-form[hidden], .upload-form [hidden] { display: none; }
+  .upload-form label { display: grid; gap: 2px; color: var(--muted); font-size: 11px; }
+  .upload-form input, .upload-form select { padding: 5px 7px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel-2); color: var(--text); font: inherit; font-size: 12.5px; }
+  .dropzone { padding: 10px; border: 1px dashed var(--line); border-radius: 7px; color: var(--muted); font-size: 12px; text-align: center; }
+  .dropzone.over { border-color: var(--accent); color: var(--text); }
+  .dropzone label { display: inline; color: var(--accent); cursor: pointer; text-decoration: underline; }
+  .file-list { margin-top: 4px; color: var(--text); font-size: 11px; overflow-wrap: anywhere; }
   .quick { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
   .chip { font: inherit; font-size: 12px; padding: 5px 10px; border-radius: 99px; border: 1px solid var(--line); background: transparent; color: var(--text); cursor: pointer; }
   .chip:hover { border-color: var(--accent); }
@@ -156,6 +171,25 @@
         <button type="button" class="chip" id="uploadPolicy">Upload policy</button>
         <button type="button" class="chip" id="uploadWorld">Upload world</button>
       </div>
+      <form id="uploadForm" class="upload-form" hidden>
+        <div class="dropzone" id="dropzone">Drop files or one .zip here, or <label for="uploadFiles">choose files</label>
+          <input type="file" id="uploadFiles" multiple hidden
+            accept=".zip,.xml,.urdf,.mjcf,.stl,.obj,.msh,.png,.jpg,.tif,.tiff,.onnx,.yaml,.yml,.json,.md,.txt">
+          <div class="file-list" id="uploadFileList">No files yet.</div>
+        </div>
+        <label>Name <input id="uploadName" required maxlength="200"></label>
+        <label>Credit <input id="uploadCredit" required maxlength="200" placeholder="Who made it"></label>
+        <label>License <input id="uploadLicense" required maxlength="200" placeholder="e.g. MIT, BSD-3-Clause, CC-BY-4.0"></label>
+        <label data-for="policy">Robot it drives <select id="uploadRobotId"></select></label>
+        <label data-for="terrain">World <select id="uploadBody"></select></label>
+        <label data-for="terrain">Ground <select id="uploadSurface"></select></label>
+        <label data-for="terrain">Width in metres (heightmap images) <input id="uploadSize" type="number" min="1" max="1000" step="any"></label>
+        <label data-for="terrain">Height range in metres, black to white (heightmap images) <input id="uploadHeight" type="number" min="0" max="500" step="any"></label>
+        <div class="library-actions">
+          <button class="chip primary" id="uploadSubmit">Upload</button>
+          <button type="button" class="chip" id="uploadCancel">Cancel</button>
+        </div>
+      </form>
       <div class="library-status" id="libraryStatus">Connect to load library cards.</div>
     </details>
     <div id="log">
@@ -333,16 +367,47 @@ function compatiblePolicies(robot) {
   return libraryData.policies.filter((policy) => policy.robot_id === robot.id ||
     (policy.joint_order.length > 0 && policy.joint_order.length === robot.joint_names.length && policy.joint_order.every((name) => robot.joint_names.includes(name))));
 }
-function libraryCard(title, detail, license, credit, selected, onClick) {
+function libraryCard(title, detail, license, credit, selected, onClick, onUse) {
+  const entry = document.createElement("div"); entry.className = "library-entry";
   const button = document.createElement("button"); button.type = "button";
   button.className = `library-item${selected ? " selected" : ""}`;
   button.setAttribute("aria-pressed", String(selected));
   const name = document.createElement("strong"); name.textContent = title;
+  if (onUse) {   // only uploaded items have their own Use button
+    const badge = document.createElement("span"); badge.className = "badge uploaded"; badge.textContent = "uploaded";
+    name.appendChild(badge);
+  }
   const info = document.createElement("span"); info.textContent = detail;
   const terms = document.createElement("span"); terms.textContent = `License: ${license}`;
   const attribution = document.createElement("span"); attribution.textContent = `Credit: ${credit}`;
   button.append(name, info, terms, attribution); button.onclick = onClick;
-  return button;
+  entry.appendChild(button);
+  if (onUse) {
+    const use = document.createElement("button"); use.type = "button"; use.className = "chip primary"; use.textContent = "Use";
+    use.onclick = onUse; entry.appendChild(use);
+  }
+  return entry;
+}
+// An upload that isn't in the Library yet: its open questions as chips, or why its checks failed.
+function pendingCard(upload) {
+  const card = document.createElement("div"); card.className = "library-item not-ready";
+  const name = document.createElement("strong"); name.textContent = upload.name;
+  const badge = document.createElement("span"); badge.className = "badge not-ready";
+  badge.textContent = upload.status === "needs_answers" ? "needs answers" : "not ready";
+  name.appendChild(badge); card.appendChild(name);
+  for (const reason of upload.reasons || []) {
+    const line = document.createElement("span"); line.textContent = reason; card.appendChild(line);
+  }
+  for (const question of upload.questions || []) {
+    const line = document.createElement("span"); line.textContent = question.question; card.appendChild(line);
+    const row = document.createElement("div"); row.className = "quick"; card.appendChild(row);
+    answerChips(row, upload.kind, upload.id, question);
+  }
+  return card;
+}
+function useSetup(robotId, policyId, worldId) {
+  selectedRobotId = robotId; selectedPolicyId = policyId; selectedWorldId = worldId || selectedWorldId; renderLibrary();
+  ws.send(JSON.stringify({ type: "library_select", robot_id: selectedRobotId, policy_id: selectedPolicyId, world_id: selectedWorldId }));
 }
 function renderLibrary() {
   const container = $("libraryItems"); container.replaceChildren();
@@ -361,7 +426,7 @@ function renderLibrary() {
           selectedRobotId = robot.id;
           selectedPolicyId = compatiblePolicies(robot)[0]?.id || "";
           renderLibrary();
-        }));
+        }, robot.source === "upload" ? () => useSetup(robot.id, compatiblePolicies(robot)[0]?.id || "") : null));
     }
   } else if (libraryTab === "policies") {
     const robot = libraryData.robots.find((item) => item.id === selectedRobotId);
@@ -369,7 +434,7 @@ function renderLibrary() {
       container.appendChild(libraryCard(policy.name, `${policy.format} · ${policy.control_dt} s · ${policy.robot_id} · joints: ${policy.joint_order.join(", ")}`,
         policy.license, policy.credit, policy.id === selectedPolicyId, () => {
           selectedPolicyId = policy.id; renderLibrary();
-        }));
+        }, isUploaded(policy) ? () => useSetup(policy.robot_id, policy.id) : null));
     }
   } else {
     for (const world of libraryData.worlds) {
@@ -377,8 +442,12 @@ function renderLibrary() {
       container.appendChild(libraryCard(world.name, `${terrain} · ${world.gravity_m_s2} m/s² · ${world.surface} · friction ${world.friction}`,
         world.license, world.credit, world.id === selectedWorldId, () => {
           selectedWorldId = world.id; renderLibrary();
-        }));
+        }, world.source === "upload" ? () => useSetup(selectedRobotId, selectedPolicyId, world.id) : null));
     }
+  }
+  const kind = { robots: "robot", policies: "policy", worlds: "terrain" }[libraryTab];
+  for (const upload of (libraryData.uploads || []).filter((item) => item.kind === kind && item.status !== "listed")) {
+    container.appendChild(pendingCard(upload));
   }
   const ready = selectedRobotId && selectedPolicyId && selectedWorldId;
   $("applyLibrary").disabled = !ready;
@@ -394,9 +463,166 @@ $("applyLibrary").onclick = () => {
     type: "library_select", robot_id: selectedRobotId, policy_id: selectedPolicyId, world_id: selectedWorldId
   }));
 };
-$("uploadRobot").onclick = () => addMsg("Robot uploads are placeholders and are not available yet.");
-$("uploadPolicy").onclick = () => addMsg("Policy uploads are placeholders and are not available yet.");
-$("uploadWorld").onclick = () => addMsg("World uploads are placeholders and are not available yet.");
+function isUploaded(policy) {
+  return (libraryData.uploads || []).some((upload) => upload.id === policy.id && upload.status === "listed");
+}
+
+// ── Uploads: Upload → Inspector/Adapter → Checker, shown as agent steps ──────
+let uploadKind = null, uploadFiles = [], uploadCount = 0;
+const UPLOAD_NOUN = { robot: "robot", policy: "policy", terrain: "world" };
+const UPLOAD_TAB = { robot: "Robots", policy: "Policies", terrain: "Worlds" };
+const FORM_FIELDS = { robot_id: "uploadRobotId", body: "uploadBody", surface: "uploadSurface", size_m: "uploadSize", height_range_m: "uploadHeight" };
+function openUpload(kind) {
+  uploadKind = kind; uploadFiles = [];
+  libraryTab = { robot: "robots", policy: "policies", terrain: "worlds" }[kind];
+  $("libraryPanel").open = true; $("uploadForm").hidden = false; renderLibrary();
+  for (const field of $("uploadForm").querySelectorAll("[data-for]")) field.hidden = field.dataset.for !== kind;
+  $("uploadRobotId").replaceChildren(...libraryData.robots.filter((robot) => robot.joint_names.length)
+    .map((robot) => new Option(robot.name, robot.id)));
+  const bodies = [...new Set(libraryData.worlds.map((world) => world.body))];
+  const surfaces = [...new Set(libraryData.worlds.map((world) => world.surface))];
+  $("uploadBody").replaceChildren(new Option("Ask me", ""), ...bodies.map((body) => new Option(body, body)));
+  $("uploadSurface").replaceChildren(new Option("Ask me", ""), ...surfaces.map((surface) => new Option(surface, surface)));
+  $("uploadSubmit").textContent = `Upload ${UPLOAD_NOUN[kind]}`;
+  renderUploadFiles();
+}
+function renderUploadFiles() {
+  $("uploadFileList").textContent = uploadFiles.length ? uploadFiles.map((file) => file.name).join(", ") : "No files yet.";
+}
+function addFiles(list) { uploadFiles.push(...list); renderUploadFiles(); }
+$("uploadRobot").onclick = () => openUpload("robot");
+$("uploadPolicy").onclick = () => openUpload("policy");
+$("uploadWorld").onclick = () => openUpload("terrain");
+$("uploadCancel").onclick = () => { $("uploadForm").hidden = true; uploadFiles = []; };
+$("uploadFiles").onchange = (event) => { addFiles(event.target.files); event.target.value = ""; };
+$("dropzone").ondragover = (event) => { event.preventDefault(); $("dropzone").classList.add("over"); };
+$("dropzone").ondragleave = () => $("dropzone").classList.remove("over");
+$("dropzone").ondrop = (event) => { event.preventDefault(); $("dropzone").classList.remove("over"); addFiles(event.dataTransfer.files); };
+$("uploadForm").onsubmit = (event) => {
+  event.preventDefault();
+  if (!uploadFiles.length) { $("uploadFileList").textContent = "Add at least one file."; return; }
+  submitUpload();
+};
+async function submitUpload() {
+  const kind = uploadKind, step = `upload-${++uploadCount}`, form = new FormData();
+  form.append("type", kind);
+  for (const [field, input] of [["name", "uploadName"], ["credit", "uploadCredit"], ["license", "uploadLicense"]]) form.append(field, $(input).value);
+  if (kind === "policy") form.append("robot_id", $("uploadRobotId").value);
+  if (kind === "terrain") {
+    for (const [field, input] of [["body", "uploadBody"], ["surface", "uploadSurface"], ["size_m", "uploadSize"], ["height_range_m", "uploadHeight"]]) {
+      form.append(field, $(input).value);
+    }
+  }
+  for (const file of uploadFiles) form.append("files", file, file.webkitRelativePath || file.name);
+  renderStep({ id: `${step}-upload`, agent: "Upload", status: "working", thought: `Checking ${uploadFiles.length} file(s) and storing them…` });
+  try {
+    const response = await fetch("/upload", { method: "POST", body: form });
+    showUploadResult(step, kind, response.status, await response.json());
+  } catch (error) {
+    renderStep({ id: `${step}-upload`, agent: "Upload", status: "error", thought: "The upload didn't reach the server.", result: String(error) });
+  }
+}
+async function answerUpload(kind, uploadId, field, value) {
+  const step = `upload-${++uploadCount}`;
+  addMsg(`${field}: ${value}`, "user");
+  renderStep({ id: `${step}-upload`, agent: "Upload", status: "working", thought: "Updating the card with your answer…" });
+  const response = await fetch(`/upload/${kind}/${uploadId}/answers`, {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ answers: { [field]: value } }),
+  });
+  const result = await response.json();
+  showUploadResult(step, kind, response.status, { ...result, upload: { id: uploadId, name: uploadId, files: [] }, answered: true });
+}
+function answerChips(container, kind, uploadId, question) {
+  for (const choice of question.choices || []) {
+    const button = document.createElement("button"); button.type = "button"; button.className = "chip"; button.textContent = choice;
+    button.onclick = () => {
+      container.querySelectorAll(".chip").forEach((chip) => { chip.disabled = true; });
+      answerUpload(kind, uploadId, question.field, choice);
+    };
+    container.appendChild(button);
+  }
+}
+function showUploadResult(step, kind, status, body) {
+  if (!body.ok && !body.questions) {
+    renderStep({ id: `${step}-upload`, agent: "Upload", status: "error", thought: "Not accepted.", result: body.error });
+    addMsg(body.error); return;
+  }
+  if (!body.ok) {   // 422: nothing was kept; answer on the form and it is uploaded again
+    renderStep({ id: `${step}-upload`, agent: "Upload", status: "warning", thought: "Needs an answer first; nothing was stored.", result: body.error });
+    for (const question of body.questions) {
+      const message = addMsg(question.question), row = document.createElement("div"); row.className = "quick"; message.appendChild(row);
+      if (question.choices?.length) {
+        for (const choice of question.choices) {
+          const button = document.createElement("button"); button.type = "button"; button.className = "chip"; button.textContent = choice;
+          button.onclick = () => { $(FORM_FIELDS[question.field]).value = choice; submitUpload(); };
+          row.appendChild(button);
+        }
+      } else {
+        message.append(" Fill it in on the upload form and upload again.");
+        $(FORM_FIELDS[question.field])?.focus();
+      }
+    }
+    return;
+  }
+  const upload = body.upload, state = body.robot || body.policy, terrain = body.terrain;
+  renderStep(body.answered
+    ? { id: `${step}-upload`, agent: "Upload", status: "done", thought: "Answer applied; no re-upload needed." }
+    : { id: `${step}-upload`, agent: "Upload", status: "done", thought: `Stored ${upload.files.length} file(s) safely.`,
+        result: `${upload.id}: ${upload.files.join(", ")}` });
+  const facts = factsSummary(kind, state, terrain);
+  renderStep({ id: `${step}-agent`, agent: kind === "policy" ? "Adapter" : "Inspector", model: state?.inspector || state?.adapter || "rules",
+    status: "done", thought: facts.title, result: facts.detail });
+  const checks = state?.checks || [], warnings = terrain?.inspection?.warnings || [];
+  if (checks.length || terrain) {
+    const failed = checks.filter((check) => !check.passed && !check.advisory);
+    renderStep({ id: `${step}-checker`, agent: "Checker", status: failed.length || warnings.length ? "warning" : "done",
+      thought: terrain ? `Terrain preset ready${warnings.length ? `, ${warnings.length} warning(s)` : ""}.`
+        : `${checks.length - failed.length} of ${checks.length} checks passed.`,
+      result: [...checks.map((check) => `${check.passed ? "✓" : "✕"} ${check.name}: ${check.detail}`),
+        ...warnings.map((warning) => `! ${warning}`)].join("\n") });
+  }
+  const questions = state?.questions || [];
+  for (const question of questions) {
+    const message = addMsg(question.question), row = document.createElement("div"); row.className = "quick";
+    message.appendChild(row); answerChips(row, kind, upload.id, question);
+  }
+  if (terrain || state?.status === "listed") {
+    const name = terrain ? terrain.label : state.robot_card?.name || state.policy_card?.name || upload.name;
+    addMsg(`${name} is in the Library: use it from the ${UPLOAD_TAB[kind]} tab.`);
+  } else if (!questions.length) {
+    const reasons = [...(state?.errors || []), ...checks.filter((check) => !check.passed && !check.advisory).map((check) => `${check.name} (${check.detail})`)];
+    addMsg(`Not ready: ${reasons.join("; ")}`);
+  }
+  if (!body.answered) { $("uploadForm").hidden = true; uploadFiles = []; }
+  refreshLibrary();
+}
+function factsSummary(kind, state, terrain) {
+  if (terrain) {
+    return { title: `${terrain.size_m} m square, ${terrain.relief_m} m relief, typical slope ${terrain.typical_slope_deg}° (max ${terrain.max_slope_deg}°).`,
+      detail: [terrain.orientation, `World ${terrain.body}, ${terrain.surface}.`, ...(terrain.inspection?.warnings || [])].filter(Boolean).join("\n") };
+  }
+  if (kind === "robot") {
+    const f = state.facts, card = state.robot_card || {};
+    return { title: `${state.draft.kind}, ${f.total_mass_kg} kg, ${f.height_m} m tall; ${state.policy_card?.name || "no controller"}.`,
+      detail: [`FACTS: ${f.joints.length} joints, ${f.actuators.length} actuators, ${f.mesh_files} mesh file(s), `
+        + `${f.candidate_wheels.length} wheel candidate(s), feet: ${f.candidate_feet.join(", ") || "none"}.`,
+        f.units_warning, ...(state.conversion_notes || []),
+        `Draft card: forward ${state.draft.forward_axis}; wheels ${card.wheels?.map((w) => `${w.joint} (${w.side})`).join(", ") || "none"}; `
+        + `legs ${card.legs?.map((leg) => `${leg.hip}/${leg.knee || "-"}`).join(", ") || "none"}.`].filter(Boolean).join("\n") };
+  }
+  const onnx = state.facts.onnx, draft = state.draft;
+  return { title: `ONNX: ${onnx.observation_size} observations → ${onnx.action_size} actions${onnx.recurrent_state_size ? `, LSTM state ${onnx.recurrent_state_size}` : ""}.`,
+    detail: [`Config keys: ${Object.values(state.facts.config.configs).flatMap((config) => Object.keys(config || {})).join(", ") || "none"}.`,
+      `Draft card: ${draft.observation.map((block) => `${block.name} ${block.size}`).join(" + ")}; control every ${draft.control_dt ?? "?"} s; `
+      + `${draft.joint_order.length} joints; action scale ${draft.action_scale}.`, draft.notes, ...(state.errors || [])].filter(Boolean).join("\n") };
+}
+async function refreshLibrary() {
+  try {
+    const response = await fetch("/library");
+    libraryData = await response.json();
+    renderLibrary();
+  } catch (error) { /* the next page load lists it */ }
+}
 
 ws.onmessage = (m) => {
   const ev = JSON.parse(m.data);

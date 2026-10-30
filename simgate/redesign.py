@@ -431,8 +431,8 @@ def redesign(spec: SceneSpec, summary: dict, constraints: str | None = None, dia
         "notes": [],
     }
     if space.kind == "library":
-        report["notes"].append("Only the walking speed and the choice of compatible policy can change: the trained "
-                               "policy expects this exact body, so its body is never edited.")
+        report["notes"].append("Only the command speed and the choice of compatible policy can change: a library "
+                               "robot's controller expects its exact body, so its body is never edited.")
     if original_metrics["passed"]:
         report["message"] = (f"{original_metrics['label']} already passes, so there is nothing to redesign."
                              if original_metrics.get("label") else "This run already passes, so there is nothing to redesign.")

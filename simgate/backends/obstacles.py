@@ -309,6 +309,13 @@ def capability(spec) -> dict:
     if rb.kind == "rover":
         climb = (0.9 if rb.wheels == 6 else 0.6) * rb.wheel_radius
         return {"climb_m": round(climb, 2), "gap_m": round(1.6 * rb.wheel_radius, 2)}
+    if rb.kind == "library":   # an uploaded wheeled robot: the 4-wheel rover's rule with its own wheel radius
+        from ..library import LibraryRegistry
+
+        card = LibraryRegistry().robot(rb.robot_id)
+        if card.wheels:
+            radius = min(wheel.radius_m for wheel in card.wheels)
+            return {"climb_m": round(0.6 * radius, 2), "gap_m": round(1.6 * radius, 2)}
     climb = (0.25 if rb.legs == 6 else 0.15) * rb.leg_length
     return {"climb_m": round(climb, 2), "gap_m": 0.0}
 

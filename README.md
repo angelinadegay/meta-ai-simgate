@@ -455,6 +455,9 @@ Without a key, it runs in mock mode.
 | `adapter_model_draft_is_checked_against_the_config` | The Adapter agent's draft is checked against the ONNX sizes and the config's own numbers, with one retry showing the exact errors; a height scan is refused as unsupported |
 | `adapter_checks_explain_a_wrong_observation_order` | A policy card with joint positions and velocities swapped fails the standing/walking checks, each with what is likely wrong, and isn't listed |
 | `policy_runtime_reads_base_linear_velocity_in_the_body_frame` | The base_lin_vel block is the root's velocity in its own frame |
+| `library_page_offers_uploads` | The Library's Upload buttons open a working form (drag-and-drop or file picker; name, credit and license required; robot picker for policies) and show Upload → Inspector/Adapter → Checker steps, question chips, "uploaded"/"not ready" badges and a Use button |
+| `library_endpoint_shows_uploads_with_their_state` | GET /library lists uploaded cards and each upload's state: listed, needs answers (with its questions), or not ready (with the failed checks) |
+| `an_uploaded_robot_is_usable_everywhere` | An uploaded cart is offered to the Director by id, planned by name, titled by its name, raced, run with its own climb limits, diagnosed, redesigned by command speed only, and stress-tested in worker processes |
 
 ---
 

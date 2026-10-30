@@ -3078,8 +3078,14 @@ def _robot_uploads():
     import server
     from simgate.library import uploads
 
+    import contextlib
+    import os
+
     folder = tempfile.TemporaryDirectory(dir=uploads.UPLOADS_DIR, prefix=".test-")
-    return folder, patch.object(uploads, "UPLOADS_DIR", Path(folder.name)), TestClient(server.app)
+    redirect = contextlib.ExitStack()   # this process, and the batch runner's worker processes (they read the env)
+    redirect.enter_context(patch.object(uploads, "UPLOADS_DIR", Path(folder.name)))
+    redirect.enter_context(patch.dict(os.environ, {"SIMGATE_UPLOADS_DIR": folder.name}))
+    return folder, redirect, TestClient(server.app)
 
 
 MESH = Path(__file__).resolve().parent.parent / "third_party/unitree_rl_gym/resources/robots/g1_description/meshes/left_elbow_link.STL"
@@ -3380,6 +3386,72 @@ def test_policy_runtime_reads_base_linear_velocity_in_the_body_frame():
     data.qvel[runner.root_dof_address:runner.root_dof_address + 3] = [0.0, 1.0, 0.0]      # moving north = forward
     mujoco.mj_forward(model, data)
     assert np.allclose(runner.observation(0.0), [2.0, 0.0, 0.0], atol=1e-6)
+
+
+def test_library_page_offers_uploads():
+    page = (Path(__file__).resolve().parent.parent / "static" / "vendor" / "index.html").read_text(encoding="utf-8")
+    assert "placeholders" not in page, "the Upload buttons work now"
+    for needed in ('id="uploadForm"', 'id="dropzone"', 'type="file" id="uploadFiles" multiple',
+                   '<input id="uploadName" required', '<input id="uploadCredit" required', '<input id="uploadLicense" required',
+                   'id="uploadRobotId"', 'data-for="terrain"', 'fetch("/upload", { method: "POST", body: form })',
+                   "fetch(`/upload/${kind}/${uploadId}/answers`", 'fetch("/library")', 'agent: "Upload"',
+                   'agent: kind === "policy" ? "Adapter" : "Inspector"', 'agent: "Checker"', 'badge uploaded', '"not ready"',
+                   'use.textContent = "Use"', "answerChips(row, kind, upload.id, question)", "ondrop"):
+        assert needed in page, needed
+
+
+def test_library_endpoint_shows_uploads_with_their_state():
+    folder, uploads_dir, client = _robot_uploads()
+    with folder, uploads_dir:
+        cart = client.post("/upload", data={**ROBOT_FORM, "name": "Cart"}, files=[("files", ("cart.urdf", cart_urdf(mesh=False)))]).json()
+        plain = client.post("/upload", data={**ROBOT_FORM, "name": "Plain"},
+                            files=[("files", ("cart.urdf", cart_urdf(("w1", "w2", "w3", "w4"), mesh=False)))]).json()
+        tiny = (b'<mujoco><worldbody><body name="chip"><freejoint/><geom type="box" size="0.01 0.01 0.004" mass="0.2"/>'
+                b'</body></worldbody></mujoco>')
+        chip = client.post("/upload", data={**ROBOT_FORM, "name": "Chip"}, files=[("files", ("chip.xml", tiny))]).json()
+        library = client.get("/library").json()
+        robots = {robot["id"]: robot for robot in library["robots"]}
+        assert robots[cart["upload"]["id"]]["source"] == "upload" and plain["upload"]["id"] not in robots
+        state = {upload["id"]: upload for upload in library["uploads"]}
+        assert state[cart["upload"]["id"]]["status"] == "listed"
+        assert state[plain["upload"]["id"]]["status"] == "needs_answers"
+        assert state[plain["upload"]["id"]]["questions"][0]["field"] == "forward_axis"
+        assert state[chip["upload"]["id"]]["status"] == "not ready"
+        assert any("Mass and size are plausible" in reason for reason in state[chip["upload"]["id"]]["reasons"])
+        assert {policy["id"] for policy in library["policies"]} >= {f"{cart['upload']['id']}-wheels", "g1_walking"}
+
+
+def test_an_uploaded_robot_is_usable_everywhere():
+    """Director prompt, rules planner, title, run, explanation, course limits, diagnose, redesign and stress test."""
+    from simgate.director import _plan_system
+
+    folder, uploads_dir, client = _robot_uploads()
+    with folder, uploads_dir:
+        answer = client.post("/upload", data={**ROBOT_FORM, "name": "Cart"},
+                             files=[("files", ("cart.urdf", cart_urdf())), ("files", ("meshes/body.stl", MESH.read_bytes()))]).json()
+        cart_id = answer["upload"]["id"]
+        assert f'"id":"{cart_id}"' in _plan_system()   # the model planner is offered it by id
+
+        session, (race,) = session_turns("race the Cart against a rover to the far side, go")
+        assert [(entry.label, entry.robot.robot_id) for entry in session.spec.robots] == [("Cart", cart_id), ("Rover", None)]
+        assert session.spec.title.startswith("Cart and 4-wheel rover")
+        assert next(e for e in race if e["type"] == "metrics")["metrics"]["robots"]["r1"]["goal_reached"]
+
+        session, (run, why, fix, stress) = session_turns("a Cart on flat ground with a big step, drive to the east, go",
+                                                         "why did it fail?", "make it pass", "stress test")
+        assert session.spec.title.startswith("Cart on flat terrain")
+        explanation = [e for e in run if e["type"] == "explanation"][-1]["message"]
+        assert explanation.startswith("The cart") and "humanoid" not in explanation
+        limits = next(e for e in run if e["type"] == "metrics")["metrics"]["robot_rough_limits"]
+        assert limits == {"climb_m": 0.06, "gap_m": 0.16}, limits   # from its own 0.1 m wheels
+        diagnosis = next(e for e in why if e["type"] == "diagnosis")["report"]
+        assert diagnosis["reproduced"] and any(h["cause"] == "obstacle" for h in diagnosis["hypotheses"])
+        redesign = next(e for e in fix if e["type"] == "redesign")["report"]
+        tried = {knob for round_ in redesign["rounds"] for candidate in round_["candidates"] for knob in candidate["changes"]}
+        assert tried and tried <= {"command_speed_m_s", "policy_id"}, tried   # its body is never edited
+        assert "body is never edited" in " ".join(redesign["notes"])
+        rows = next(e for e in stress if e["type"] == "report")["rows"]
+        assert len(rows) > 3 and not any("crashed" in str(row["reason"]) or "Unknown robot" in str(row["reason"]) for row in rows), rows
 
 
 def _run_one(name, fn) -> str:

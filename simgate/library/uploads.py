@@ -24,7 +24,8 @@ import yaml
 
 UploadKind = Literal["terrain", "robot", "policy"]
 KINDS: tuple[str, ...] = ("terrain", "robot", "policy")
-UPLOADS_DIR = Path(__file__).resolve().parent / "uploads"
+# SIMGATE_UPLOADS_DIR lets tests (and the batch runner's worker processes) use another folder.
+UPLOADS_DIR = Path(os.getenv("SIMGATE_UPLOADS_DIR") or Path(__file__).resolve().parent / "uploads")
 
 MAX_UPLOAD_BYTES = 50 * 1024 * 1024        # what the user sends, zipped or not
 MAX_EXTRACTED_BYTES = 200 * 1024 * 1024    # what a zip may expand to
@@ -133,6 +134,26 @@ def get_upload(kind: str, upload_id: str, uploads_dir: Path | None = None) -> Up
     if not (folder / "upload.json").is_file():
         raise UploadError(f"No {kind} upload with id {upload_id!r}.")
     return _read_record(folder)
+
+
+def upload_status(record: UploadRecord) -> dict:
+    """Where an upload stands, for the Library: listed, needs answers, or not ready (with the reasons)."""
+    folder = Path(record.folder)
+    summary = {"id": record.id, "kind": record.kind, "name": record.name, "credit": record.credit,
+               "license": record.license, "status": "stored", "reasons": [], "questions": []}
+    if record.kind == "terrain":
+        summary["status"] = "listed" if (folder / "preset.json").is_file() else "not ready"
+        return summary
+    state_file = folder / ("inspection.json" if record.kind == "robot" else "adapter.json")
+    if not state_file.is_file():
+        return summary
+    state = json.loads(state_file.read_text(encoding="utf-8"))
+    status = state.get("status", "stored")
+    summary["status"] = {"checks_failed": "not ready", "unusable": "not ready"}.get(status, status)
+    summary["questions"] = state.get("questions", [])
+    summary["reasons"] = state.get("errors", []) + [f"{check['name']}: {check['detail']}" for check in state.get("checks", [])
+                                                    if not check["passed"] and not check.get("advisory")]
+    return summary
 
 
 def discard_upload(record: UploadRecord) -> None:

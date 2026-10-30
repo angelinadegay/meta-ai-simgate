@@ -242,7 +242,7 @@ def _mock_plan(text: str, current: SceneSpec | None = None) -> SceneSpec:
         if "slower" in t:
             rb.drive_speed /= 1.5
             rb.gait_freq_hz = round(max(rb.gait_freq_hz / 1.25, 0.8), 2)
-        what = "G1 humanoid" if rb.kind == "library" else (
+        what = library_robot_name(rb) if rb.kind == "library" else (
             f"{rb.legs}-legged walker" if rb.kind == "walker" else f"{rb.wheels}-wheel rover"
         )
         if spec.terrain.kind == "real":
@@ -283,6 +283,27 @@ TYPICAL_SURFACE = {"moon": "regolith", "mars": "regolith", "titan": "sand", "eur
 _COUNT_WORDS = {2: "Two", 3: "Three", 4: "Four", 5: "Five", 6: "Six"}
 
 
+def library_robot_name(robot) -> str:
+    """A library robot's name for titles and text: "G1 humanoid", or an uploaded robot's own name."""
+    from .library import LibraryRegistry
+
+    try:
+        name = LibraryRegistry().robot(robot.robot_id).name
+    except ValueError:
+        return "library robot"
+    return name[:1] + name[1:].lower()
+
+
+def library_robot_kind(robot) -> str:
+    """wheeled, legged, humanoid or other, from the robot's card."""
+    from .library import LibraryRegistry
+
+    try:
+        return LibraryRegistry().robot(robot.robot_id).kind
+    except ValueError:
+        return "other"
+
+
 def scene_title(spec: SceneSpec) -> str:
     """The rules planner's title, rebuilt from a finished spec: robots, terrain (slope angle, unusual
     surface, real place), world and course. Used after every edit so the title matches the scene."""
@@ -291,7 +312,7 @@ def scene_title(spec: SceneSpec) -> str:
 
     def what(robot) -> str:
         if robot.kind == "library":
-            return "G1 humanoid"
+            return library_robot_name(robot)
         return f"{robot.legs}-legged walker" if robot.kind == "walker" else f"{robot.wheels}-wheel rover"
 
     robots = [entry.robot for entry in spec.robots] or ([spec.robot] if spec.robot else [])
@@ -576,9 +597,12 @@ def _mock_explain(spec: SceneSpec, m: dict) -> str:
             return text + " Try changing their starting lanes or widening the goal area."
         g, f = m["gravity"], m["friction"]
         walker = spec.robot.kind == "walker"
-        humanoid = spec.robot.kind == "library"
+        library = library_robot_kind(spec.robot) if spec.robot.kind == "library" else None
         who, moved, grip = (
-            ("The humanoid", "walked", "feet") if humanoid else
+            ("The humanoid", "walked", "feet") if library == "humanoid" else
+            (f"The {library_robot_name(spec.robot).lower()}", "drove", "wheels") if library == "wheeled" else
+            (f"The {library_robot_name(spec.robot).lower()}", "walked" if library == "legged" else "moved", "feet")
+            if library else
             ("The walker", "walked", "feet") if walker else
             ("The rover", "drove", "wheels")
         )
