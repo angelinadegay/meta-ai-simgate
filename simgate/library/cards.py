@@ -120,6 +120,7 @@ class WorldCard(BaseModel):
     friction: float
     terrain_kind: Literal["generated", "real"] = "generated"
     terrain_preset: str | None = None
+    source: Literal["builtin", "upload"] = "builtin"
     license: str
     credit: str
 

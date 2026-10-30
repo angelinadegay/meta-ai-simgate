@@ -32,7 +32,7 @@ MAX_ZIP_FILES = 500
 ALLOWED_EXTENSIONS = {".xml", ".urdf", ".mjcf", ".stl", ".obj", ".msh", ".png", ".jpg", ".tif", ".tiff", ".onnx",
                       ".yaml", ".yml", ".json", ".md", ".txt"}
 MAIN_FILES = {   # an upload of each kind must contain one of these
-    "terrain": {".tif", ".tiff", ".png", ".jpg", ".json"},
+    "terrain": {".tif", ".tiff", ".png", ".jpg"},
     "robot": {".xml", ".urdf", ".mjcf"},
     "policy": {".onnx"},
 }
@@ -123,6 +123,12 @@ def save_upload(kind: str, files: list[tuple[str, bytes]], name: str, credit: st
         raise
     record.folder = str(folder)
     return record
+
+
+def discard_upload(record: UploadRecord) -> None:
+    """Remove a stored upload that couldn't be used (e.g. a terrain that failed to convert)."""
+    if record.folder:
+        shutil.rmtree(record.folder, ignore_errors=True)
 
 
 def list_uploads(kind: str | None = None, uploads_dir: Path | None = None) -> list[UploadRecord]:

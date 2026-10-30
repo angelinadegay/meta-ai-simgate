@@ -5,6 +5,8 @@ Each preset is two files written by scripts/hirise_to_simgate.py:
                Row 0 is the SOUTH edge (-y) and column 0 the WEST edge (-x),
                matching how SimGate's generated terrain is stored.
   <name>.json  metadata: label, size, resolution, relief, slopes, source, credit.
+Uploaded terrains keep theirs in their upload folder (uploads/terrain/<id>/preset.npz and preset.json); the
+preset's name is the upload id.
 """
 import json
 import os
@@ -17,20 +19,38 @@ import numpy as np
 TERRAIN_DIR = Path(os.getenv("SIMGATE_TERRAIN_DIR", Path(__file__).resolve().parent / "terrains"))
 
 
+def _uploaded_dir() -> Path:
+    from .library import uploads   # read at call time, so tests can point it elsewhere
+
+    return uploads.UPLOADS_DIR / "terrain"
+
+
+def _preset_files(name: str) -> tuple[Path, Path]:
+    """(json, npz) for a preset: shipped presets first, then an uploaded terrain with that id."""
+    shipped = (TERRAIN_DIR / f"{name}.json", TERRAIN_DIR / f"{name}.npz")
+    if shipped[0].exists() or "/" in name or "\\" in name or name.startswith("."):
+        return shipped
+    folder = _uploaded_dir() / name
+    return folder / "preset.json", folder / "preset.npz"
+
+
 def list_presets() -> dict[str, dict]:
-    if not TERRAIN_DIR.exists():
-        return {}
     out = {}
-    for meta_path in sorted(TERRAIN_DIR.glob("*.json")):
-        if meta_path.with_suffix(".npz").exists():
-            out[meta_path.stem] = json.loads(meta_path.read_text())
+    if TERRAIN_DIR.exists():
+        for meta_path in sorted(TERRAIN_DIR.glob("*.json")):
+            if meta_path.with_suffix(".npz").exists():
+                out[meta_path.stem] = json.loads(meta_path.read_text())
+    uploaded = _uploaded_dir()
+    if uploaded.is_dir():
+        for folder in sorted(uploaded.iterdir()):
+            if folder.name not in out and (folder / "preset.json").is_file() and (folder / "preset.npz").is_file():
+                out[folder.name] = json.loads((folder / "preset.json").read_text())
     return out
 
 
 @lru_cache(maxsize=16)
 def load_preset(name: str) -> tuple[np.ndarray, dict]:
-    meta_path = TERRAIN_DIR / f"{name}.json"
-    data_path = TERRAIN_DIR / f"{name}.npz"
+    meta_path, data_path = _preset_files(name)
     if not (meta_path.exists() and data_path.exists()):
         available = ", ".join(list_presets()) or "none yet (run scripts/hirise_to_simgate.py)"
         raise FileNotFoundError(f"No terrain preset named '{name}'. Available: {available}")

@@ -610,7 +610,10 @@ def _named_presets(source: str) -> list[str]:
     named = []
     for name, meta in list_presets().items():
         label = meta.get("label", "").lower()
-        words = {name, re.sub(r"(\D)(\d)", r"\1 \2", name), label.split(",")[0].split(" (")[0], label.split()[0]}
+        if meta.get("uploaded"):   # a user's name may be ordinary words ("My hill"): only the whole name counts
+            words = {name, label.strip()}
+        else:
+            words = {name, re.sub(r"(\D)(\d)", r"\1 \2", name), label.split(",")[0].split(" (")[0], label.split()[0]}
         if any(re.search(rf"\b{re.escape(word)}\b", source) for word in words if word):
             named.append(name)
     return named

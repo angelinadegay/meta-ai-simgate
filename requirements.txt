@@ -11,6 +11,7 @@ pydantic>=2.6
 pytest>=8
 onnxruntime>=1.17
 
-# Optional: importing real terrain (scripts/hirise_to_simgate.py)
-# rasterio>=1.3
-# scipy>=1.10
+# Real terrain: GeoTIFF elevation models (scripts/hirise_to_simgate.py, terrain uploads) and heightmap images
+rasterio>=1.3
+scipy>=1.10
+pillow>=10

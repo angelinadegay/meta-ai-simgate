@@ -199,7 +199,8 @@ def _mock_plan(text: str, current: SceneSpec | None = None) -> SceneSpec:
             if kind in t or (kind == "slope" and ("hill" in t and "climb" in t)):
                 spec.terrain.kind = kind
         real = list_presets()
-        named = [n for n, meta in real.items() if n.lower() in t or meta["label"].split()[0].lower() in t]
+        named = [n for n, meta in real.items() if n.lower() in t or (   # an uploaded terrain: only its whole name
+            meta["label"].lower() if meta.get("uploaded") else meta["label"].split()[0].lower()) in t]
         wants_real = any(w in t for w in ("real terrain", "real mars", "real data", "nasa", "hirise", "real ground"))
         if named or (wants_real and real):
             pick = named[0] if named else next((n for n, meta in real.items() if meta.get("body") in t), next(iter(real)))

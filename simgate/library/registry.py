@@ -92,6 +92,7 @@ class LibraryRegistry:
                     friction=presets.friction_for(surface) or 0.8,
                     terrain_kind="real",
                     terrain_preset=name,
+                    source="upload" if meta.get("uploaded") else "builtin",
                     license=meta.get("license", "See source terms"),
                     credit=meta.get("credit", meta.get("source", "Terrain preset metadata")),
                 )

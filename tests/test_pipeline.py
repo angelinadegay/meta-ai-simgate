@@ -2935,6 +2935,113 @@ def test_upload_endpoint_stores_files_and_reports_errors():
         assert big.status_code == 413 and "larger than" in big.json()["error"]
 
 
+def _png(grey, bits=16):
+    """A greyscale PNG from a 2D array of 0..1 values (row 0 = the image's top)."""
+    import io
+
+    import numpy as np
+    from PIL import Image
+
+    scale, dtype = (65535, np.uint16) if bits == 16 else (255, np.uint8)
+    buffer = io.BytesIO()
+    Image.fromarray((np.asarray(grey) * scale).astype(dtype)).save(buffer, format="PNG")
+    return buffer.getvalue()
+
+
+def _uploaded_terrain_is_usable(preset):
+    """A real-terrain scene on the preset builds, and its physics checks (terrain matches the data) pass."""
+    spec = SceneSpec(domain="robot_terrain", terrain=Terrain(kind="real", preset=preset, roughness=0),
+                     robot=Robot(kind="rover")).fill_defaults()
+    sim = MuJoCoSimulator()
+    checks = sim.validate(spec, sim.build(spec))
+    assert all(check.passed or check.advisory for check in checks), [c for c in checks if not c.passed]
+    return spec
+
+
+def test_uploaded_geotiff_and_png_terrains_become_presets():
+    import subprocess
+    import tempfile
+    from pathlib import Path
+    from unittest.mock import patch
+
+    import numpy as np
+    from fastapi.testclient import TestClient
+
+    import server
+    from simgate import terrain_data
+    from simgate.library import LibraryRegistry, uploads
+
+    try:
+        import rasterio  # noqa: F401
+    except ImportError:
+        raise unittest.SkipTest("pip install rasterio to run it") from None
+    root = Path(__file__).resolve().parent.parent
+    client = TestClient(server.app)
+    meta = {"type": "terrain", "credit": "Synthetic test data", "license": "CC0-1.0"}
+    with tempfile.TemporaryDirectory() as tmp, patch.object(uploads, "UPLOADS_DIR", Path(tmp) / "uploads"):
+        terrain_data.load_preset.cache_clear()
+        tif = Path(tmp) / "fake.tif"
+        subprocess.run([sys.executable, str(root / "scripts/make_test_dtm.py"), str(tif)], check=True, capture_output=True)
+
+        asked = client.post("/upload", data={**meta, "name": "Fake crater"}, files=[("files", ("dtm.tif", tif.read_bytes()))])
+        assert asked.status_code == 422 and [q["field"] for q in asked.json()["questions"]] == ["body", "surface"]
+        assert "mars" in asked.json()["questions"][0]["choices"]
+        assert not list((Path(tmp) / "uploads" / "terrain").iterdir()), "an unanswered upload isn't kept"
+
+        geotiff = client.post("/upload", data={**meta, "name": "Fake crater", "body": "mars", "surface": "regolith"},
+                              files=[("files", ("dtm.tif", tif.read_bytes()))])
+        assert geotiff.status_code == 200, geotiff.text
+        terrain = geotiff.json()["terrain"]
+        assert terrain["typical_slope_deg"] <= 22 and 35 < terrain["size_m"] < 45 and terrain["relief_m"] > 1
+        assert terrain["credit"] == "Synthetic test data" and terrain["license"] == "CC0-1.0"
+        assert terrain["inspection"]["by"] == "Inspector" and "max_slope_deg" in terrain
+        spec = _uploaded_terrain_is_usable(terrain["name"])
+        assert spec.environment.body == "mars" and spec.terrain.size_m == terrain["size_m"]
+
+        ramp = np.tile(np.linspace(1, 0, 32)[:, None], (1, 32))   # white at the image's top
+        image = {**meta, "name": "Ramp field", "body": "moon", "surface": "regolith"}
+        asked = client.post("/upload", data=image, files=[("files", ("ramp.png", _png(ramp)))])
+        assert asked.status_code == 422 and [q["field"] for q in asked.json()["questions"]] == ["size_m", "height_range_m"]
+        png = client.post("/upload", data={**image, "size_m": "20", "height_range_m": "2"},
+                          files=[("files", ("ramp.png", _png(ramp)))])
+        assert png.status_code == 200, png.text
+        terrain = png.json()["terrain"]
+        assert terrain["size_m"] == 20 and abs(terrain["relief_m"] - 2) < 1e-6 and "top edge is north" in terrain["orientation"]
+        heights, _ = terrain_data.load_preset(terrain["name"])
+        assert heights[-1].mean() > heights[0].mean() + 1.9, "the image's top must be the north (last) row"
+        _uploaded_terrain_is_usable(terrain["name"])
+
+        steep = client.post("/upload", data={**image, "name": "Tiny wall", "size_m": "4", "height_range_m": "30"},
+                            files=[("files", ("wall.png", _png(ramp)))])
+        warnings = steep.json()["terrain"]["inspection"]["warnings"]
+        assert any("steeper than the walkers and rovers" in w for w in warnings) and any("too small" in w for w in warnings)
+
+        worlds = {world.terrain_preset: world for world in LibraryRegistry(uploads_dir=Path(tmp) / "uploads").worlds()
+                  if world.terrain_kind == "real"}
+        assert worlds[terrain["name"]].source == "upload" and worlds["jezero"].source == "builtin"
+        assert worlds[terrain["name"]].credit == "Synthetic test data" and worlds[terrain["name"]].body == "moon"
+    terrain_data.load_preset.cache_clear()
+
+
+def test_planner_names_an_uploaded_terrain_only_by_its_whole_name():
+    import tempfile
+    from pathlib import Path
+    from unittest.mock import patch
+
+    import numpy as np
+
+    from simgate.director import _named_presets
+    from simgate.library import save_upload, uploads
+    from simgate.library.terrain_upload import prepare_terrain
+
+    with tempfile.TemporaryDirectory() as tmp, patch.object(uploads, "UPLOADS_DIR", Path(tmp)):
+        record = save_upload("terrain", [("hill.png", _png(np.eye(16) * 0.5))], "My hill", "Me", "CC0-1.0")
+        name = prepare_terrain(record, "earth", "rock", 20, 1)["name"]
+        assert _named_presets("make my rover faster on the hills") == []
+        assert _named_presets("a rover on my hill") == [name]
+        assert agents.plan("make my rover faster").terrain.kind != "real"
+
+
 def _run_one(name, fn) -> str:
     """Run one test for the plain-script runner and return its report line."""
     try:

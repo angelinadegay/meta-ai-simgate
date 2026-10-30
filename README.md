@@ -443,6 +443,8 @@ Without a key, it runs in mock mode.
 | `uploads_reject_unsafe_files` | Uploads refuse code and pickles (.py, .so, .pt with the ONNX export snippet), unsafe zip paths, symlinks, more than 500 files, zip bombs, oversize uploads, MJCF plugins, file references leaving the upload, DOCTYPE/entities, unsafe YAML, a missing main file and missing name/credit/license, and leave nothing on disk |
 | `uploads_are_stored_and_listed_in_the_registry` | A safe upload is stored under uploads/<type>/<id>/ with an upload.json record, the same upload twice is stored once, and the registry lists it with source "upload" |
 | `upload_endpoint_stores_files_and_reports_errors` | POST /upload stores a robot and answers 400 with the reason for a rejected file or a missing credit, and 413 for an oversize upload |
+| `uploaded_geotiff_and_png_terrains_become_presets` | A fake GeoTIFF (make_test_dtm.py) and a small PNG heightmap uploaded as terrains become presets that build and pass the physics checks; missing world, surface, size or height range come back as questions; the image's top is north; the Inspector reports size, relief and slopes and warns when it is too steep or too small; both appear as Library worlds with source "upload" |
+| `planner_names_an_uploaded_terrain_only_by_its_whole_name` | An uploaded terrain called "My hill" is chosen for "a rover on my hill" but not for "make my rover faster" |
 
 ---
 
