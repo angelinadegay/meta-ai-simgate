@@ -3182,7 +3182,7 @@ def test_quick_confirmation_reserves_seed_runs_for_all_limit_boundaries():
 def test_unreliable_last_ok_gets_bands_and_midpoint_step_down():
     from simgate import finder
 
-    def run_confirmation(available):
+    def run_confirmation(available, step_down_passes=3):
         spec = _hunter_world()
         base = {"slope_deg": 0.0}
         evidence = [
@@ -3206,7 +3206,7 @@ def test_unreliable_last_ok_gets_bands_and_midpoint_step_down():
                 results = []
                 for index, (setting, _) in enumerate(jobs):
                     if setting.get("step_down"):
-                        broke = False
+                        broke = index >= step_down_passes
                     else:
                         broke = True
                     results.append({"id": f"confirm-{len(self.evidence) + index + 1}",
@@ -3246,6 +3246,12 @@ def test_unreliable_last_ok_gets_bands_and_midpoint_step_down():
     assert limit["confirm"]["step_down"]["status"] == "not_found_within_budget"
     assert "the reliable limit is below 12.0° (not found within budget)" in finder.limit_sentences(limited)
     assert limited["unconfirmed"] == ["the reliable limit is below 12.0° (not found within budget)"]
+
+    below_reliable = run_confirmation(7, step_down_passes=2)[0]
+    limit = below_reliable["limits"][0]
+    assert limit["confirm"]["step_down"]["passed"] == 2
+    assert limit["bands"]["reliable_ok"] == "the reliable limit is below 6.0° (not found within budget)"
+    assert below_reliable["unconfirmed"] == ["the reliable limit is below 6.0° (not found within budget)"]
 
 
 def test_one_message_builds_the_scene_then_runs_the_analysis_it_asks_for():

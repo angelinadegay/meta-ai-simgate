@@ -980,6 +980,8 @@ def confirm(runner: Runner, report: dict, context: dict, on_step: StepCallback |
         limit.setdefault("confirm", {})["step_down"] = point
         _emit(on_step, "Batch runner", "step_down", "Rechecking below an unreliable OK point.",
             f"Lower point {shown}: {verdict['text']}.")
+        if not _reliable_pass(verdict):
+            unconfirmed.append({"kind": "reliable_limit", "limit": limit})
 
     run_items(hunters + [("check", cell, None) for cell in checks])
 
@@ -1059,7 +1061,7 @@ def limit_bands(limit: dict) -> dict[str, str]:
     elif step_down is not None and step_down.get("status") == "no_lower_point":
         reliable_text = f"no lower point than {limit['shown']['last_ok']} is available above the baseline"
     elif step_down is not None and step_down.get("status") == "tested":
-        reliable_text = f"no reliable OK point found at {step_down['shown']} ({step_down['passed']}/{step_down['total']})"
+        reliable_text = f"the reliable limit is below {step_down['shown']} (not found within budget)"
     elif ok is not None:
         reliable_text = f"the reliable limit is below {limit['shown']['last_ok']} (not found within budget)"
     else:
@@ -1122,7 +1124,10 @@ def _unconfirmed_text(item) -> str:
         return "an inferred map cell"
     if item["kind"] == "reliable_limit":
         limit = item["limit"]
-        return f"the reliable limit is below {limit['shown']['last_ok']} (not found within budget)"
+        step_down = limit.get("confirm", {}).get("step_down") or {}
+        value = (step_down.get("shown") if step_down.get("status") == "tested"
+                 else limit["shown"]["last_ok"])
+        return f"the reliable limit is below {value} (not found within budget)"
     if item["kind"] == "combined":
         return f"{combo_text(item['combo']['values'])} (failed once)"
     limit = item["limit"]
