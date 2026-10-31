@@ -35,7 +35,8 @@ class Director:
         if (resize := _resize_plan(text, world_state)) is not None:
             return resize
         if config.MOCK_MODE:
-            return _analysis_plan(text, world_state, state) or _rule_plan_with_title(text, world_state)
+            return (_analysis_plan(text, world_state, state) or _finder_plan(text, world_state)
+                    or _rule_plan_with_title(text, world_state))
 
         messages = [
             {"role": "system", "content": _plan_system()},
@@ -53,7 +54,7 @@ class Director:
             reply = llm.chat(messages, config.PLANNER_MODEL)
             try:
                 plan = Plan.model_validate(llm.extract_json(reply))
-                if plan.workflow in ("stress_test", "diagnose", "redesign") and not _has_robot_scene(world_state):
+                if plan.workflow in ("stress_test", "diagnose", "redesign", "find_failures") and not _has_robot_scene(world_state):
                     raise ValueError(f"workflow {plan.workflow!r} requires an existing robot scene.")
                 if plan.workflow == "edit":
                     _check_edit(plan, text, world_state)
@@ -64,6 +65,18 @@ class Director:
                     self.guard_notes.append(f"You asked {'how to make it pass' if guarded.workflow == 'redesign' else 'why it failed'} "
                                             f"after a failed run, so I'm using the {guarded.workflow} workflow.")
                     plan = guarded
+                finder = _finder_plan(text, world_state)
+                if finder is not None and plan.workflow != "find_failures":
+                    self.guard_notes.append("You asked where it breaks, so I'm using the find_failures workflow.")
+                    plan = finder
+                elif finder is not None:   # the failure kind and budget come from the user's own words
+                    plan.failure, plan.budget = finder.failure, finder.budget
+                    plan.robot_id = _mentioned_robot(text, world_state) or plan.robot_id
+                if plan.workflow == "find_failures" and "gravity" in (plan.knobs or []) \
+                        and not re.search(_KNOB_WORDS["gravity"], text.lower()):
+                    # gravity on another world is searched only when the user asks: their world keeps its own
+                    plan.knobs = [knob for knob in plan.knobs if knob != "gravity"] or None
+                    self.guard_notes.append("You didn't mention gravity, so the world keeps its own gravity.")
                 if plan.workflow == "redesign":
                     plan.constraints = text   # limits are read from the user's own words
                 if plan.workflow in ("diagnose", "redesign"):
@@ -72,7 +85,8 @@ class Director:
             except (ValueError, TypeError) as exc:
                 last_error = str(exc)
         self.used_rule_planner = True
-        return _analysis_plan(text, world_state, state) or _rule_plan_with_title(text, world_state)
+        return (_analysis_plan(text, world_state, state) or _finder_plan(text, world_state)
+                or _rule_plan_with_title(text, world_state))
 
     async def execute_plan(self, text: str, current: SceneSpec | None = None, state: Any = None) -> tuple[World, str]:
         from . import workflows
@@ -258,6 +272,11 @@ Workflows:
   scene with one change at a time. Optional robot_id.
 - redesign: after a failed run, change only the robot's design until it passes ("fix it", "make it pass", "what
   would work"). Put the user's limits in constraints, in their words. Optional robot_id.
+- find_failures: search the world's conditions (never the robot's design) for where one robot starts to fail
+  ("where does it break", "find failures", "edge cases", "how robust", "red team", "operating limits"). Optional
+  robot_id; failure "task" (missed the goal, the default) or "safety" (fell or tilted past 60°); budget "quick" (the
+  default) or "thorough"; knobs only when the user names conditions: slope_deg, friction, gravity, push_n, payload,
+  obstacle_scale, roughness, speed.
 - Existing structural scenes use domain "structure" with structure and load fields.
 
 Guidance:
@@ -291,6 +310,7 @@ Robot edit plan: {{"workflow":"edit","summary":"Six-wheel rover","changes":{{"ro
 - An uploaded heightmap marked "resizable" can get a new world.size_m (width) and world.relief_m (height range) in an
   edit, only with numbers the user gave: "make the hill 25 m wide" -> {{"workflow":"edit","summary":"Wider hill","changes":{{"world":{{"size_m":25}}}}}}
 Diagnose plan: {{"workflow":"diagnose","summary":"Why the rover got stuck"}}
+Find failures plan: {{"workflow":"find_failures","summary":"Where the rover breaks","failure":"task","budget":"quick"}}
 Redesign plan: {{"workflow":"redesign","summary":"A rover that passes the course","constraints":"<the user's limits, in their words>"}}
 Answer plan: {{"workflow":"answer","summary":"What SimGate can do","reply":"You can build robot scenes, compare conditions, race robots, or run stress tests."}}
 
@@ -342,7 +362,7 @@ def _rule_plan(text: str, world_state: World | SceneSpec | dict[str, Any] | None
         world_state if isinstance(world_state, SceneSpec) else None
     )
     source = text.lower()
-    is_stress = bool(re.search(r"\bstress[- ]test\b|\bhow robust\b|\bunder different conditions\b", source))
+    is_stress = bool(re.search(r"\bstress[- ]test\b|\bunder different conditions\b", source))
     is_compare = bool(re.search(r"\bcompare\b|\bversus\b|\bvs\.?\b", source))
     is_custom = bool(re.search(r"\bcustom\b", source))
     has_world_request = bool(re.search(
@@ -672,6 +692,30 @@ def _apply_text_guards(plan: Plan, text: str) -> list[str]:
             plan.goal = GoalPlan(place="east")
             notes.append("No finish line was given, so I put it on the far side.")
     return notes
+
+
+_FIND = re.compile(r"\bwhere (?:does|will|would) (?:it|the [\w -]{1,30}?) (?:break|fail)\b|\bfind (?:the )?failures?\b"
+                   r"|\bwhere (?:it|the [\w -]{1,30}?) (?:breaks|fails)\b|\bedge cases?\b|\bhow robust\b|\bred[- ]?team"
+                   r"|\boperating (?:limits?|envelope)\b|\bbreaking points?\b")
+_SAFETY = re.compile(r"\b(?:safe|safety|fall|falls|fell|tip|tips|tipping|topple|flip|roll over|tilt)\b")
+_THOROUGH = re.compile(r"\b(?:thorough(?:ly)?|detailed|exhaustive|in depth|carefully)\b")
+_KNOB_WORDS = {"slope_deg": r"\bslopes?\b|\bincline\b|\bsteep", "friction": r"\bfriction\b|\bgrip\b|\bslipper|\bice\b",
+               "gravity": r"\bgravity\b", "push_n": r"\bpush(?:es|ed)?\b|\bshove|\bwind\b",
+               "payload": r"\bpayload\b|\bload\b|\bweight\b|\bcargo\b", "obstacle_scale": r"\bobstacles?\b|\bsteps?\b",
+               "roughness": r"\brough(?:ness|er)?\b|\bbumps?\b", "speed": r"\bspeed\b|\bfaster\b|\bslower\b"}
+
+
+def _finder_plan(text: str, world_state: World | SceneSpec | dict[str, Any] | None) -> Plan | None:
+    """Rules cue (and model guard): "where does it break?", "find failures", "edge cases", "how robust",
+    "red team", "operating limits" search the world's conditions for where one robot starts to fail. The failure
+    kind, the budget and any named conditions come from the request's own words."""
+    source = text.lower()
+    if not _FIND.search(source) or not _has_robot_scene(world_state):
+        return None
+    knobs = [knob for knob, pattern in _KNOB_WORDS.items() if re.search(pattern, source)]
+    return Plan(workflow="find_failures", summary="Where it breaks", robot_id=_mentioned_robot(text, world_state),
+                failure="safety" if _SAFETY.search(source) else "task",
+                budget="thorough" if _THOROUGH.search(source) else "quick", knobs=knobs[:4] or None)
 
 
 _WIDER = re.compile(r"\b(wider|bigger|larger|broader)\b")

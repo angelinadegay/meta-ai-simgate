@@ -48,6 +48,8 @@ async def execute(plan: Plan, current: SceneSpec | None, director: "Director",
                   state: SessionState | None = None) -> WorkflowResult:
     if plan.workflow in ("diagnose", "redesign"):
         return await _analysis(plan, current, director, state or SessionState())
+    if plan.workflow == "find_failures":
+        return await _find_failures(plan, current, director, state or SessionState())
 
     if plan.workflow == "answer":
         if current is None:
@@ -220,6 +222,20 @@ async def _analysis(plan: Plan, current: SceneSpec | None, director: "Director",
     return world, report.get("conclusion") or report.get("message", "")
 
 
+async def _find_failures(plan: Plan, current: SceneSpec | None, director: "Director", state: SessionState) -> WorkflowResult:
+    """Search the world's conditions for where one robot starts to fail. Needs no earlier run; the scene never
+    changes."""
+    from .finder import describe, find_failures
+
+    if current is None or current.domain != "robot_terrain" or not (current.robots or current.robot):
+        raise ValueError("Finding where it breaks needs a robot scene.")
+    world = World(current.model_copy(deep=True), simulator=state.simulator, build=state.build, checks=list(state.checks))
+    report = await _stream_steps(lambda on_step: find_failures(current, plan.robot_id, plan.failure, plan.budget,  # noqa: E731
+                                                               plan.knobs, on_step), director)
+    world.report = report
+    return world, describe(report)
+
+
 async def _stream_steps(job, director: "Director", parent: str | None = None) -> dict:
     """Run a blocking analysis in a thread and show its steps as they happen, each following the previous one."""
     loop = asyncio.get_running_loop()
@@ -233,7 +249,7 @@ async def _stream_steps(job, director: "Director", parent: str | None = None) ->
         key = (step["agent"], step["tool"])
         model = {"Explainer": "rules" if config.MOCK_MODE else config.PLANNER_MODEL,
                  "Designer": "rules" if config.MOCK_MODE else config.BUILDER_MODEL,
-                 "Batch runner": "ProcessPoolExecutor", "Checker": "rules"}.get(step["agent"], "rules")
+                 "Batch runner": "ProcessPoolExecutor", "Checker": "rules", "Finder": "rules"}.get(step["agent"], "rules")
         if step["status"] == "working":
             step_id = await _start_step(director, agent=step["agent"], model=model, tool=step["tool"],
                                         parent_id=parent, thought=step["thought"], args={})

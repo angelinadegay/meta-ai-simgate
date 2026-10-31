@@ -1095,7 +1095,7 @@ def test_plan_summaries_are_scene_names():
     assert '"Three rovers race on Mars hills", not an action' in prompt
     examples = [line for line in prompt.splitlines() if line.endswith("}") and ' plan: {"workflow"' in line]
     summaries = [json.loads(line.split(" plan: ", 1)[1])["summary"] for line in examples]
-    assert len(summaries) == 13
+    assert len(summaries) == 14
     assert not any(summary.split()[0] in {"Race", "Compare", "Test", "Make", "Explain", "Create"} for summary in summaries)
 
     plan = Director().plan("compare a rover on the moon and mars")
@@ -1124,7 +1124,7 @@ def test_plan_prompt_states_world_course_and_preset_rules():
     mixed = examples["Mixed race"]
     assert mixed.workflow == "race" and [(robot.kind, robot.robot_id) for robot in mixed.robots] == [(None, "g1"), ("rover", None)]
     assert '"robots":[{"robot_id":"g1"}]' in prompt   # shown without a kind, as the model should write it
-    assert len(examples) == 13  # every example in the prompt validates as a Plan
+    assert len(examples) == 14  # every example in the prompt validates as a Plan
 
     assert "30" not in prompt.split("Short examples:", 1)[1].split("Available library robots", 1)[0]
     steeper = examples["Steeper edit"].changes
@@ -2531,6 +2531,254 @@ def test_diagnose_still_runs_a_follow_up_after_three_causes_on_two_seeds():
     assert report["conclusion"].startswith("Confirmed: obstacle + slipping.")
 
 
+def sandy_ramp():
+    """A 4-wheel rover driving east on Earth sand: a direct sweep fails from 25° and passes at 22.5° and below."""
+    return SceneSpec(domain="robot_terrain", environment=Environment(body="earth", surface="sand"),
+                     terrain=Terrain(kind="slope", slope_deg=0, roughness=0), robot=Robot(kind="rover"),
+                     mission=Mission(goal_place="east")).fill_defaults()
+
+
+def test_finder_slope_limit_matches_a_direct_sweep_and_the_map_agrees():
+    from simgate.batch import run_batch
+    from simgate.diagnose import robot_metrics
+    from simgate.finder import BUDGETS, SEARCH_RUNS, _from_search, number_problems, find_failures
+
+    spec = sandy_ramp()
+    report = find_failures(spec, knobs=["slope_deg", "friction"])
+    assert report["runs"] <= BUDGETS["quick"] == 25 and report["runs"] == len(report["evidence"]) == report["cost"]["runs"]
+    slope = next(limit for limit in report["limits"] if limit["knob"] == "slope_deg")
+    assert not slope["never_broke"] and slope["runs"] <= SEARCH_RUNS and slope["baseline"] == 0
+    evidence = {row["id"]: row for row in report["evidence"]}
+    assert evidence[slope["ok_run"]]["broke"] is False and evidence[slope["fail_run"]]["broke"] is True
+    assert evidence[slope["fail_run"]]["change"] == {"slope_deg": round(slope["first_fail"], 3)}   # one change at a time
+
+    angles = [2.5 * k for k in range(13)]
+    swept = run_batch(spec, [{"label": f"{a}", "slope_deg": a} for a in angles], baseline=False)
+    passed = [robot_metrics(result["summary"])["passed"] for result in swept]
+    first_fail = passed.index(False)
+    sweep_ok, sweep_fail = angles[first_fail - 1], angles[first_fail]
+    assert all(passed[:first_fail]) and not any(passed[first_fail:]), list(zip(angles, passed))   # one clean edge
+    middle = (slope["last_ok"] + slope["first_fail"]) / 2
+    assert sweep_ok - slope["step"] <= middle <= sweep_fail + slope["step"], (slope, sweep_ok, sweep_fail)
+    assert slope["last_ok"] < sweep_fail and slope["first_fail"] > sweep_ok   # the two brackets overlap
+
+    grid = report["map"]
+    assert grid is not None and {grid["x"]["knob"], grid["y"]["knob"]} == {"slope_deg", "friction"}
+    limits = {limit["knob"]: limit for limit in report["limits"]}
+    for i, value in enumerate(grid["x"]["values"]):   # each edge keeps one condition as it is: phase 1 decides it
+        expected = _from_search(limits[grid["x"]["knob"]], value)
+        assert expected is None or grid["cells"][0][i]["state"] == expected, (i, grid["cells"][0][i], expected)
+    for j, value in enumerate(grid["y"]["values"]):
+        expected = _from_search(limits[grid["y"]["knob"]], value)
+        assert expected is None or grid["cells"][j][0]["state"] == expected, (j, grid["cells"][j][0], expected)
+    assert grid["cells"][0][0]["state"] == "pass"   # the scene as it is
+    assert report["honesty"].startswith(f"{report['runs']} runs, limits accurate to one search step (")
+    assert report["honesty"].endswith(f"simulation only (one seed; one robot judged; {grid['inferred']} of 16 map cells "
+                                      "inferred, not run).")
+    assert number_problems(report["explanation"], report) == []   # the rules text passes its own check
+
+
+def _fake_finder_batch(breaks):
+    """A batch runner whose robot fails when breaks(variation) is true (and reaches the goal otherwise)."""
+    seen = []
+
+    def fake(spec, variations, on_result=None, timeout=None, baseline=True):
+        seen.append(len(variations) + int(baseline))
+        rows = []
+        for variation in ([{}] if baseline else []) + list(variations):
+            broke = breaks(variation)
+            rows.append({"id": "run-x", "label": variation.get("label", "Baseline"), "changes": {}, "passed": not broke,
+                         "reason": "", "summary": {"goal_reached": not broke, "final_distance_m": 6.0 if broke else 0.4,
+                                                   "flipped": False, "max_tilt_deg": 8.0, "outcome": "stuck" if broke else "reached"}})
+        return rows
+    return fake, seen
+
+
+def test_finder_budget_explainer_number_check_and_baseline_failure():
+    from simgate import config, finder, llm
+
+    spec = SceneSpec(domain="robot_terrain", terrain=Terrain(kind="flat", roughness=0), robot=Robot(kind="rover"),
+                     mission=Mission(goal_place="east")).fill_defaults()
+    fake, _ = _fake_finder_batch(lambda v: v.get("slope_deg", 0) > 17 or v.get("friction", 1) < 0.3
+                                    or v.get("slope_deg", 0) / 17 + (0.9 - v.get("friction", 0.9)) / 0.6 > 1)
+    real = finder.run_batch
+    try:
+        finder.run_batch = fake
+        thorough = finder.find_failures(spec, budget="thorough")
+        quick = finder.find_failures(spec, knobs=["slope_deg", "friction"])
+        finder.run_batch = _fake_finder_batch(lambda v: True)[0]
+        already = finder.find_failures(spec)
+    finally:
+        finder.run_batch = real
+    assert len(thorough["knobs"]) == 4 and thorough["runs"] <= 60 and thorough["map"]["counts"]["unknown"] == 0
+    assert quick["runs"] <= 25
+    slope = quick["limits"][0]
+    assert slope["knob"] == "slope_deg" and slope["last_ok"] <= 17 < slope["first_fail"] and slope["step"] <= 30 / 16
+    assert already["runs"] == 1 and already["limits"] == [] and "already fails as it is" in already["explanation"]
+
+    right = (f"The tightest limit is slope: it was OK at {slope['shown']['last_ok']} and failed at "
+             f"{slope['shown']['first_fail']}. Friction failed at {quick['limits'][1]['shown']['first_fail']}.")
+    wrong = "The tightest limit is slope: it fails at 21.0° on this sand."
+    late = f"Friction matters most. Slope failed at {slope['shown']['first_fail']}."
+    assert finder.number_problems(right, quick) == []
+    assert finder.number_problems(wrong, quick) == ["It states 21.0, which isn't a number in FACTS."]
+    assert finder.number_problems(late, quick) == ["It doesn't start with the tightest limit, slope."]
+
+    def explained(replies):
+        chat, calls = scripted_models({"search found where a robot starts to fail": list(replies)})
+        original_mock, original_chat = config.MOCK_MODE, llm.chat
+        try:
+            config.MOCK_MODE, llm.chat = False, chat
+            return finder.explain(quick, []), calls
+        finally:
+            config.MOCK_MODE, llm.chat = original_mock, original_chat
+
+    text, calls = explained([wrong, right])   # a wrong limit: one retry naming the number, then the corrected text
+    assert text == right and "It states 21.0, which isn't a number in FACTS." in calls[-1][2][-1]["content"]
+    assert "FACTS" in calls[0][2][1]["content"] and slope["shown"]["first_fail"] in calls[0][2][1]["content"]
+    text, calls = explained([wrong, late])   # wrong twice: the rules text
+    assert len(calls) == 2 and text == finder.rules_text(quick)
+
+
+def _run_finder(spec, breaks, **kwargs):
+    from simgate import finder
+
+    real = finder.run_batch
+    try:
+        finder.run_batch = _fake_finder_batch(breaks)[0]
+        return finder.find_failures(spec, **kwargs)
+    finally:
+        finder.run_batch = real
+
+
+def test_finder_searches_speed_both_ways_for_legged_and_library_robots():
+    from simgate.finder import scene_knobs
+
+    def scene(robot):
+        return SceneSpec(domain="robot_terrain", terrain=Terrain(kind="flat", roughness=0), robot=robot,
+                         mission=Mission(goal_place="east")).fill_defaults()
+
+    walker, rover = scene(Robot(kind="walker", legs=4)), scene(Robot(kind="rover"))
+    assert {"speed", "speed_slower"} <= set(scene_knobs(walker, walker.robot)[0])
+    assert {"speed", "speed_slower"} <= set(scene_knobs(walker, Robot(kind="library", robot_id="g1"))[0])
+    assert "speed_slower" not in scene_knobs(rover, rover.robot)[0]   # a rover is searched faster only
+
+    def too_fast_or_slow(variation):
+        return not 0.7 <= variation.get("speed_scale", 1.0) <= 1.3
+
+    legged = _run_finder(walker, too_fast_or_slow, knobs=["speed", "friction"])
+    assert legged["knobs"] == ["speed", "speed_slower", "friction"]   # one condition, two half-searches
+    limits = {limit["knob"]: limit for limit in legged["limits"]}
+    faster, slower = limits["speed"], limits["speed_slower"]
+    assert faster["last_ok"] <= 1.3 < faster["first_fail"] <= 1.5 and 0.5 <= slower["first_fail"] < 0.7 <= slower["last_ok"]
+    tried = [row["change"].get("speed_scale") for row in legged["evidence"] if row.get("knob") == "speed_slower"]
+    assert tried and all(value < 1 for value in tried) and len(tried) <= 5
+    assert legged["runs"] <= 25
+
+    wheeled = _run_finder(rover, too_fast_or_slow, knobs=["speed", "friction"])
+    assert wheeled["knobs"] == ["speed", "friction"] and all(
+        row["change"].get("speed_scale", 1.0) >= 1 for row in wheeled["evidence"] if row.get("knob") == "speed")
+
+
+def test_finder_searches_gravity_on_any_world_only_when_asked():
+    import json
+
+    from simgate import config, llm
+    from simgate.director import Director
+
+    mars = SceneSpec(domain="robot_terrain", environment=Environment(body="mars", surface="regolith"),
+                     terrain=Terrain(kind="flat", roughness=0), robot=Robot(kind="rover"),
+                     mission=Mission(goal_place="east")).fill_defaults()
+    asked = Director().plan("where does it break if gravity drops?", mars)
+    assert asked.workflow == "find_failures" and asked.knobs == ["gravity"]
+    report = _run_finder(mars, lambda v: v.get("gravity", 3.71) < 2.5, knobs=asked.knobs)
+    gravity = next(limit for limit in report["limits"] if limit["knob"] == "gravity")
+    assert gravity["baseline"] == 3.71 and gravity["first_fail"] < 2.5 <= gravity["last_ok"]
+
+    plain = Director().plan("where does it break?", mars)
+    assert plain.knobs is None and "gravity" not in _run_finder(mars, lambda v: False)["knobs"]   # Mars keeps its own
+
+    named = json.dumps({"workflow": "find_failures", "summary": "Edges", "knobs": ["gravity", "friction"]})
+    chat, _ = scripted_models({"Director": [named]})
+    original_mock, original_chat = config.MOCK_MODE, llm.chat
+    try:
+        config.MOCK_MODE, llm.chat = False, chat
+        director = Director()
+        plan = director.plan("red team this rover", mars)   # the model named gravity; the user didn't
+    finally:
+        config.MOCK_MODE, llm.chat = original_mock, original_chat
+    assert plan.knobs == ["friction"] and any("didn't mention gravity" in note for note in director.guard_notes)
+
+
+def test_finder_inferred_map_cells_are_labelled_counted_and_never_explained_as_measured():
+    from simgate.finder import GRID, facts_text, number_problems
+
+    spec = SceneSpec(domain="robot_terrain", terrain=Terrain(kind="flat", roughness=0), robot=Robot(kind="rover"),
+                     mission=Mission(goal_place="east")).fill_defaults()
+    report = _run_finder(spec, lambda v: v.get("slope_deg", 0) / 17 + (0.9 - v.get("friction", 0.9)) / 0.6 > 1,
+                         knobs=["slope_deg", "friction"])
+    grid = report["map"]
+    cells = [cell for row in grid["cells"] for cell in row]
+    ran = [cell for cell in cells if cell["how"] == "run"]
+    inferred = [cell for cell in cells if cell["how"] == "inferred"]
+    evidence = {row["id"]: row for row in report["evidence"]}
+    assert ran and inferred and len(ran) + len(inferred) + grid["counts"]["unknown"] == GRID * GRID
+    assert all(cell["run"] is None for cell in inferred)   # no run id: nothing ran there
+    assert all(evidence[cell["run"]]["phase"] == 2 for cell in ran)
+    assert grid["counts"]["run"] == len(ran) and grid["counts"]["inferred"] == len(inferred)
+    assert grid["counts"]["pass"] + grid["counts"]["fail"] + grid["counts"]["error"] == len(ran)
+    assert f"; {len(inferred)} of {GRID * GRID} map cells inferred, not run)." in report["honesty"]
+
+    facts = facts_text(report)   # the Explainer sees only what ran
+    assert f"{len(ran)} combinations run, {grid['counts']['pass']} passed, {grid['counts']['fail']} failed" in facts
+    assert "inferred" not in facts and "16" not in facts.split("changed together")[1]
+    assert number_problems(report["explanation"], report) == [] and "inferred" not in report["explanation"]
+    page =(Path(__file__).resolve().parent.parent / "static" / "vendor" / "index.html").read_text(encoding="utf-8")
+    assert "`${mark} inferred`" in page and "cell.run ? `${mark} ${cell.run}`" in page
+
+
+def test_director_plans_find_failures_from_the_cue_phrases():
+    import json
+
+    from simgate import config, llm
+    from simgate.director import Director
+
+    spec = sandy_ramp()
+    for phrase in ("where does it break?", "find failures", "show me the edge cases", "how robust is it?",
+                   "red team this rover", "what are its operating limits?", "Find where it breaks"):
+        plan = Director().plan(phrase, spec)
+        assert plan.workflow == "find_failures" and plan.failure == "task" and plan.budget == "quick", (phrase, plan)
+    careful = Director().plan("thoroughly find where the rover breaks on slope and friction - does it tip over?", spec)
+    assert (careful.failure, careful.budget, careful.knobs) == ("safety", "thorough", ["slope_deg", "friction"])
+    assert Director().plan("where does it break?", None).workflow != "find_failures"   # needs a robot scene
+
+    answer = json.dumps({"workflow": "answer", "summary": "Robustness", "reply": "It is fairly robust."})
+    own = json.dumps({"workflow": "find_failures", "summary": "Edges", "knobs": ["push_n", "payload"]})
+    chat, calls = scripted_models({"Director": [answer, own]})
+    original_mock, original_chat = config.MOCK_MODE, llm.chat
+    try:
+        config.MOCK_MODE, llm.chat = False, chat
+        director = Director()
+        guarded = director.plan("red team this rover", spec)   # the model answered instead: the guard switches
+        kept = Director().plan("thoroughly red team it, will it fall?", spec)   # the model's knobs, the user's words
+    finally:
+        config.MOCK_MODE, llm.chat = original_mock, original_chat
+    assert guarded.workflow == "find_failures" and any("find_failures" in note for note in director.guard_notes)
+    assert (kept.workflow, kept.knobs, kept.failure, kept.budget) == ("find_failures", ["push_n", "payload"], "safety", "thorough")
+    assert "find_failures:" in calls[0][2][0]["content"] and '"workflow":"find_failures"' in calls[0][2][0]["content"]
+
+    session, (_, found) = session_turns("Rover obstacle course with a small step", "find where it breaks")
+    report = next(e["report"] for e in found if e["type"] == "envelope")
+    assert report["runs"] <= 25 and report["honesty"] and report["cost"]["runs"] == report["runs"]
+    assert "obstacle_scale" in [limit["knob"] for limit in report["limits"]]   # a course: its obstacles are a condition
+    assert found[-1]["type"] == "question" and found[-1]["message"].endswith(report["honesty"])
+    assert session.costs[1]["runs"] == report["runs"]
+    page = (Path(__file__).resolve().parent.parent / "static" / "vendor" / "index.html").read_text(encoding="utf-8")
+    for needed in ('id="envelopeCard"', 'case "envelope": renderEnvelope(ev.report)', '"Find where it breaks"',
+                   'showCost("envelopeCost", r.cost)', 'id="envelopeHonesty"', "envelope-map"):
+        assert needed in page, needed
+
+
 def test_stress_repeat_shows_pass_rates_and_every_card_shows_its_cost():
     from unittest.mock import patch
 
@@ -2636,7 +2884,7 @@ def test_stress_trigger_requires_robot_scene():
             assert any(event["type"] == "report" for event in events)
 
     assert agents.is_stress_test("stress test")
-    assert agents.is_stress_test("how robust?")
+    assert not agents.is_stress_test("how robust?")   # that finds where it breaks (find_failures)
     assert agents.is_stress_test("test it under different conditions")
     assert agents.is_stress_test("Will it work on Mars?")
     asyncio.run(scenario())

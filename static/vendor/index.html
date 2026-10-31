@@ -121,6 +121,17 @@
   .verdict.confirmed { background: rgba(52,211,153,.15); color: var(--ok); border-color: transparent; }
   .verdict.partly { background: rgba(251,191,36,.15); color: var(--warn); border-color: transparent; }
   .verdict.uncertain { background: rgba(148,163,184,.14); color: #d4b46a; border: 1px dashed rgba(251,191,36,.45); }   /* the seeds disagreed */
+  .envelope-table { width: 100%; border-collapse: collapse; font-size: 11.5px; }
+  .envelope-table th { text-align: left; color: var(--muted); font-weight: 500; font-size: 10.5px; }
+  .envelope-table td, .envelope-table th { padding: 3px 4px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  .envelope-table .held { color: var(--ok); }
+  .envelope-map { display: grid; grid-template-columns: auto repeat(4, 1fr); gap: 2px; margin-top: 8px; font-size: 10px; }
+  .envelope-map .axis { color: var(--muted); text-align: center; align-self: center; padding: 0 3px; white-space: nowrap; }
+  .envelope-map .cell { min-height: 22px; border-radius: 4px; display: grid; place-items: center; font-size: 9.5px; color: #0b0f14; text-align: center; line-height: 1.1; padding: 2px 0; }
+  .envelope-map .cell.pass { background: var(--ok); } .envelope-map .cell.fail { background: var(--bad); }
+  .envelope-map .cell.inferred { opacity: .45; } .envelope-map .cell.unknown, .envelope-map .cell.error { background: var(--panel-2); color: var(--muted); }
+  .envelope-caption { margin-top: 3px; color: var(--muted); font-size: 10.5px; }
+  .honesty { margin-top: 8px; color: var(--muted); font-size: 11px; font-style: italic; }
   .cost-line { margin-top: 8px; color: var(--muted); font-size: 11px; font-family: 'JetBrains Mono', monospace; }
   .cost-line:empty { display: none; }
   .msg .cost-note { display: block; margin-top: 4px; color: var(--muted); font-size: 11px; font-family: 'JetBrains Mono', monospace; }
@@ -251,6 +262,7 @@
       <div class="card" id="checksCard" hidden><h3>Physics checks</h3><div id="checks"></div></div>
       <div class="card" id="metricsCard" hidden><h3>Results</h3><div id="badge" hidden></div><div class="kv" id="metrics"></div></div>
       <div class="card" id="leaderboardCard" hidden><h3>Leaderboard</h3><div id="leaderboardRows"></div></div>
+      <div class="card" id="envelopeCard" hidden><h3>Envelope</h3><div id="envelopeBody"></div><div class="honesty" id="envelopeHonesty"></div><div class="cost-line" id="envelopeCost"></div></div>
       <div class="card" id="diagnosisCard" hidden><h3>Diagnosis</h3><div id="diagnosisRows"></div><div class="analysis-lines" id="diagnosisDecisions"></div><div class="analysis-text" id="diagnosisConclusion"></div><div class="cost-line" id="diagnosisCost"></div></div>
       <div class="card" id="redesignCard" hidden><h3>Redesign</h3><div id="redesignBody"></div>
         <div class="card-actions" id="redesignActions"><button type="button" class="chip primary" id="useDesign">Use this design</button><button type="button" class="chip" id="showRuns">Show runs</button></div><div class="cost-line" id="redesignCost"></div></div>
@@ -708,12 +720,13 @@ ws.onmessage = (m) => {
       if (ev.chips) { chips(q, ev.chips, null); d.appendChild(q); break; }   // the next step after an analysis
       const label = ev.message.startsWith("This scene already ran") ? "Run again"
         : ev.message.startsWith("This scene still fails") ? "Run anyway" : "Run";
-      chips(q, ev.stress_test_available ? [label, "Stress test"] : [label], label); d.appendChild(q); break;
+      chips(q, ev.stress_test_available ? [label, "Stress test", "Find where it breaks"] : [label], label); d.appendChild(q); break;
     }
     case "run_start": batchIsActive = false; $("reportCard").hidden = true; $("leaderboardCard").hidden = true; disableRunButtons(); startRun(); break;
     case "frames": for (const f of ev.frames) { frames.push(f); addTrailPoint(f); } $("scrub").max = frames.length - 1; break;
     case "metrics": renderMetrics(ev.metrics); streaming = false; break;
     case "diagnosis": renderDiagnosis(ev.report); break;
+    case "envelope": renderEnvelope(ev.report); break;
     case "redesign": renderRedesign(ev.report); break;
     case "batch_start":
       batchIsActive = true; batchResults.clear(); batchDecodeTasks = []; clearGhosts();
@@ -745,7 +758,7 @@ ws.onmessage = (m) => {
     case "reset":
       log.replaceChildren(); stepRows.clear(); countedSteps.clear(); agentNodes.clear(); initAgentGraph();
       current = null; frames = []; $("empty").hidden = false; $("checksCard").hidden = true; $("metricsCard").hidden = true;
-      $("diagnosisCard").hidden = true; $("redesignCard").hidden = true;
+      $("diagnosisCard").hidden = true; $("redesignCard").hidden = true; $("envelopeCard").hidden = true;
       break;
     case "library_selected":
       $("libraryStatus").textContent = `Selected ${ev.robot} · ${ev.policy} · ${ev.world}.`;
@@ -778,6 +791,57 @@ function renderDiagnosis(r) {
   for (const d of r.decisions || []) $("diagnosisDecisions").appendChild(textEl("div", `${d.agent}: ${d.reason}`));
   $("diagnosisConclusion").textContent = r.conclusion || "";
   showCost("diagnosisCost", r.cost);
+}
+// Find where it breaks: each condition's limit, a pass/fail map of the two tightest, the honesty line and the cost.
+function renderEnvelope(r) {
+  $("envelopeCard").hidden = false;
+  const body = $("envelopeBody"); body.replaceChildren();
+  body.appendChild(textEl("div", `${r.robot_label} · counts as failing: ${r.failure === "safety" ? "fell or tilted past 60°" : "missed the goal"}`, "envelope-caption"));
+  if (r.stopped) { body.appendChild(textEl("div", r.stopped)); }
+  if ((r.limits || []).length) {
+    const table = document.createElement("table"); table.className = "envelope-table";
+    const head = document.createElement("tr");
+    for (const name of ["Condition", "Now", "OK at", "Fails at", "How"]) head.appendChild(textEl("th", name));
+    table.appendChild(head);
+    for (const limit of r.limits) {
+      const tr = document.createElement("tr");
+      tr.append(textEl("td", limit.name), textEl("td", limit.shown.baseline));
+      if (limit.never_broke) {
+        const held = textEl("td", `never broke up to ${limit.shown.harsh}`, "held"); held.colSpan = 3; tr.appendChild(held);
+      } else {
+        tr.append(textEl("td", `${limit.shown.last_ok} (${limit.ok_run})`), textEl("td", `${limit.shown.first_fail} (${limit.fail_run})`),
+          textEl("td", limit.failure || ""));
+      }
+      tr.title = `accurate to ${limit.shown.step}; ${limit.runs} search runs`;
+      table.appendChild(tr);
+    }
+    body.appendChild(table);
+  }
+  const map = r.map;
+  if (map) {
+    const grid = document.createElement("div"); grid.className = "envelope-map";
+    for (let j = map.y.shown.length - 1; j >= 0; j--) {   // the harshest row on top
+      grid.appendChild(textEl("div", map.y.shown[j], "axis"));
+      map.x.shown.forEach((_, i) => {
+        const cell = map.cells[j][i];
+        const mark = cell.state === "pass" ? "✓" : cell.state === "fail" ? "✕" : "?";
+        // a measured cell shows its run id; an inferred one has none and says so
+        const el = textEl("div", cell.how === "inferred" ? `${mark} inferred` : cell.run ? `${mark} ${cell.run}` : mark,
+          `cell ${cell.state || "unknown"}${cell.how === "inferred" ? " inferred" : ""}`);
+        el.title = `${map.x.name} ${map.x.shown[i]}, ${map.y.name} ${map.y.shown[j]}: ${cell.state || "not run"}`
+          + (cell.run ? ` (run ${cell.run})` : cell.how === "inferred"
+            ? (cell.from === "search" ? " (inferred from the search, not run)" : " (inferred, not run)") : "");
+        grid.appendChild(el);
+      });
+    }
+    grid.appendChild(textEl("div", "", "axis"));
+    for (const shown of map.x.shown) grid.appendChild(textEl("div", shown, "axis"));
+    body.appendChild(grid);
+    body.appendChild(textEl("div", `${map.x.name} → · ${map.y.name} ↑ · ${map.counts.run} run, ${map.counts.inferred} inferred `
+      + "(faded, no run id: harsher on both never helps)", "envelope-caption"));
+  }
+  $("envelopeHonesty").textContent = r.honesty || "";
+  showCost("envelopeCost", r.cost);
 }
 function renderRedesign(r) {
   $("redesignCard").hidden = false; $("diagnosisCard").hidden = true;

@@ -29,6 +29,7 @@ class Variation(BaseModel):
     obstacle_scale: float | None = Field(default=None, gt=0, le=10)
     push_n: float | None = Field(default=None, gt=0, le=1000)
     seed: int | None = Field(default=None, ge=0)
+    roughness: float | None = Field(default=None, ge=0, le=1)   # small bumps on generated or real terrain
     perturb_seed: int | None = Field(default=None, ge=0)   # reliability: a ±1 cm / ±1° start nudge (0 = none)
     # Single-change experiments (Prove why) and design changes (Make it pass).
     remove_obstacle: str | None = Field(default=None, pattern=r"^obs\d+_[a-z]+$")
@@ -40,7 +41,7 @@ class Variation(BaseModel):
     robot_id: str | None = None      # robot-level knobs apply to this robot only (default: every robot)
 
 
-GEOMETRY_KNOBS = ("slope_deg", "obstacle_scale", "seed", "remove_obstacle", "flatten_terrain", "robot")
+GEOMETRY_KNOBS = ("slope_deg", "obstacle_scale", "seed", "roughness", "remove_obstacle", "flatten_terrain", "robot")
 
 
 def obstacle_entry_index(spec: SceneSpec, name: str) -> int:
@@ -110,6 +111,10 @@ def _validate_variation(base_spec: SceneSpec, raw: dict) -> tuple[Variation, Sce
         if spec.terrain is None:
             raise ValueError("seed requires terrain.")
         spec.terrain.seed = knobs["seed"]
+    if "roughness" in knobs:
+        if spec.terrain is None or spec.terrain.kind == "flat":
+            raise ValueError("roughness has no effect on flat ground.")
+        spec.terrain.roughness = knobs["roughness"]
     if "perturb_seed" in knobs:
         spec.perturb_seed = knobs["perturb_seed"] or None
     if "push_n" in knobs:

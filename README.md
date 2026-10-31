@@ -307,8 +307,9 @@ draft was used; the checks are what keep a wrong draft out of the Library.
 
 ### 10. Stress test (robots)
 
-- With a robot scene open, click **Stress test** or ask *"stress test"*, *"how robust?"*,
-  *"test it under different conditions"*, or *"will it work on Mars?"*. The unchanged scene runs first
+- With a robot scene open, click **Stress test** or ask *"stress test"*,
+  *"test it under different conditions"*, or *"will it work on Mars?"* (*"how robust?"* finds where it breaks
+  instead, section 14). The unchanged scene runs first
   as **Baseline**, followed by up to 23 variations in parallel. Each run has a 120-second timeout;
   failed or timed-out runs appear as errors instead of aborting the batch.
 - **Repeat ×3** (the chip after a stress test, or *"repeat ×3"*, *"how reliable is it?"*, *"stress test, repeat"*)
@@ -437,7 +438,54 @@ One run says what happened once. SimGate says how sure a result is, and what it 
   the chat. Runs are counted when the batch runner starts them (and for each streamed run); model calls are counted
   in the model client.
 
-### 14. Model support
+### 14. Find where it breaks
+
+Ask *"where does it break?"*, *"find failures"*, *"edge cases"*, *"how robust is it?"*, *"red team it"* or *"what are
+its operating limits?"*, or click **Find where it breaks**. The agents make the **world** harsher, never the robot's
+design, until one robot fails, and report where. No earlier run is needed.
+
+- **What counts as failing:** *task* (the default) is missing the goal; *safety* (when the request mentions falling,
+  tipping or safety) is falling or tilting past 60°. One robot is judged: the one named, or the first.
+- **Budget:** *quick* (the default) uses at most 25 runs; *thorough* (*"thoroughly"*, *"in depth"*) at most 60.
+- **Conditions** (2–4 that fit the scene, picked by rules in this order, or the ones the request names):
+
+  | Condition | Range searched | Only when |
+  | --- | --- | --- |
+  | slope | the scene's angle → 30° | the ground is flat or a slope (flat is searched as a 0° slope: the same ground) |
+  | obstacle height | the scene's → 2× the robot's measured climb limit | the course has obstacles it could climb |
+  | friction | the scene's → 0.1 | always |
+  | roughness | the scene's → 1 | the ground isn't flat |
+  | sideways push (mid-run) | 0 → 80 N | always |
+  | payload | 0 → 50% of the robot's mass | not a library robot (its policy expects its exact body) |
+  | gravity | the scene's → 1.62 m/s² | the scene is on Earth, or the request mentions gravity (on any world) |
+  | commanded speed | the scene's → +50%, and for walkers and library robots also → −50% (two half-searches of one condition) | always (rovers: faster only) |
+
+- **Phase 1, one change at a time:** every condition is searched at once, in parallel. Each starts at its harsh end;
+  if the robot copes there, the condition *never broke*. Otherwise the bracket between the last value that was OK
+  and the first that failed is halved 4 times (at most 5 runs per condition, so the bracket ends 1/16 of the range
+  wide). The scene as it is runs first; if it already fails there is nothing to search, and the answer says to ask
+  why it failed instead.
+- **Phase 2, a map:** the two conditions whose limits are closest to the scene as it is (as a share of their range)
+  are combined on a 4×4 grid reaching just past the limits. The edges come from phase 1; the cells nearest the
+  estimated boundary run first, 6 at a time, within the budget left. Every other cell is **inferred**, by assuming
+  harsher on both never helps: it has no run id, is labelled "inferred" and faded on the card, is counted in the
+  honesty line, and is never given to the Explainer, which sees only the combinations that ran. Cells left over are
+  shown as not run.
+- **Result:** the **Envelope** card shows each condition's value now, the last OK value and the first failing one with
+  their run ids (every run is kept as evidence), how it failed, the map, the cost, and an honesty line written in
+  code: *"14 runs, limits accurate to one search step (slope ±1.9°), simulation only (one seed; one robot judged; 10
+  of 16 map cells inferred, not run)."*
+- **Gravity:** a model plan that names gravity when the request doesn't is corrected (with a note), so another
+  world keeps its own gravity unless you ask.
+- **Explainer:** 3–5 sentences from FACTS (the limits from the tightest), starting with the tightest limit. Code
+  checks every number it states against the envelope and that it starts with the tightest limit; one retry with the
+  exact problems, then the rules text. Mock mode uses the rules text.
+
+Found on a 4-wheel rover driving east on Earth sand: OK at a 24.4° slope and fell at 26.2° (a direct sweep in 2.5°
+steps passes at 22.5° and fails from 25°); friction alone never broke down to 0.1 and a sideways push never broke up
+to 80 N, but with slope and friction changed together 4 of the 6 combinations that ran failed.
+
+### 15. Model support
 
 The prototype works with any OpenAI-compatible endpoint, configured in `.env`:
 
@@ -449,9 +497,9 @@ The prototype works with any OpenAI-compatible endpoint, configured in `.env`:
 
 Without a key, it runs in mock mode.
 
-### 15. Tests
+### 16. Tests
 
-`python tests/test_pipeline.py` runs 130 offline tests (simulations, the agents with scripted models, uploads and
+`python tests/test_pipeline.py` runs 136 offline tests (simulations, the agents with scripted models, uploads and
 the page's wiring). rasterio is in requirements.txt, so the real-terrain integration test runs too; without it
 that test reports "skip" with the reason.
 
@@ -574,6 +622,12 @@ that test reports "skip" with the reason.
 | `wilson_interval_labels_and_seeded_repeats` | Wilson intervals match known values (3/3 → 44–100%), the reliable pass/borderline/reliable fail labels, a crashed run left out of the count, seed 0 unchanged and seed k adding terrain seed + k, and the start nudge staying within ±1 cm and ±1° and repeating for the same seed |
 | `diagnose_marks_a_verdict_the_seeds_disagree_on_uncertain` | With faked batch results, a cause that passes on one seed and not the other is "uncertain", the conclusion opens "Confirmed: obstacle. Uncertain: slipping (the 2 seeds disagreed).", 8 runs are used (2 reproductions + 3 experiments × 2 seeds; a cause passed on its own, so no follow-up), a model conclusion calling it ruled out is rejected, and the cost is reported |
 | `diagnose_still_runs_a_follow_up_after_three_causes_on_two_seeds` | With faked batch results, after 3 causes on 2 seeds each, two causes that each only partly help are tested together as a follow-up on 2 seeds and confirmed: 2 + 6 + 2 = 10 runs within the 12-rerun budget |
+| `finder_slope_limit_matches_a_direct_sweep_and_the_map_agrees` | On Earth sand the finder's slope bracket overlaps a direct 2.5° sweep's (passes at 22.5°, fails from 25°), within 25 runs and 5 per condition, each run one change; the map's edges agree with phase 1; the honesty line and the rules text's numbers check out |
+| `finder_budget_explainer_number_check_and_baseline_failure` | With a faked batch runner: a thorough search uses 4 conditions within 60 runs and fills the map; the slope bracket is 1/16 of its range; a scene that already fails stops after 1 run; the number check rejects "fails at 21.0°" and a reply that doesn't start with the tightest limit, retries once and falls back to the rules text |
+| `finder_searches_speed_both_ways_for_legged_and_library_robots` | A walker (and a library robot) gets speed searched faster and slower as one condition with two half-searches of at most 5 runs each, finding both limits; a rover is searched faster only |
+| `finder_searches_gravity_on_any_world_only_when_asked` | On Mars, "where does it break if gravity drops?" searches gravity from 3.71 m/s² and finds its limit; without the word it isn't searched; gravity named only by the model is removed with a note |
+| `finder_inferred_map_cells_are_labelled_counted_and_never_explained_as_measured` | Inferred map cells have no run id while run cells point to phase-2 runs; the counts add up, the honesty line counts the inferred cells, FACTS for the Explainer state only the combinations that ran, and the card labels inferred cells |
+| `director_plans_find_failures_from_the_cue_phrases` | "where does it break", "find failures", "edge cases", "how robust", "red team", "operating limits" and the chip plan find_failures (only with a robot scene); "thoroughly", "tip over" and named conditions set budget, failure and knobs; a model answer is switched by the guard; a session shows the Envelope card with the obstacle condition, its honesty line and cost |
 | `stress_repeat_shows_pass_rates_and_every_card_shows_its_cost` | "Repeat ×3" after a stress test repeats it (not a rerun of the scene): every row gets 3 seeds with its pass count, interval and label, the explanation counts them, and the report and the turn report 9 runs; the page has a cost line on each analysis card and the uncertain badge |
 | `robustness_decides_the_winner` | A design that passes only 1/3 robustness checks loses to the next-best that passes 3/3; if none holds up, the best is shown as fragile and can still be applied |
 | `race_diagnosis_and_redesign_target_one_robot` | In a race, "why did it fail?" diagnoses the robot that failed (or the one named; a winner has nothing to explain) and redesign changes only that robot |
@@ -638,6 +692,7 @@ Things to try:
 | `simgate/agents.py` | Planner, Router, Builder and Explainer, each with a model or mock rules |
 | `simgate/batch.py` | Parallel robot-condition runs and compressed ghost tracks |
 | `simgate/diagnose.py` | Prove why: reproduce a failed run, test single-change hypotheses on 2 seeds, verdicts and conclusion |
+| `simgate/finder.py` | Find where it breaks: world conditions searched one at a time, a 4×4 map of the two tightest, the honesty line and the checked Explainer |
 | `simgate/reliability.py` | Honest uncertainty: the same condition on several seeds, Wilson 95% interval, reliable pass / borderline / reliable fail |
 | `simgate/cost.py` | What a request cost: runs, wall time and model calls |
 | `simgate/redesign.py` | Make it pass: bounded design search, constraints, robustness checks |

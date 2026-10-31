@@ -103,7 +103,7 @@ class Session:
         if world.report is not None:
             if world.report["type"] == "diagnosis":
                 self.last_diagnosis = world.report
-            else:
+            elif world.report["type"] == "redesign":
                 self.last_redesign = world.report
             await self.emit({"type": world.report["type"], "report": world.report})
         else:
@@ -135,7 +135,7 @@ class Session:
 
     def _next_chips(self, report: dict | None) -> list[str] | None:
         """After a diagnosis or redesign, offer the next step instead of "Run"."""
-        if report is None:
+        if report is None or report["type"] == "envelope":   # finding where it breaks leaves the scene ready to run
             return None
         if report["type"] == "diagnosis":
             if report.get("reproduced") is None:   # the robot asked about didn't fail: offer the one that did

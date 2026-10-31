@@ -497,7 +497,7 @@ def plan_stress(spec: SceneSpec, text: str) -> list[dict]:
 
 
 STRESS_REQUEST = re.compile(
-    r"\bstress[- ]tests?\b|\bhow robust\b|\btest (?:it )?under different conditions\b|\bwill it work on\b",
+    r"\bstress[- ]tests?\b|\btest (?:it )?under different conditions\b|\bwill it work on\b",   # "how robust": find_failures
     re.I,
 )
 
