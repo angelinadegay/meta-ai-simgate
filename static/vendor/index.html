@@ -131,6 +131,15 @@
   .envelope-map .cell.pass { background: var(--ok); } .envelope-map .cell.fail { background: var(--bad); }
   .envelope-map .cell.inferred { opacity: .45; } .envelope-map .cell.unknown, .envelope-map .cell.error { background: var(--panel-2); color: var(--muted); }
   .envelope-caption { margin-top: 3px; color: var(--muted); font-size: 10.5px; }
+  .envelope-section { margin-top: 10px; font-size: 11px; color: var(--muted); font-weight: 600; }
+  .failure-row { display: grid; grid-template-columns: 16px 1fr auto; gap: 2px 6px; padding: 4px 0; border-bottom: 1px solid var(--line); font-size: 11.5px; }
+  .failure-row small { grid-column: 2 / 4; color: var(--muted); font-size: 10.5px; }
+  .verdict.reliable-fail { background: rgba(248,113,113,.15); color: var(--bad); border-color: transparent; }
+  .verdict.reliable-pass { background: rgba(52,211,153,.15); color: var(--ok); border-color: transparent; }
+  .verdict.borderline { background: rgba(251,191,36,.15); color: var(--warn); border-color: transparent; }
+  .tag.surprising { color: #c4a5ff; } .tag.maybe-surprising { color: var(--muted); border-style: dashed; }
+  .envelope-map .cell.corrected { outline: 2px solid var(--warn); outline-offset: -2px; }
+  .envelope-note { margin-top: 6px; font-size: 11px; color: var(--muted); }
   .honesty { margin-top: 8px; color: var(--muted); font-size: 11px; font-style: italic; }
   .cost-line { margin-top: 8px; color: var(--muted); font-size: 11px; font-family: 'JetBrains Mono', monospace; }
   .cost-line:empty { display: none; }
@@ -801,7 +810,7 @@ function renderEnvelope(r) {
   if ((r.limits || []).length) {
     const table = document.createElement("table"); table.className = "envelope-table";
     const head = document.createElement("tr");
-    for (const name of ["Condition", "Now", "OK at", "Fails at", "How"]) head.appendChild(textEl("th", name));
+    for (const name of ["Condition", "Now", "OK at", "Fails at", "How", "On 3 seeds"]) head.appendChild(textEl("th", name));
     table.appendChild(head);
     for (const limit of r.limits) {
       const tr = document.createElement("tr");
@@ -810,13 +819,33 @@ function renderEnvelope(r) {
         const held = textEl("td", `never broke up to ${limit.shown.harsh}`, "held"); held.colSpan = 3; tr.appendChild(held);
       } else {
         tr.append(textEl("td", `${limit.shown.last_ok} (${limit.ok_run})`), textEl("td", `${limit.shown.first_fail} (${limit.fail_run})`),
-          textEl("td", limit.failure || ""));
+          textEl("td", limit.failure || ""), seedsCell(limit.confirm));
       }
       tr.title = `accurate to ${limit.shown.step}; ${limit.runs} search runs`;
       table.appendChild(tr);
     }
     body.appendChild(table);
   }
+  if ((r.failures || []).length) {   // confirmed failures only, the closest to normal first
+    body.appendChild(textEl("div", "Failures, closest to normal first", "envelope-section"));
+    r.failures.forEach((f, n) => {
+      const row = textEl("div", "", "failure-row");
+      const what = textEl("span", `${f.text} — ${f.failure}`);
+      if (f.surprising) what.appendChild(textEl("span", "surprising", "tag surprising"));
+      else if (f.surprise_note) what.appendChild(textEl("span", "possibly surprising", "tag maybe-surprising"));
+      row.append(textEl("span", `${n + 1}.`), what, verdictEl(f.confirm.label));
+      row.appendChild(textEl("small", `${f.kind === "combined" ? "together" : "alone"} · ${f.confirm.text} · runs ${f.confirm.runs.join(", ")}`
+        + (f.reason ? ` · Hunter: ${f.reason}` : "")));
+      if (f.surprising) row.title = "Each condition here is fine alone (its OK value passed on 3 seeds)";
+      else if (f.surprise_note) row.title = f.surprise_note;
+      body.appendChild(row);
+    });
+  }
+  for (const d of (r.hunt && r.hunt.decisions) || []) body.appendChild(textEl("div",
+    d.by === "budget" ? `Budget: the hunt's share ran out — ${d.reason}` : `Hunter (${d.by}): ${d.decision} — ${d.reason}`, "envelope-note"));
+  if ((r.dropped || []).length) body.appendChild(textEl("div",
+    `${r.dropped.length} apparent failure${r.dropped.length === 1 ? "" : "s"} didn't reproduce: ` + r.dropped.map(f => `${f.text} (${f.confirm.text})`).join("; "), "envelope-note"));
+  if ((r.unconfirmed || []).length) body.appendChild(textEl("div", `Not confirmed (out of budget): ${r.unconfirmed.join(", ")}`, "envelope-note"));
   const map = r.map;
   if (map) {
     const grid = document.createElement("div"); grid.className = "envelope-map";
@@ -827,9 +856,10 @@ function renderEnvelope(r) {
         const mark = cell.state === "pass" ? "✓" : cell.state === "fail" ? "✕" : "?";
         // a measured cell shows its run id; an inferred one has none and says so
         const el = textEl("div", cell.how === "inferred" ? `${mark} inferred` : cell.run ? `${mark} ${cell.run}` : mark,
-          `cell ${cell.state || "unknown"}${cell.how === "inferred" ? " inferred" : ""}`);
+          `cell ${cell.state || "unknown"}${cell.how === "inferred" ? " inferred" : ""}${cell.corrected ? " corrected" : ""}`);
         el.title = `${map.x.name} ${map.x.shown[i]}, ${map.y.name} ${map.y.shown[j]}: ${cell.state || "not run"}`
-          + (cell.run ? ` (run ${cell.run})` : cell.how === "inferred"
+          + (cell.corrected ? ` (inferred ${cell.inferred_as}, but run ${cell.run} said otherwise: corrected)` : cell.checked ? ` (inferred, then checked by run ${cell.run})`
+            : cell.run ? ` (run ${cell.run})` : cell.how === "inferred"
             ? (cell.from === "search" ? " (inferred from the search, not run)" : " (inferred, not run)") : "");
         grid.appendChild(el);
       });
@@ -838,10 +868,24 @@ function renderEnvelope(r) {
     for (const shown of map.x.shown) grid.appendChild(textEl("div", shown, "axis"));
     body.appendChild(grid);
     body.appendChild(textEl("div", `${map.x.name} → · ${map.y.name} ↑ · ${map.counts.run} run, ${map.counts.inferred} inferred `
-      + "(faded, no run id: harsher on both never helps)", "envelope-caption"));
+      + "(faded, no run id: harsher on both never helps)"
+      + (map.checked && map.checked.checked ? ` · ${map.checked.checked} inferred checked by running, ${map.checked.wrong} wrong`
+        + (map.checked.wrong ? " (outlined: corrected)" : "") : ""), "envelope-caption"));
   }
   $("envelopeHonesty").textContent = r.honesty || "";
   showCost("envelopeCost", r.cost);
+}
+function verdictEl(label) {
+  return textEl("span", label, `verdict ${(label || "").replace(/[^a-z]+/g, "-")}`);
+}
+// A limit's failure (and its last OK value) rechecked on 3 seeds.
+function seedsCell(confirm) {
+  const td = document.createElement("td");
+  if (!confirm) { td.textContent = "not confirmed"; td.className = "held"; td.style.color = "var(--muted)"; return td; }
+  if (confirm.fails_at) td.appendChild(verdictEl(confirm.fails_at.label));
+  td.title = [confirm.fails_at && `fails at: ${confirm.fails_at.text} (runs ${confirm.fails_at.runs.join(", ")})`,
+              confirm.ok_at && `OK at: ${confirm.ok_at.text}, ${confirm.ok_at.label} (runs ${confirm.ok_at.runs.join(", ")})`].filter(Boolean).join("\n");
+  return td;
 }
 function renderRedesign(r) {
   $("redesignCard").hidden = false; $("diagnosisCard").hidden = true;

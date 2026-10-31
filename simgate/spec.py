@@ -146,6 +146,7 @@ class SceneSpec(BaseModel):
     # this seed; None places them exactly
     perturb_seed: Optional[int] = Field(None, ge=1)
     duration_s: float = 8.0
+    time_limit_given: bool = False      # the user set duration_s: never replaced by the default from the distance
     assumptions: list[str] = []         # defaults the agent chose, shown to the user
 
     @model_validator(mode="after")
@@ -266,13 +267,14 @@ class SceneSpec(BaseModel):
                 self.mission = self.mission or Mission()       # a course needs a finish line
                 self.mission.goal_place = "east" if self.mission.start_place in (None, "start_area", "west") else "center"
                 self.assumptions.append("Put the goal on the far side of the obstacle course.")
-            if self.mission is not None and self.mission.has_goal() and self.duration_s == 8.0:
-                # The 8 s default is too short to get anywhere. Runs end early once the goal is reached.
-                # The slowest robot sets it: walkers get 45 s, so a race with any walker does too.
-                walker = any(entry.robot.kind == "walker" for entry in self.robots)
-                self.duration_s = 45.0 if walker else 30.0
-                self.assumptions.append(f"Gave the {'robots' if len(self.robots) > 1 else 'robot'} up to "
-                                        f"{self.duration_s:.0f} s to reach the goal.")
+            if self.mission is not None and self.mission.has_goal() and self.duration_s == 8.0                     and not self.time_limit_given:
+                # The 8 s default is too short to get anywhere: the distance to the goal at the robot's nominal
+                # speed sets it (the slowest robot in a race). Runs end early once the goal is reached.
+                from .timing import time_limit   # local import: it builds the terrain to find the goal
+
+                if (limit := time_limit(self)) is not None:
+                    self.duration_s, note = limit
+                    self.assumptions.append(note)
         else:
             self.structure = self.structure or Structure()
             self.load = self.load or Load()

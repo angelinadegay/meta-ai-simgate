@@ -23,6 +23,7 @@ PlanPlace = Annotated[Place, BeforeValidator(_far_side_to_place)]
 Workflow = Literal["build", "race", "compare", "stress_test", "edit", "custom", "answer", "diagnose", "redesign",
                    "find_failures"]
 FinderKnob = Literal["slope_deg", "friction", "gravity", "push_n", "payload", "obstacle_scale", "roughness", "speed"]
+FollowUp = Literal["find_failures", "stress_test", "diagnose"]   # analyses a build can be followed by
 TerrainKind = Literal["flat", "hills", "rocky", "slope", "craters", "real"]
 Surface = Literal["rock", "regolith", "gravel", "sand", "mud", "ice"]
 RobotKind = Literal["rover", "walker"]
@@ -226,6 +227,9 @@ class Plan(BaseModel):
     failure: Literal["task", "safety"] = "task"
     budget: Literal["quick", "thorough"] = "quick"
     knobs: list[FinderKnob] | None = Field(default=None, max_length=4)
+    # build or race: the one analysis the same request asks for once the scene is built ("... where does it break?")
+    then: FollowUp | None = None
+    duration_s: float | None = Field(default=None, gt=0, le=120)   # the run's time limit, when the user gives one
     run_now: bool = False
     reply: str | None = Field(default=None, max_length=2000)
 
@@ -248,6 +252,8 @@ class Plan(BaseModel):
         if self.domain == "structure" and self.workflow in {"race", "compare", "stress_test", "custom", "diagnose", "redesign",
                                                             "find_failures"}:
             raise ValueError(f"workflow {self.workflow!r} is not available for structure scenes.")
+        if self.then is not None and (self.workflow not in ("build", "race") or self.domain != "robot_terrain"):
+            raise ValueError("then is only for a build or race of a robot scene: the analysis to run once it is built.")
         if self.world.slope_deg is not None and self.world.terrain_kind not in (None, "slope"):
             raise ValueError("slope_deg can only be used with terrain_kind 'slope'.")
         return self

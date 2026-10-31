@@ -50,6 +50,20 @@ prompt ─► Director ─► fixed workflow ─► Builder/Checker ─► (you 
   corrections; LLM Builder mode receives the exact failed checks. Remaining failures are shown and block a run.
   The two advisory warnings (a steep straight path, a course beyond the robot's measured limits) are shown but
   never trigger a repair or block a run.
+- **Build, then analyse, in one message:** a request that builds a scene and asks one analysis question (*"G1 on
+  Mars hills to the summit — where does it break?"*, *"... and stress test it"*, *"... then why did it fail?"*) is a
+  build plan with `then` set to that analysis. Once the scene is built and its checks pass, the session goes straight
+  on: where it breaks and stress tests need no run first; *why did it fail* runs the scene, then diagnoses it (or says
+  it reached the goal). A rules cue reads the question from the words, and a guard sets or clears `then` on a model
+  plan to match; a model plan that answers the question with no scene yet gets one retry saying to build first.
+- **Time limit:** a time limit in the words (*"give it 60 seconds"*, *"for 2 minutes"*, at most 120 s) is kept, on a
+  new scene (`duration_s` in the plan) or the current one (an edit), and never replaced by the default. Otherwise a
+  scene with a goal gets the straight-line distance to it at the robot's nominal speed, times 2.5, kept within
+  20–120 s; in a race the slowest robot to its goal sets it. Nominal speeds (`simgate/timing.py`) were measured on
+  flat Earth rock over 12 s: the rover 0.83 m/s (92% of wheel speed × radius, so a faster or bigger-wheeled design
+  gets less time), the 4-legged walker 0.37 m/s and the hexapod 0.77 m/s at the 2 Hz gait (scaled with the gait
+  frequency), and a library robot 92% of its commanded speed (the G1: 0.55 m/s). The reply says how it was set:
+  *"Gave the robot up to 61 s to reach the goal: 13.5 m at about 0.55 m/s, times 2.5, kept within 20–120 s."*
 - **Approval:** the Director asks "Run it?" unless the user explicitly requested a run. One click gives exactly
   one run, and an explicit "run again" repeats it. A scene whose checks still fail is never run by "run" or "run again"; the reply
   names the failing checks, and "run anyway" is the explicit override.
@@ -446,7 +460,14 @@ design, until one robot fails, and report where. No earlier run is needed.
 
 - **What counts as failing:** *task* (the default) is missing the goal; *safety* (when the request mentions falling,
   tipping or safety) is falling or tilting past 60°. One robot is judged: the one named, or the first.
-- **Budget:** *quick* (the default) uses at most 25 runs; *thorough* (*"thoroughly"*, *"in depth"*) at most 60.
+- **Budget:** *quick* (the default) uses at most 30 runs; *thorough* (*"thoroughly"*, *"in depth"*) at most 60.
+  Every phase has a share, and what a phase leaves unused rolls forward to the next:
+
+  | Budget | Search (with the scene as it is) | Map | Hunt | Confirm |
+  | --- | --- | --- | --- | --- |
+  | quick | 14 | 6 | 5 | 5 |
+  | thorough | 24 | 12 | 12 | 12 |
+
 - **Conditions** (2–4 that fit the scene, picked by rules in this order, or the ones the request names):
 
   | Condition | Range searched | Only when |
@@ -462,28 +483,78 @@ design, until one robot fails, and report where. No earlier run is needed.
 
 - **Phase 1, one change at a time:** every condition is searched at once, in parallel. Each starts at its harsh end;
   if the robot copes there, the condition *never broke*. Otherwise the bracket between the last value that was OK
-  and the first that failed is halved 4 times (at most 5 runs per condition, so the bracket ends 1/16 of the range
-  wide). The scene as it is runs first; if it already fails there is nothing to search, and the answer says to ask
+  and the first that failed is halved (at most 5 runs per condition, fewer when the search share is split between
+  more conditions: 2 conditions get 5 runs, so the bracket ends 1/16 of the range wide; 3 get 4, so 1/8). The scene as
+  it is runs first; if it already fails there is nothing to search, and the answer says to ask
   why it failed instead.
 - **Phase 2, a map:** the two conditions whose limits are closest to the scene as it is (as a share of their range)
   are combined on a 4×4 grid reaching just past the limits. The edges come from phase 1; the cells nearest the
-  estimated boundary run first, 6 at a time, within the budget left. Every other cell is **inferred**, by assuming
+  estimated boundary run first, 6 at a time, within the map's share. Every other cell is **inferred**, by assuming
   harsher on both never helps: it has no run id, is labelled "inferred" and faded on the card, is counted in the
   honesty line, and is never given to the Explainer, which sees only the combinations that ran. Cells left over are
   shown as not run.
 - **Result:** the **Envelope** card shows each condition's value now, the last OK value and the first failing one with
   their run ids (every run is kept as evidence), how it failed, the map, the cost, and an honesty line written in
-  code: *"14 runs, limits accurate to one search step (slope ±1.9°), simulation only (one seed; one robot judged; 10
-  of 16 map cells inferred, not run)."*
+  code: *"26 runs, limits accurate to one search step (slope ±3.8°), simulation only (search on one seed; one robot
+  judged; 8 of 16 map cells inferred, not run). Confirmation: 3 failures kept on 3 seeds (3 reliable, 0 borderline);
+  2 inferred cells checked by running them, none wrong."*
 - **Gravity:** a model plan that names gravity when the request doesn't is corrected (with a note), so another
   world keeps its own gravity unless you ask.
-- **Explainer:** 3–5 sentences from FACTS (the limits from the tightest), starting with the tightest limit. Code
-  checks every number it states against the envelope and that it starts with the tightest limit; one retry with the
-  exact problems, then the rules text. Mock mode uses the rules text.
+- **Explainer:** 3–5 sentences from FACTS (the limits from the tightest), starting with the tightest limit. FACTS
+  give each condition's *last OK value* and *first failure* (the limit lies between them) and say how sure each is:
+  rechecked on 3 seeds, with its label, or *from one run each, not rechecked*. Code checks every number it states
+  against the envelope, that it starts with the tightest limit, that it never calls a last OK value or a first
+  failure "the limit" (*"It calls 0.25 a limit; a limit lies between the last OK value and the first failure."*),
+  and that a failure that wasn't rechecked is said to come from a single run. One retry with the exact problems,
+  then the rules text, which follows the same rules. Mock mode uses the rules text. The check covers the hunt and
+  confirmation counts too (seeds, failures kept, dropped, cells checked and corrected, points not confirmed).
 
-Found on a 4-wheel rover driving east on Earth sand: OK at a 24.4° slope and fell at 26.2° (a direct sweep in 2.5°
-steps passes at 22.5° and fails from 25°); friction alone never broke down to 0.1 and a sideways push never broke up
-to 80 N, but with slope and friction changed together 4 of the 6 combinations that ran failed.
+#### The Hunter and confirmation
+
+- **Phase 3, the Hunter** (the planner model; rules in mock mode) looks for failures no single change shows. It gets
+  FACTS written in code: each searched condition with its value now, what one change at a time measured (the last OK
+  value and the first failure, with run ids and how it failed), the **measured** map cells only (never the inferred
+  ones) and the runs left in its share. It proposes up to 6 combinations of 2 or more conditions, each kept at 70–90%
+  of its own single breaking point (and never past the last value that was OK alone; a condition that never broke
+  may go up to 90% of its range), each with a reason that cites a measured result (a value that was OK or failed
+  alone, or a measured combination: quoting its window isn't evidence), such as *"falls backward at
+  12° and slips at friction 0.3: 9° at friction 0.45 may combine both"*. Code validates the JSON: only the searched
+  conditions, in range, inside each window, speed and slower speed never together, a measured result in the
+  reason. A bad reply gets one retry with the exact errors (*"slope_deg … is at or past its single limit (OK
+  alone at …, failed alone at …); keep slope_deg between … and …"*); a second bad reply falls back to
+  the rules. After the results, whenever its share has runs left, the Hunter itself decides **hunt more** (one more
+  round, at most 4 combinations) or **stop**, with a reason; only a spent share ends the hunt without its decision,
+  and the card and steps say which happened (*"Budget: the hunt's share ran out"*). The rules: the two most sensitive conditions at 80% of their limits, plus the most sensitive one with a
+  push (or the next condition when the push wasn't searched); one more round at 70% when something failed, otherwise
+  stop. Every proposal, its reason and the decision show as steps (*"Hunter: slope 7° and push 12 N are each fine
+  alone, but both tip it backward; testing them together"*).
+- **Confirmation:** every failure the hunt found and every limit's boundary points are re-run on 3 seeds with
+  `reliability`'s seeds: seed 0 is the run already made (the simulation is deterministic), seeds 1 and 2 change the
+  terrain randomness and nudge the start by ±1 cm and ±1°. A failure is kept only when it reproduces: **reliable
+  fail** (3 of 3) or **borderline** (2 of 3), labelled as such; one that fails only on its own seed is dropped and
+  counted (*"2 apparent failures didn't reproduce"*). Each limit gets a badge for its first failure and its last OK
+  value. The order, while the budget lasts: the hunt's failures first, then the tightest limit's first failure and
+  last OK value, then the other limits the same way, then the inferred cells.
+- **Inferred cells checked:** up to 2 inferred map cells (where the guess is least sure) are run for real. A cell
+  whose run disagrees is corrected: it becomes measured, with its run id, outlined on the card, and the reply says
+  so (*"1 inferred cell was wrong; corrected"*). The honesty line counts the cells checked and how many were wrong.
+- **Ranking:** the failures kept are ranked by how close to normal they are (each condition's share of its range,
+  added in quadrature), and at the same distance the one with fewer conditions comes first. A combination is marked
+  **surprising** only when each condition in it is known to be fine alone on 3 seeds: its value is at or below the
+  condition's last OK value, and that OK value passed on every seed when rechecked (a condition that never broke
+  held at its harsh end). Below limits that weren't rechecked, it is *possibly surprising*, with the reason
+  (*"slope's OK value alone (16.9°) wasn't rechecked"*).
+- **Budget:** whatever the confirmation's share can't fit is listed as *not confirmed (out of budget)* in the
+  honesty line and on the card.
+- **On the card:** the limits table has an *On 3 seeds* badge column; *Failures, closest to normal first* lists each
+  kept failure with its badge, a *surprising* (or dashed *possibly surprising*) tag, its pass count and confidence interval, its run ids and the
+  Hunter's reason; then the Hunter's decisions, what was dropped and what wasn't confirmed.
+
+Found on a 4-wheel rover driving east on Earth sand (quick, rules, 26 of 30 runs): OK at a 22.5° slope (passed on
+3 of 3 seeds) and fell at 26.2° (failed on 3 of 3), with 3 conditions sharing the search, so 4 runs each (a direct
+sweep in 2.5° steps passes at 22.5° and fails from 25°); friction alone and roughness alone never broke. The Hunter found what neither shows alone: slope 21.0° with friction 0.18, and then the milder slope
+18.4° with friction 0.22, both reliable fails on 3 seeds and marked surprising; slope 21.0° with roughness 0.80 held.
+Of the 8 map combinations that ran, 6 failed; the 2 inferred cells that were checked were right.
 
 ### 15. Model support
 
@@ -499,7 +570,7 @@ Without a key, it runs in mock mode.
 
 ### 16. Tests
 
-`python tests/test_pipeline.py` runs 136 offline tests (simulations, the agents with scripted models, uploads and
+`python tests/test_pipeline.py` runs 151 offline tests (simulations, the agents with scripted models, uploads and
 the page's wiring). rasterio is in requirements.txt, so the real-terrain integration test runs too; without it
 that test reports "skip" with the reason.
 
@@ -622,11 +693,26 @@ that test reports "skip" with the reason.
 | `wilson_interval_labels_and_seeded_repeats` | Wilson intervals match known values (3/3 → 44–100%), the reliable pass/borderline/reliable fail labels, a crashed run left out of the count, seed 0 unchanged and seed k adding terrain seed + k, and the start nudge staying within ±1 cm and ±1° and repeating for the same seed |
 | `diagnose_marks_a_verdict_the_seeds_disagree_on_uncertain` | With faked batch results, a cause that passes on one seed and not the other is "uncertain", the conclusion opens "Confirmed: obstacle. Uncertain: slipping (the 2 seeds disagreed).", 8 runs are used (2 reproductions + 3 experiments × 2 seeds; a cause passed on its own, so no follow-up), a model conclusion calling it ruled out is rejected, and the cost is reported |
 | `diagnose_still_runs_a_follow_up_after_three_causes_on_two_seeds` | With faked batch results, after 3 causes on 2 seeds each, two causes that each only partly help are tested together as a follow-up on 2 seeds and confirmed: 2 + 6 + 2 = 10 runs within the 12-rerun budget |
-| `finder_slope_limit_matches_a_direct_sweep_and_the_map_agrees` | On Earth sand the finder's slope bracket overlaps a direct 2.5° sweep's (passes at 22.5°, fails from 25°), within 25 runs and 5 per condition, each run one change; the map's edges agree with phase 1; the honesty line and the rules text's numbers check out |
+| `finder_slope_limit_matches_a_direct_sweep_and_the_map_agrees` | On Earth sand the finder's slope bracket overlaps a direct 2.5° sweep's (passes at 22.5°, fails from 25°), within 30 runs and 5 per condition, each run one change; the map's edges agree with phase 1; the honesty line and the rules text's numbers check out |
 | `finder_budget_explainer_number_check_and_baseline_failure` | With a faked batch runner: a thorough search uses 4 conditions within 60 runs and fills the map; the slope bracket is 1/16 of its range; a scene that already fails stops after 1 run; the number check rejects "fails at 21.0°" and a reply that doesn't start with the tightest limit, retries once and falls back to the rules text |
 | `finder_searches_speed_both_ways_for_legged_and_library_robots` | A walker (and a library robot) gets speed searched faster and slower as one condition with two half-searches of at most 5 runs each, finding both limits; a rover is searched faster only |
 | `finder_searches_gravity_on_any_world_only_when_asked` | On Mars, "where does it break if gravity drops?" searches gravity from 3.71 m/s² and finds its limit; without the word it isn't searched; gravity named only by the model is removed with a note |
 | `finder_inferred_map_cells_are_labelled_counted_and_never_explained_as_measured` | Inferred map cells have no run id while run cells point to phase-2 runs; the counts add up, the honesty line counts the inferred cells, FACTS for the Explainer state only the combinations that ran, and the card labels inferred cells |
+| `hunter_value_past_a_single_limit_is_rejected_with_the_exact_error` | A fake Hunter that sets slope at its single limit is rejected; the retry names the value, the limit and the window; only the corrected combination runs |
+| `hunter_failing_combination_is_confirmed_marked_surprising_and_explained_with_checked_numbers` | A combination that fails although each condition is fine alone is a reliable fail on 3 seeds (seed 0 its own run, seeds 1–2 nudged), marked surprising, shown as Hunter steps, and explained with numbers that pass the check; each limit gets a badge |
+| `failure_that_does_not_reproduce_is_dropped_and_counted` | A failure only on its own seed is dropped and counted in the honesty line and FACTS; one that fails on 2 of 3 seeds is kept as borderline |
+| `hunter_stop_ends_the_hunt_and_hunt_more_runs_one_more_round` | "stop" ends after round 1; "hunt more" runs one more round; the rules stop when nothing combined failed |
+| `hunt_and_confirmation_fit_the_budget_and_say_what_was_not_confirmed` | Quick and thorough stay within 25 and 60 runs; when the search leaves too few runs, what wasn't confirmed is listed in the honesty line |
+| `inferred_map_cell_contradicted_by_a_real_run_is_corrected_and_reported` | An inferred cell a real run contradicts becomes measured with its run id, is counted as wrong and reported as corrected |
+| `failures_are_ranked_simplest_first` | Failures are ranked by distance from normal, fewer conditions first at the same distance |
+| `hunter_reason_must_cite_a_measured_result_not_its_window` | A Hunter reason that only quotes a window is rejected, and the retry says to cite a measured result |
+| `surprising_needs_each_conditions_ok_value_rechecked_on_three_seeds` | A combined failure is surprising only when each condition's OK value passed on 3 seeds; when one fails on other seeds it is possibly surprising, with the reason |
+| `explainer_never_calls_an_edge_the_limit_and_flags_single_run_failures` | FACTS say "last OK" and "first failure" and mark limits not rechecked; the check rejects "a limit of 0.25" and a single-run failure stated as settled, and accepts it said as a single run |
+| `every_phase_gets_a_share_and_the_hunter_decides_while_its_share_lasts` | The quick and thorough shares, with unused runs rolling forward; the Hunter makes the stop decision while runs are left; a spent share ends the hunt as the budget's decision |
+| `confirmation_goes_failures_first_then_the_tightest_limit_then_the_others` | Rechecks run in order: the hunt's failures, the tightest limit's failure and OK value, then the next limit's |
+| `one_message_builds_the_scene_then_runs_the_analysis_it_asks_for` | "... — where does it break?", "... and stress test it", "... then why did it fail?" split into a build and its follow-up; one message builds the course then shows the Envelope; "why" runs the scene first; a model that skips the build is retried, and a missing then is set by the guard |
+| `a_requested_time_limit_is_kept` | "give it 60 seconds" and "for 2 minutes" set the time limit (capped at 120 s) on a new scene or as an edit, and the distance default never replaces it |
+| `default_time_limit_comes_from_the_distance_to_the_goal` | The time limit is distance ÷ nominal speed × 2.5 within 20–120 s, longer for a slower robot, scaled with the design, and set by the slowest robot in a race |
 | `director_plans_find_failures_from_the_cue_phrases` | "where does it break", "find failures", "edge cases", "how robust", "red team", "operating limits" and the chip plan find_failures (only with a robot scene); "thoroughly", "tip over" and named conditions set budget, failure and knobs; a model answer is switched by the guard; a session shows the Envelope card with the obstacle condition, its honesty line and cost |
 | `stress_repeat_shows_pass_rates_and_every_card_shows_its_cost` | "Repeat ×3" after a stress test repeats it (not a rerun of the scene): every row gets 3 seeds with its pass count, interval and label, the explanation counts them, and the report and the turn report 9 runs; the page has a cost line on each analysis card and the uncertain badge |
 | `robustness_decides_the_winner` | A design that passes only 1/3 robustness checks loses to the next-best that passes 3/3; if none holds up, the best is shown as fragile and can still be applied |
@@ -636,7 +722,7 @@ that test reports "skip" with the reason.
 | `stress_test_on_a_race_reports_each_robot` | A race's stress test runs every variation on every robot, reports one cell per robot, and a payload reaches each of them |
 | `race_stress_report_counts_each_robot` | The race stress report counts passes per robot ("Rover: 5/8 · Walker: 2/8") and never marks a row failed because one robot failed |
 | `mock_stress_explainer_reads_each_racer` | The mock stress explanation gives each racer's pass count and its baseline outcome |
-| `mixed_race_time_limit_uses_the_slowest_robot` | A rover and walker race gets the walker's longer time limit, and reruns keep it |
+| `mixed_race_time_limit_uses_the_slowest_robot` | A rover and walker race gets the walker's longer time limit (from the distance), rovers alone a shorter one, and reruns keep it |
 | `crashed_runs_are_a_system_problem_not_physics` | Crashed stress runs are reported as a system problem and left out of the analysis; if all crash, there is no Explainer call |
 | `mock_tips_fit_the_scene` | Mock tips fit the scene: a course suggests wheels or legs, flat ground never "make the slope steeper", a 4-legged walker "use six legs" |
 | `policy_without_default_angles_asks_for_them` | A policy config without default angles gets a question ("robot pose" or "zeros"); the answer fills them from the robot's own pose and a bad answer is refused |
@@ -692,6 +778,7 @@ Things to try:
 | `simgate/agents.py` | Planner, Router, Builder and Explainer, each with a model or mock rules |
 | `simgate/batch.py` | Parallel robot-condition runs and compressed ghost tracks |
 | `simgate/diagnose.py` | Prove why: reproduce a failed run, test single-change hypotheses on 2 seeds, verdicts and conclusion |
+| `simgate/timing.py` | The default time limit: distance to the goal at the robot's measured nominal speed, × 2.5, within 20–120 s |
 | `simgate/finder.py` | Find where it breaks: world conditions searched one at a time, a 4×4 map of the two tightest, the honesty line and the checked Explainer |
 | `simgate/reliability.py` | Honest uncertainty: the same condition on several seeds, Wilson 95% interval, reliable pass / borderline / reliable fail |
 | `simgate/cost.py` | What a request cost: runs, wall time and model calls |

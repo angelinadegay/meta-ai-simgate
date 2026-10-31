@@ -187,6 +187,8 @@ async def _prepare_robot_world(
                     {"robot_id": robot_id, **target},
                     "Assigning the shared goal.",
                 )
+    if plan.duration_s is not None:   # the user's own time limit replaces the one from the distance
+        world.spec.duration_s, world.spec.time_limit_given = plan.duration_s, True
     return world
 
 
@@ -248,6 +250,7 @@ async def _stream_steps(job, director: "Director", parent: str | None = None) ->
         nonlocal parent
         key = (step["agent"], step["tool"])
         model = {"Explainer": "rules" if config.MOCK_MODE else config.PLANNER_MODEL,
+                 "Hunter": "rules" if config.MOCK_MODE else config.PLANNER_MODEL,
                  "Designer": "rules" if config.MOCK_MODE else config.BUILDER_MODEL,
                  "Batch runner": "ProcessPoolExecutor", "Checker": "rules", "Finder": "rules"}.get(step["agent"], "rules")
         if step["status"] == "working":
@@ -589,7 +592,7 @@ def apply_edit(current: SceneSpec, changes: EditChanges) -> World:
         tools.set_goal(world, {"robot_id": "all", **target})
         spec = world.spec
     if changes.duration_s is not None:
-        spec.duration_s = changes.duration_s
+        spec.duration_s, spec.time_limit_given = changes.duration_s, True
     if changes.structure is not None:
         if spec.domain != "structure":
             raise ValueError("structure can only be changed in a structure scene.")
@@ -612,6 +615,8 @@ async def _approval_or_run(
     director: "Director",
     ready_message: str,
 ) -> WorkflowResult:
+    if plan.then is not None and not plan.run_now:   # the session goes straight on to the analysis asked for
+        return world, ready_message
     if not plan.run_now:
         asked = await director._mock_call(
             world,

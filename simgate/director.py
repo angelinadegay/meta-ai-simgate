@@ -25,6 +25,7 @@ class Director:
         self.last_checker_id: str | None = None   # latest Checker hand-off step, parent of any repair
         self.used_rule_planner = False            # the model's plan failed twice; the user is told
         self.guard_notes: list[str] = []          # corrections made to the model's plan from the request's words
+        self.last_plan: Plan | None = None
 
     def plan(self, text: str, world_state: World | SceneSpec | dict[str, Any] | None = None,
              state: Any = None) -> Plan:
@@ -34,9 +35,10 @@ class Director:
             return design
         if (resize := _resize_plan(text, world_state)) is not None:
             return resize
+        # "build X — where does it break?" with no scene yet: build first, then that analysis
+        follow, scene_text = split_follow_up(text) if not _has_robot_scene(world_state) else (None, text)
         if config.MOCK_MODE:
-            return (_analysis_plan(text, world_state, state) or _finder_plan(text, world_state)
-                    or _rule_plan_with_title(text, world_state))
+            return self._guarded_rules(text, scene_text, follow, world_state, state)
 
         messages = [
             {"role": "system", "content": _plan_system()},
@@ -54,6 +56,9 @@ class Director:
             reply = llm.chat(messages, config.PLANNER_MODEL)
             try:
                 plan = Plan.model_validate(llm.extract_json(reply))
+                if follow is not None and plan.workflow not in ("build", "race"):
+                    raise ValueError(f"There is no scene yet: plan the scene with workflow 'build' (or 'race') and put "
+                                     f"\"{follow}\" in then; it runs once the scene is built.")
                 if plan.workflow in ("stress_test", "diagnose", "redesign", "find_failures") and not _has_robot_scene(world_state):
                     raise ValueError(f"workflow {plan.workflow!r} requires an existing robot scene.")
                 if plan.workflow == "edit":
@@ -81,14 +86,28 @@ class Director:
                     plan.constraints = text   # limits are read from the user's own words
                 if plan.workflow in ("diagnose", "redesign"):
                     plan.robot_id = _mentioned_robot(text, world_state) or plan.robot_id
-                return plan
+                _guard_follow_up(plan, follow, self.guard_notes)
+                return _guard_duration(plan, text, world_state, self.guard_notes)
             except (ValueError, TypeError) as exc:
                 last_error = str(exc)
         self.used_rule_planner = True
-        return (_analysis_plan(text, world_state, state) or _finder_plan(text, world_state)
-                or _rule_plan_with_title(text, world_state))
+        return self._guarded_rules(text, scene_text, follow, world_state, state)
 
-    async def execute_plan(self, text: str, current: SceneSpec | None = None, state: Any = None) -> tuple[World, str]:
+    def _guarded_rules(self, text: str, scene_text: str, follow: str | None,
+                       world_state: World | SceneSpec | dict[str, Any] | None, state: Any) -> Plan:
+        """The rules planner, with the same follow-up and time-limit guards as a model plan."""
+        if follow is not None:
+            plan = _rule_plan_with_title(scene_text, world_state)
+        else:
+            plan = (_analysis_plan(text, world_state, state) or _finder_plan(text, world_state)
+                    or _rule_plan_with_title(text, world_state))
+        self.guard_notes = []
+        _guard_follow_up(plan, follow, self.guard_notes)
+        return _guard_duration(plan, text, world_state, self.guard_notes)
+
+    async def execute_plan(self, text: str, current: SceneSpec | None = None, state: Any = None,
+                           given_plan: Plan | None = None) -> tuple[World, str]:
+        """Plan the request (or use ``given_plan``, a follow-up planned earlier) and run its workflow."""
         from . import workflows
 
         self._root_id = self._id()
@@ -106,7 +125,8 @@ class Director:
             ms=0,
         )
         started = time.perf_counter()
-        plan = await asyncio.to_thread(self.plan, text, current, state)
+        plan = given_plan or await asyncio.to_thread(self.plan, text, current, state)
+        self.last_plan = plan
         plan_step = self._id()
         await self._emit_step(
             id=plan_step,
@@ -117,8 +137,10 @@ class Director:
             args={"request": text[:300]},
             thought=plan.summary,
             result=(
+                f"Following up with the {plan.workflow} the request asked for." if given_plan is not None else
                 f"The model's plan failed validation twice; used the rules planner's {plan.workflow} plan."
                 if self.used_rule_planner else f"Validated {plan.workflow} plan."
+                + (f" Then: {plan.then}." if plan.then else "")
             ) + "".join(f" {note}" for note in self.guard_notes),
             status="done",
             ms=round((time.perf_counter() - started) * 1000),
@@ -294,6 +316,11 @@ Guidance:
 - Obstacles for a course use placement "path", listed in the order the user gave them.
 - Only use a preset when the user asks for a real place (a named site such as Gale Crater, "real terrain", NASA
   or HiRISE). For "Mars hills" or "a crater" use terrain_kind and body, with no preset.
+- A request that builds a new scene and also asks one analysis ("... — where does it break?", "... and stress test
+  it", "... then why did it fail?") is a build (or race) with then set to that analysis: find_failures,
+  stress_test or diagnose. Code runs it once the scene is built (diagnose runs the scene first).
+- A time limit the user gives ("give it 60 seconds", "for 2 minutes") goes in duration_s, in seconds (at most 120);
+  in an edit, in changes.duration_s. Otherwise leave it out: code sets it from the distance to the goal.
 
 Short examples:
 Named world plan: {{"workflow":"build","summary":"Rover on Moon craters","world":{{"body":"moon","terrain_kind":"craters"}},"robots":[{{"kind":"rover"}}],"run_now":false}}
@@ -311,6 +338,7 @@ Robot edit plan: {{"workflow":"edit","summary":"Six-wheel rover","changes":{{"ro
   edit, only with numbers the user gave: "make the hill 25 m wide" -> {{"workflow":"edit","summary":"Wider hill","changes":{{"world":{{"size_m":25}}}}}}
 Diagnose plan: {{"workflow":"diagnose","summary":"Why the rover got stuck"}}
 Find failures plan: {{"workflow":"find_failures","summary":"Where the rover breaks","failure":"task","budget":"quick"}}
+Build then analyse plan: {{"workflow":"build","summary":"Rover climbs Mars hills","world":{{"body":"mars","terrain_kind":"hills"}},"robots":[{{"kind":"rover"}}],"goal":{{"place":"highest"}},"duration_s":60,"then":"find_failures","run_now":false}}
 Redesign plan: {{"workflow":"redesign","summary":"A rover that passes the course","constraints":"<the user's limits, in their words>"}}
 Answer plan: {{"workflow":"answer","summary":"What SimGate can do","reply":"You can build robot scenes, compare conditions, race robots, or run stress tests."}}
 
@@ -716,6 +744,90 @@ def _finder_plan(text: str, world_state: World | SceneSpec | dict[str, Any] | No
     return Plan(workflow="find_failures", summary="Where it breaks", robot_id=_mentioned_robot(text, world_state),
                 failure="safety" if _SAFETY.search(source) else "task",
                 budget="thorough" if _THOROUGH.search(source) else "quick", knobs=knobs[:4] or None)
+
+
+_STRESS = re.compile(r"\bstress[- ]?test")
+_FOLLOW_CUES = (("find_failures", _FIND), ("stress_test", _STRESS), ("diagnose", _WHY))
+_FOLLOW_WORDS = {"find_failures": "where it breaks", "stress_test": "a stress test", "diagnose": "why it fails"}
+_SCENE_WORDS = re.compile(r"\b(rovers?|walkers?|g1s?|humanoids?|robots?|hexapods?|quadrupeds?|unitree|terrain|hills?"
+                          r"|craters?|slopes?|course|mars|moon|earth|titan|europa|enceladus|build|create|make|put)\b")
+_TRAILING_JOIN = re.compile(r"(?:[\s,;:—–-]|\band\b|\bthen\b)+$")
+
+
+def split_follow_up(text: str) -> tuple[str | None, str]:
+    """A request that builds a scene and then asks one analysis question ("G1 on Mars hills — where does it break?",
+    "... and stress test it", "... then why did it fail?"): the analysis, and the words that describe the scene.
+    (None, text) when there is no such question, or nothing before it describes a scene."""
+    source = text.lower()
+    found = [(match.start(), workflow) for workflow, cue in _FOLLOW_CUES if (match := cue.search(source))]
+    if not found:
+        return None, text
+    start, workflow = min(found)
+    scene = _TRAILING_JOIN.sub("", text[:start]).strip()
+    if len(scene.split()) < 2 or not _SCENE_WORDS.search(scene.lower()):
+        return None, text
+    return workflow, scene
+
+
+_DURATION = re.compile(r"\b(?:give (?:it|them)|for|within|in|lasting|up to|time limit(?: of)?|runs? for|run it for)\s+"
+                       r"(?:about\s+|up to\s+)?(\d+(?:\.\d+)?)\s*(seconds?|secs?|s|minutes?|mins?)\b")
+MAX_DURATION_S = 120.0
+
+
+def requested_duration(text: str) -> tuple[float | None, str | None]:
+    """A time limit the request gives ("give it 60 seconds", "for 2 minutes"), in seconds, and a note when it had to
+    be capped."""
+    match = _DURATION.search(text.lower())
+    if match is None:
+        return None, None
+    seconds = float(match.group(1)) * (60 if match.group(2).startswith("m") else 1)
+    if seconds <= 0:
+        return None, None
+    if seconds > MAX_DURATION_S:
+        return MAX_DURATION_S, f"Runs are limited to {MAX_DURATION_S:.0f} s, so the time limit is {MAX_DURATION_S:.0f} s."
+    return seconds, None
+
+
+FOLLOW_UP_WORDS = _FOLLOW_WORDS
+
+
+def follow_up_plan(workflow: str, text: str, spec: SceneSpec) -> Plan:
+    """The follow-up's own plan, from the request's words, once the scene exists (no model call)."""
+    if workflow == "find_failures":
+        return _finder_plan(text, spec) or Plan(workflow="find_failures", summary="Where it breaks")
+    return Plan(workflow=workflow, summary="Why it failed", robot_id=_mentioned_robot(text, spec))
+
+
+def _guard_follow_up(plan: Plan, follow: str | None, notes: list[str]) -> None:
+    """then comes from the request's words: set it when the request asks for an analysis after building, clear it
+    when it doesn't."""
+    if follow is not None and plan.workflow in ("build", "race") and plan.domain == "robot_terrain":
+        if plan.then != follow:
+            notes.append(f"You also asked {_FOLLOW_WORDS[follow]}, so that runs once the scene is built.")
+        plan.then = follow
+    elif plan.then is not None:
+        plan.then = None
+
+
+def _guard_duration(plan: Plan, text: str, world_state: World | SceneSpec | dict[str, Any] | None,
+                    notes: list[str]) -> Plan:
+    """A time limit the user gave is kept: on a new scene's plan, or as an edit of the current one."""
+    seconds, note = requested_duration(text)
+    if seconds is None:
+        return plan
+    if note:
+        notes.append(note)
+    if plan.workflow in ("build", "race", "compare", "custom"):
+        if plan.duration_s != seconds:
+            plan.duration_s = seconds
+            notes.append(f"You gave it {seconds:g} s, so that is the time limit.")
+    elif plan.workflow == "edit":
+        plan.changes.duration_s = seconds
+    elif plan.workflow == "answer" and _current_spec(world_state) is not None:
+        plan = Plan(workflow="edit", domain=_current_spec(world_state).domain, summary="New time limit",
+                    changes={"duration_s": seconds})
+        notes.append(f"You gave it {seconds:g} s, so that is the time limit.")
+    return plan
 
 
 _WIDER = re.compile(r"\b(wider|bigger|larger|broader)\b")

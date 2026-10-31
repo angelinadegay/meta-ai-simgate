@@ -9,7 +9,7 @@ from typing import Awaitable, Callable
 from . import agents, cost
 from .backends.base import BuildResult, Check, Simulator, blocking_failures
 from .batch import crash_report, measured
-from .director import Director
+from .director import FOLLOW_UP_WORDS, Director, follow_up_plan
 from .workflows import SessionState
 from .spec import SceneSpec
 
@@ -76,12 +76,14 @@ class Session:
         except Exception as e:  # noqa: BLE001 - show any failure to the user
             await self.emit({"type": "error", "message": f"{type(e).__name__}: {e}"})
 
-    async def make(self, text: str, editing: bool) -> None:
+    async def make(self, text: str, editing: bool, plan=None) -> None:
+        """Plan and carry out one request (``plan``: a follow-up already planned, e.g. after a build)."""
         await self.agent("Director", "working", "Planning the world operations…")
         director = Director(self.emit)
         state = SessionState(simulator=self.sim, build=self.build, checks=list(self.checks), summary=self.last_summary,
                              diagnosis=self.last_diagnosis, redesign=self.last_redesign)
-        world, message = await director.execute_plan(text, self.spec if editing else None, state)
+        world, message = await director.execute_plan(text, self.spec if editing else None, state, plan)
+        follow = director.last_plan.then if director.last_plan is not None and plan is None else None
         if not editing and world.build is None:   # an answer with no scene yet: don't keep an empty one
             await self.agent("Director", "done", "Answered without building a scene.")
             await self.emit({"type": "question", "message": message, "stress_test_available": False})
@@ -121,6 +123,13 @@ class Session:
         if not unchanged:   # an answer or analysis leaves a pending "Run it?" as it was
             self.awaiting_approval = world.question is not None and not blocking_failures(self.checks)
         await self.agent("Director", "done", spec.title + (" — " + " ".join(spec.assumptions) if spec.assumptions else ""))
+        if follow is not None and self.build is not None:
+            if not blocking_failures(self.checks):   # build → (run if needed) → the analysis the request asked for
+                self.awaiting_approval = False
+                await self.emit({"type": "explanation", "message": message})
+                await self._follow_up(follow, text)
+                return
+            message += f" It didn't pass its checks, so I didn't go on to {FOLLOW_UP_WORDS[follow]}."
         if world.run_requested and self.build is not None:
             self.awaiting_approval = False
             await self.emit({"type": "explanation", "message": message})   # a chat line without a Run chip
@@ -132,6 +141,20 @@ class Session:
             "chips": self._next_chips(world.report),
             "stress_test_available": spec.domain == "robot_terrain",
         })
+
+    async def _follow_up(self, workflow: str, text: str) -> None:
+        """The analysis a build request also asked for: a stress test, where it breaks, or why it fails (which needs
+        a run of the scene first)."""
+        if workflow == "stress_test":
+            await self.run_stress(text)
+            return
+        if workflow == "diagnose":
+            await self.run()
+            if SessionState(summary=self.last_summary).failed_robot() is None:
+                await self.emit({"type": "question", "stress_test_available": True,
+                                 "message": "It reached the goal, so there is no failure to explain."})
+                return
+        await self.make(text, editing=True, plan=follow_up_plan(workflow, text, self.spec))
 
     def _next_chips(self, report: dict | None) -> list[str] | None:
         """After a diagnosis or redesign, offer the next step instead of "Run"."""
