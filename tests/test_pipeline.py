@@ -2630,7 +2630,8 @@ def test_finder_budget_explainer_number_check_and_baseline_failure():
 
     # the limit sentences are written in code; the Explainer only interprets them, with numbers from FACTS
     limits = finder.limit_sentences(quick)
-    assert limits.startswith(f"Slope: OK at {slope['shown']['last_ok']}, got stuck at {slope['shown']['first_fail']} (")
+    assert limits.startswith(f"Slope: reliably OK at {slope['shown']['last_ok']} (3/3); "
+                             f"fails at {slope['shown']['first_fail']} (3/3).")
     right = f"Slope matters most here; both limits held up when rechecked on {finder.CONFIRM_SEEDS} seeds."
     wrong = "Slope matters most: it fails at 21.0° on this sand."
     repeats = f"Slope matters most, failing at {slope['shown']['first_fail']}."
@@ -2851,7 +2852,7 @@ def test_hunter_failing_combination_is_confirmed_marked_surprising_and_explained
     assert "although each was fine on its own" in text and number_problems(text, report) == []
     assert "failed on 3 of 3 seeds" in facts_text(report)
     page = (Path(__file__).resolve().parent.parent / "static" / "vendor" / "index.html").read_text(encoding="utf-8")
-    for needed in ('"surprising", "tag surprising"', "Failures, closest to normal first", "seedsCell(limit.confirm)",
+    for needed in ('"surprising", "tag surprising"', "Failures, closest to normal first", "bands.reliable_ok",
                    "didn't reproduce: "):
         assert needed in page, needed
 
@@ -2922,7 +2923,9 @@ def test_hunt_and_confirmation_fit_the_budget_and_say_what_was_not_confirmed():
         finder.BUDGETS.update(budgets)
     assert tight["runs"] <= 13 and tight["unconfirmed"]
     assert "not confirmed (out of budget): " in tight["honesty"]
-    assert any(not limit["never_broke"] and "confirm" not in limit for limit in tight["limits"])   # shown "not confirmed"
+    assert any(not limit["never_broke"]
+               and limit.get("confirm", {}).get("step_down", {}).get("status") == "not_found_within_budget"
+               for limit in tight["limits"])
 
 
 def test_inferred_map_cell_contradicted_by_a_real_run_is_corrected_and_reported():
@@ -3003,7 +3006,8 @@ def test_surprising_needs_each_conditions_ok_value_rechecked_on_three_seeds():
     assert slope["confirm"]["ok_at"]["label"] != "reliable pass"
     maybe = [f for f in unsure["failures"] if f["kind"] == "combined" and "slope_deg" in f["values"]]
     assert maybe and not any(f["surprising"] for f in maybe)
-    assert all(f["surprise_note"].startswith("Possibly surprising, but slope's OK value alone") for f in maybe)
+    assert all(f["surprise_note"].startswith("Possibly surprising, but ") and "reliable OK" in f["surprise_note"]
+               for f in maybe)
     page = (Path(__file__).resolve().parent.parent / "static" / "vendor" / "index.html").read_text(encoding="utf-8")
     assert '"possibly surprising", "tag maybe-surprising"' in page
 
@@ -3017,10 +3021,10 @@ def test_limit_sentences_come_from_a_template_and_the_explainer_only_interprets(
     friction.pop("confirm", None)   # as when the budget ran out before friction was rechecked
     text = limit_sentences(report)
     sure = slope["confirm"]
-    assert (f"Slope: OK at {slope['shown']['last_ok']}, got stuck at {slope['shown']['first_fail']} (rechecked on 3 "
-            f"seeds: OK {sure['ok_at']['passed']}/3, failed {3 - sure['fails_at']['passed']}/3).") in text
-    assert (f"Friction: OK at {friction['shown']['last_ok']}, got stuck at {friction['shown']['first_fail']} "
-            "(single runs, not rechecked).") in text
+    assert f"reliably OK at {slope['shown']['last_ok']} (3/3)" in text
+    assert f"fails at {slope['shown']['first_fail']} (3/3)" in text
+    assert f"reliably OK at {friction['shown']['last_ok']} (3/3)" in text
+    assert f"fails at {friction['shown']['first_fail']} (3/3)" in text
     assert "Sideways push (at 2.0 s, for 0.3 s): never broke, up to 80 N (a single run)." in text
     assert text.index("Slope:") < text.index("Friction:")   # tightest first
     assert "ALREADY WRITTEN" in facts_text(report) and "push (at 2.0 s, for 0.3 s)" in facts_text(report)
@@ -3031,6 +3035,14 @@ def test_limit_sentences_come_from_a_template_and_the_explainer_only_interprets(
     assert number_problems(f"Friction has a limit of {friction['shown']['last_ok']}.", report) == [
         f"It repeats {friction['shown']['last_ok']}, a limit value the sentences before it already state."]
     assert explain(report, []).startswith(text)   # mock mode: the template, then the rules' interpretation
+
+
+def test_envelope_table_renders_reliable_unreliable_and_fail_bands():
+    from pathlib import Path
+
+    page = (Path(__file__).resolve().parent.parent / "static" / "vendor" / "index.html").read_text(encoding="utf-8")
+    assert '["Condition", "Now", "Reliable OK", "Unreliable", "Fails at", "±", "How"]' in page
+    assert "bands.reliable_ok" in page and "bands.unreliable" in page and "bands.fails" in page
 
 
 def test_every_phase_gets_a_share_and_the_hunter_decides_while_its_share_lasts():
@@ -3165,6 +3177,75 @@ def test_quick_confirmation_reserves_seed_runs_for_all_limit_boundaries():
     ))[:2]
     assert confirmed_combos == [combo["run"] for combo in nearest for _ in range(2)]
     assert len(report["unconfirmed"]) == 6
+
+
+def test_unreliable_last_ok_gets_bands_and_midpoint_step_down():
+    from simgate import finder
+
+    def run_confirmation(available):
+        spec = _hunter_world()
+        base = {"slope_deg": 0.0}
+        evidence = [
+            {"id": "fail-at", "broke": True, "failure": "fell", "change": {"slope_deg": 16.0},
+             "knob": "slope_deg", "value": 16.0},
+            {"id": "ok-at", "broke": False, "failure": None, "change": {"slope_deg": 12.0},
+             "knob": "slope_deg", "value": 12.0},
+        ]
+
+        class FakeRunner:
+            left = available
+            robot_id = "r1"
+            scene = spec
+
+            def __init__(self):
+                self.evidence = evidence
+                self.jobs = []
+
+            def run(self, jobs):
+                self.jobs.extend(jobs)
+                results = []
+                for index, (setting, _) in enumerate(jobs):
+                    if setting.get("step_down"):
+                        broke = False
+                    else:
+                        broke = True
+                    results.append({"id": f"confirm-{len(self.evidence) + index + 1}",
+                                    **({"confirms": setting["confirms"]} if "confirms" in setting else {}),
+                                    "broke": broke, "failure": "fell" if broke else None})
+                return results
+
+        limit = {"knob": "slope_deg", "name": "slope", "baseline": 0.0, "harsh": 30.0,
+                 "last_ok": 12.0, "first_fail": 16.0, "failure": "fell", "never_broke": False,
+                 "step": 4.0, "ok_run": "ok-at", "fail_run": "fail-at",
+                 "shown": {"baseline": "0.0°", "last_ok": "12.0°", "first_fail": "16.0°",
+                           "harsh": "30.0°", "step": "±4.0°"}}
+        report = {"limits": [limit], "hunt": {"results": []}, "map": None, "runs": 2,
+                  "model_calls": [], "unconfirmed": []}
+        runner = FakeRunner()
+        finder.confirm(runner, report, {"base": base}, None)
+        limit["bands"] = finder.limit_bands(limit)
+        return report, runner
+
+    report, runner = run_confirmation(10)
+    limit = report["limits"][0]
+    assert limit["confirm"]["ok_at"]["passed"] == 1 and limit["confirm"]["ok_at"]["total"] == 3
+    assert limit["confirm"]["step_down"]["value"] == 6.0
+    assert limit["confirm"]["step_down"]["passed"] == 3 and limit["confirm"]["step_down"]["total"] == 3
+    assert limit["bands"] == {
+        "reliable_ok": "reliably OK at 6.0° (3/3)",
+        "unreliable": "unreliable at 12.0° (1/3)",
+        "fails": "fails at 16.0° (3/3)",
+    }
+    assert finder.limit_sentences(report).startswith(
+        "Slope: reliably OK at 6.0° (3/3); unreliable at 12.0° (1/3); fails at 16.0° (3/3)."
+    )
+    assert any(setting.get("step_down") == "slope_deg" for setting, _ in runner.jobs)
+
+    limited, _ = run_confirmation(4)   # boundary seeds consume the budget; no three-seed midpoint fits
+    limit = limited["limits"][0]
+    assert limit["confirm"]["step_down"]["status"] == "not_found_within_budget"
+    assert "the reliable limit is below 12.0° (not found within budget)" in finder.limit_sentences(limited)
+    assert limited["unconfirmed"] == ["the reliable limit is below 12.0° (not found within budget)"]
 
 
 def test_one_message_builds_the_scene_then_runs_the_analysis_it_asks_for():

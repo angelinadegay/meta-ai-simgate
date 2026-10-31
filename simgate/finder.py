@@ -875,85 +875,133 @@ def _verdict(rows: list[dict], wanted: str) -> dict:
 def confirm(runner: Runner, report: dict, context: dict, on_step: StepCallback | None) -> None:
     """Re-run every failure found and the phase-1 boundary points on seeds 1 and 2 (seed 0 is the run already made),
     and run up to 2 inferred map cells for real. While the budget lasts, confirm each limit's first failure and last
-    OK value from the tightest first, then Hunter failures closest to normal, then inferred cells."""
+    OK value from the tightest first, then step down unreliable OK points, Hunter failures closest to normal, and
+    inferred cells."""
     evidence = {row["id"]: row for row in runner.evidence}
     base = context["base"]
-    items = []   # (what, the original row, wanted)
+    boundaries = []   # (what, the original row, wanted)
     for limit in report["limits"]:
         if not limit["never_broke"]:
-            items.append(({"kind": "limit", "limit": limit, "side": "fails_at"}, evidence[limit["fail_run"]], "fail"))
+            boundaries.append(({"kind": "limit", "limit": limit, "side": "fails_at"}, evidence[limit["fail_run"]], "fail"))
             if limit["ok_run"] in evidence:
-                items.append(({"kind": "limit", "limit": limit, "side": "ok_at"}, evidence[limit["ok_run"]], "pass"))
-    hunt_failures = sorted(
+                boundaries.append(({"kind": "limit", "limit": limit, "side": "ok_at"}, evidence[limit["ok_run"]], "pass"))
+    hunter_failures = sorted(
         (combo for combo in report["hunt"]["results"] if combo["broke"]),
         key=lambda combo: (distance(combo["values"], base), len(combo["values"]), combo["run"]),
     )
-    for combo in hunt_failures:
-        items.append(({"kind": "combined", "combo": combo}, evidence[combo["run"]], "fail"))
+    hunters = [({"kind": "combined", "combo": combo}, evidence[combo["run"]], "fail")
+               for combo in hunter_failures]
     checks = _inferred_to_check(report.get("map"))
 
-    jobs, planned, unconfirmed, left, rerun = [], [], [], runner.left, set()
-    for item, original, wanted in items + [("check", cell, None) for cell in checks]:
-        if item != "check" and original["id"] in rerun:   # the same run behind two points (the scene as it is)
-            planned.append((item, original, wanted))
-            continue
-        need = 1 if item == "check" else CONFIRM_SEEDS - 1
-        if left < need:
-            unconfirmed.append(item)
-            continue
-        left -= need
-        if item == "check":
-            j, i = original
-            grid = report["map"]
-            variation = {**change(grid["x"]["knob"], grid["x"]["values"][i], context),
-                         **change(grid["y"]["knob"], grid["y"]["values"][j], context)}
-            jobs.append(({"phase": 4, "knob": f"{grid['x']['knob']}+{grid['y']['knob']}", "checks": [j, i],
-                          "value": [grid["x"]["values"][i], grid["y"]["values"][j]]}, variation))
-        else:
-            rerun.add(original["id"])
-            for k in range(1, CONFIRM_SEEDS):
-                jobs.append(({"phase": 4, "knob": original.get("knob"), "value": original.get("value"),
-                              "confirms": original["id"], "seed": k},
-                             reliability.seeded(runner.scene, original["change"], k)))
-        planned.append((item, original, wanted))
-    if jobs:
-        _emit(on_step, "Batch runner", "confirm",
-              f"Confirming {sum(1 for p in planned if p[0] != 'check')} points on {CONFIRM_SEEDS} seeds"
-              + (f" and running {sum(1 for p in planned if p[0] == 'check')} inferred map cells for real" if checks else "") + ".",
-              "", "working")
-    rows = []
-    for start in range(0, len(jobs), CONFIRM_BATCH):
-        rows += runner.run(jobs[start:start + CONFIRM_BATCH])
+    remaining = runner.left
+    rerun: set[str] = set()
+    unconfirmed: list = []
+    confirmed_items: list[tuple[dict, dict, dict]] = []
     by_original: dict[str, list[dict]] = {}
     checked: dict[tuple[int, int], dict] = {}
-    for row in rows:
-        if "confirms" in row:
-            by_original.setdefault(row["confirms"], []).append(row)
-        else:
-            checked[tuple(row["checks"])] = row
+
+    def run_items(items: list[tuple]) -> None:
+        nonlocal remaining
+        jobs, planned = [], []
+        for item, original, wanted in items:
+            if item != "check" and original["id"] in rerun:
+                planned.append((item, original, wanted))
+                continue
+            needed = 1 if item == "check" else CONFIRM_SEEDS - 1
+            if remaining < needed:
+                unconfirmed.append(item)
+                continue
+            remaining -= needed
+            if item == "check":
+                j, i = original
+                grid = report["map"]
+                variation = {**change(grid["x"]["knob"], grid["x"]["values"][i], context),
+                             **change(grid["y"]["knob"], grid["y"]["values"][j], context)}
+                jobs.append(({"phase": 4, "knob": f"{grid['x']['knob']}+{grid['y']['knob']}", "checks": [j, i],
+                              "value": [grid["x"]["values"][i], grid["y"]["values"][j]]}, variation))
+            else:
+                rerun.add(original["id"])
+                for seed in range(1, CONFIRM_SEEDS):
+                    jobs.append(({"phase": 4, "knob": original.get("knob"), "value": original.get("value"),
+                                  "confirms": original["id"], "seed": seed},
+                                 reliability.seeded(runner.scene, original["change"], seed)))
+            planned.append((item, original, wanted))
+        if jobs:
+            _emit(on_step, "Batch runner", "confirm",
+                  f"Confirming {sum(1 for p in planned if p[0] != 'check')} points on {CONFIRM_SEEDS} seeds"
+                  + (f" and running {sum(1 for p in planned if p[0] == 'check')} inferred map cells for real"
+                     if any(p[0] == "check" for p in planned) else "") + ".", "", "working")
+        rows = []
+        for start in range(0, len(jobs), CONFIRM_BATCH):
+            rows.extend(runner.run(jobs[start:start + CONFIRM_BATCH]))
+        for row in rows:
+            if "confirms" in row:
+                by_original.setdefault(row["confirms"], []).append(row)
+            else:
+                checked[tuple(row["checks"])] = row
+        for item, original, wanted in planned:
+            if item == "check":
+                continue
+            verdict = _verdict([original] + by_original.get(original["id"], []), wanted)
+            if item["kind"] == "limit":
+                item["limit"].setdefault("confirm", {})[item["side"]] = verdict
+            confirmed_items.append((item, original, verdict))
+
+    run_items(boundaries)
+
+    for limit in report["limits"]:   # use remaining seeds to step down from an OK point that was unreliable
+        if limit["never_broke"]:
+            continue
+        confirmed_ok = limit.get("confirm", {}).get("ok_at")
+        if _reliable_pass(confirmed_ok):
+            continue
+        knob, baseline, last_ok = limit["knob"], limit["baseline"], limit["last_ok"]
+        lower = round((baseline + last_ok) / 2, 4)
+        shown = show(knob, lower)
+        if abs(lower - baseline) < 1e-9:
+            limit.setdefault("confirm", {})["step_down"] = {
+                "status": "no_lower_point", "value": lower, "shown": shown}
+            continue
+        if remaining < CONFIRM_SEEDS:
+            limit.setdefault("confirm", {})["step_down"] = {
+                "status": "not_found_within_budget", "value": lower, "shown": shown}
+            unconfirmed.append({"kind": "reliable_limit", "limit": limit})
+            continue
+        variation = change(knob, lower, context)
+        jobs = [({"phase": 4, "knob": knob, "value": lower, "step_down": knob, "seed": seed},
+                 reliability.seeded(runner.scene, variation, seed))
+                for seed in range(CONFIRM_SEEDS)]
+        remaining -= len(jobs)
+        _emit(on_step, "Batch runner", "step_down",
+              f"Testing a lower {KNOBS[knob]['name']} point on {CONFIRM_SEEDS} seeds.", "", "working")
+        rows = runner.run(jobs)
+        verdict = _verdict([{"id": row["id"], "broke": row.get("broke")} for row in rows], "pass")
+        point = {"status": "tested", "value": lower, "shown": shown, **verdict}
+        limit.setdefault("confirm", {})["step_down"] = point
+        _emit(on_step, "Batch runner", "step_down", "Rechecking below an unreliable OK point.",
+            f"Lower point {shown}: {verdict['text']}.")
+
+    run_items(hunters + [("check", cell, None) for cell in checks])
 
     failures, dropped = [], []
-    for item, original, wanted in planned:
-        if item == "check":
-            continue
-        verdict = _verdict([original] + by_original.get(original["id"], []), wanted)
+    for item, original, verdict in confirmed_items:
         if item["kind"] == "limit":
-            item["limit"].setdefault("confirm", {})[item["side"]] = verdict
-            if item["side"] == "fails_at":
-                values = {item["limit"]["knob"]: item["limit"]["first_fail"]}
-                entry = {"kind": "single", "values": values, "failure": item["limit"]["failure"], "run": original["id"]}
-            else:
+            if item["side"] != "fails_at":
                 continue
+            values = {item["limit"]["knob"]: item["limit"]["first_fail"]}
+            entry = {"kind": "single", "values": values, "failure": item["limit"]["failure"], "run": original["id"]}
         else:
-            c = item["combo"]
-            entry = {"kind": "combined", "values": c["values"], "failure": c["failure"], "run": c["run"],
-                     "reason": c["reason"], "round": c["round"]}
+            combo = item["combo"]
+            entry = {"kind": "combined", "values": combo["values"], "failure": combo["failure"], "run": combo["run"],
+                     "reason": combo["reason"], "round": combo["round"]}
         entry.update(text=combo_text(entry["values"]), distance=distance(entry["values"], base), confirm=verdict)
         (dropped if verdict["label"] == "didn't reproduce" else failures).append(entry)
     for entry in failures + dropped:   # once every limit has its badges
         entry["surprising"], entry["surprise_note"] = surprise(entry, report["limits"])
     report["failures"] = rank([f for f in failures if f["confirm"]["label"] in ("reliable fail", "borderline")])
     report["dropped"] = dropped
+    for limit in report["limits"]:
+        limit["bands"] = limit_bands(limit)
     report["unconfirmed"] = [_unconfirmed_text(item) for item in unconfirmed] + \
                             [f"{f['text']} (its other seeds crashed)" for f in failures if f["confirm"]["label"] == "not confirmed"]
 
@@ -972,26 +1020,88 @@ def confirm(runner: Runner, report: dict, context: dict, on_step: StepCallback |
     _emit(on_step, "Finder", "confirm", "Keeping only what reproduces.", confirm_text(report) or "Nothing to confirm.")
 
 
+def _reliable_pass(verdict: dict | None) -> bool:
+    return bool(verdict and verdict.get("passed") == CONFIRM_SEEDS and verdict.get("total") == CONFIRM_SEEDS)
+
+
+def limit_bands(limit: dict) -> dict[str, str]:
+    """Code-built reliability bands for the card and the sentence before model interpretation."""
+    if limit["never_broke"]:
+        return {"reliable_ok": "not established", "unreliable": f"no failure at {limit['shown']['harsh']} (one run)",
+                "fails": "not found"}
+
+    confirm = limit.get("confirm", {})
+    ok = confirm.get("ok_at")
+    step_down = confirm.get("step_down")
+    fail = confirm.get("fails_at")
+    reliable_point = None
+    unreliable_points = []
+
+    if _reliable_pass(ok):
+        reliable_point = {"shown": limit["shown"]["last_ok"], "passed": ok["passed"], "total": ok["total"]}
+    elif ok is not None:
+        unreliable_points.append(
+            f"unreliable at {limit['shown']['last_ok']} ({ok['passed']}/{ok['total']})"
+            if ok.get("total") else f"unreliable at {limit['shown']['last_ok']} (not tested)"
+        )
+
+    if step_down is not None and step_down.get("status") == "tested":
+        if _reliable_pass(step_down):
+            reliable_point = {"shown": step_down["shown"], "passed": step_down["passed"],
+                              "total": step_down["total"]}
+        else:
+            unreliable_points.append(f"unreliable at {step_down['shown']} ({step_down['passed']}/{step_down['total']})")
+
+    if reliable_point is not None:
+        reliable_text = f"reliably OK at {reliable_point['shown']} ({reliable_point['passed']}/{reliable_point['total']})"
+    elif step_down is not None and step_down.get("status") == "not_found_within_budget":
+        reliable_text = f"the reliable limit is below {limit['shown']['last_ok']} (not found within budget)"
+    elif step_down is not None and step_down.get("status") == "no_lower_point":
+        reliable_text = f"no lower point than {limit['shown']['last_ok']} is available above the baseline"
+    elif step_down is not None and step_down.get("status") == "tested":
+        reliable_text = f"no reliable OK point found at {step_down['shown']} ({step_down['passed']}/{step_down['total']})"
+    elif ok is not None:
+        reliable_text = f"the reliable limit is below {limit['shown']['last_ok']} (not found within budget)"
+    else:
+        reliable_text = "no reliable OK point established"
+
+    if fail is None:
+        fail_text = f"failure at {limit['shown']['first_fail']} not confirmed"
+    else:
+        failed = fail["total"] - fail["passed"]
+        count = "3/3" if failed == fail["total"] == CONFIRM_SEEDS else f"{failed}/{fail['total']} seeds"
+        fail_text = f"fails at {limit['shown']['first_fail']} ({count})"
+    return {"reliable_ok": reliable_text, "unreliable": "; ".join(unreliable_points) or "—", "fails": fail_text}
+
+
+def reliable_ok_point(limit: dict) -> dict | None:
+    """The strongest observed point that passed on all 3 seeds, if one is known."""
+    if limit["never_broke"]:
+        return None   # the harsh end was run once, not confirmed
+    confirm = limit.get("confirm", {})
+    if _reliable_pass(confirm.get("ok_at")):
+        return {"value": limit["last_ok"], "shown": limit["shown"]["last_ok"],
+                "passed": confirm["ok_at"]["passed"], "total": confirm["ok_at"]["total"]}
+    if _reliable_pass(confirm.get("step_down")):
+        point = confirm["step_down"]
+        return {"value": point["value"], "shown": point["shown"],
+                "passed": point["passed"], "total": point["total"]}
+    return None
+
+
 def surprise(entry: dict, limits: list[dict]) -> tuple[bool, str | None]:
-    """A combined failure is surprising when each condition in it is fine alone, and that is known on 3 seeds: its
-    value is at or below the condition's last OK value, and that OK value passed on every seed when rechecked (a
-    condition that never broke held at the harsh end). Below single-seed limits only, it is a possible surprise, with
-    the reason it isn't confirmed."""
+    """A combined failure is surprising only when every condition has a reliable 3/3 OK point at or beyond it."""
     if entry["kind"] != "combined" or not below_limits(entry["values"], limits):
         return False, None
     by_knob = {limit["knob"]: limit for limit in limits}
     unsure = []
     for knob, value in entry["values"].items():
         limit = by_knob[knob]
-        if limit["never_broke"]:
-            continue
-        ok = limit.get("confirm", {}).get("ok_at")
-        if harshness(knob, value, limit["baseline"]) > harshness(knob, limit["last_ok"], limit["baseline"]) + 1e-9:
-            unsure.append(f"{limit['name']} {show(knob, value)} is past its last OK value alone")
-        elif ok is None:
-            unsure.append(f"{limit['name']}'s OK value alone ({limit['shown']['last_ok']}) wasn't rechecked")
-        elif ok["label"] != "reliable pass":
-            unsure.append(f"{limit['name']}'s OK value alone ({limit['shown']['last_ok']}) {ok['text']}")
+        point = reliable_ok_point(limit)
+        if point is None:
+            unsure.append(f"{limit['name']} has no reliable OK value confirmed")
+        elif harshness(knob, value, limit["baseline"]) > harshness(knob, point["value"], limit["baseline"]) + 1e-9:
+            unsure.append(f"{limit['name']} {show(knob, value)} is past its reliable OK value ({point['shown']})")
     if unsure:
         return False, "Possibly surprising, but " + "; ".join(unsure) + "."
     return True, None
@@ -1010,6 +1120,9 @@ def _inferred_to_check(grid: dict | None) -> list[tuple[int, int]]:
 def _unconfirmed_text(item) -> str:
     if item == "check":
         return "an inferred map cell"
+    if item["kind"] == "reliable_limit":
+        limit = item["limit"]
+        return f"the reliable limit is below {limit['shown']['last_ok']} (not found within budget)"
     if item["kind"] == "combined":
         return f"{combo_text(item['combo']['values'])} (failed once)"
     limit = item["limit"]
@@ -1081,8 +1194,7 @@ def _push_note(report: dict) -> str:
 
 
 def limit_sentences(report: dict) -> str:
-    """The limits, written in code from one template, tightest first: "Sideways push (at 2.0 s, for 0.3 s): OK at
-    30 N, fell at 40 N (single runs, not rechecked)." The Explainer only writes what follows."""
+    """Reliability bands written in code, tightest first; the Explainer only adds interpretation."""
     sentences = []
     for limit in report["limits"]:
         shown = limit["shown"]
@@ -1090,14 +1202,13 @@ def limit_sentences(report: dict) -> str:
         if limit["never_broke"]:
             sentences.append(f"{name}: never broke, up to {shown['harsh']} (a single run).")
             continue
-        confirm = limit.get("confirm", {})
-        fail, ok = confirm.get("fails_at"), confirm.get("ok_at")
-        if fail is None:
-            sure = "single runs, not rechecked"
-        else:
-            sure = (f"rechecked on {CONFIRM_SEEDS} seeds: " + (f"OK {ok['passed']}/{ok['total']}, " if ok else "")
-                    + f"failed {fail['total'] - fail['passed']}/{fail['total']}" + ("" if ok else "; the OK value a single run"))
-        sentences.append(f"{name}: OK at {shown['last_ok']}, {limit['failure']} at {shown['first_fail']} ({sure}).")
+        bands = limit.get("bands") or limit_bands(limit)
+        text = [bands["reliable_ok"]]
+        if bands["unreliable"] != "—":
+            text.append(bands["unreliable"])
+        if bands["fails"] != "—":
+            text.append(bands["fails"])
+        sentences.append(f"{name}: " + "; ".join(text) + ".")
     return " ".join(sentences)
 
 
@@ -1109,8 +1220,10 @@ def facts_text(report: dict) -> str:
         if limit["never_broke"]:
             lines.append(f"- {name} (now {shown['baseline']}): never broke up to {shown['harsh']}")
         else:
-            lines.append(f"- {name} (now {shown['baseline']}): last OK at {shown['last_ok']}, first failure at "
-                         f"{shown['first_fail']} ({limit['failure']}), accurate to {shown['step']}; {_rechecked(limit)}")
+            bands = limit.get("bands") or limit_bands(limit)
+            lines.append(f"- {name} (now {shown['baseline']}): search bracket precision {shown['step']}; "
+                         + "; ".join(value for value in (bands["reliable_ok"], bands["unreliable"], bands["fails"])
+                                      if value != "—"))
     for f in report.get("failures") or []:   # confirmed only: what didn't reproduce is counted, not described
         if f["kind"] == "combined":
             lines.append(f"- together: {f['text']} failed ({f['failure']})"
@@ -1174,6 +1287,11 @@ def _values(limit: dict, key: str) -> list[float]:
     return [float(limit[key])] + [float(n) for n in _NUMBER.findall(limit["shown"][key])]
 
 
+def _limit_verdicts(limit: dict) -> list[dict]:
+    return [value for value in limit.get("confirm", {}).values()
+            if isinstance(value, dict) and "passed" in value and "total" in value]
+
+
 def allowed_numbers(report: dict) -> list[float]:
     """Every number the envelope states: values in their own units and as shown (percentages), steps, counts."""
     numbers = [float(report["runs"]), float(GRID), float(GRID * GRID), TIPPED_DEG, float(len(report["limits"]))]
@@ -1185,13 +1303,17 @@ def allowed_numbers(report: dict) -> list[float]:
                 numbers.append(float(limit[key]))
         for shown in limit["shown"].values():
             numbers += [float(n) for n in _NUMBER.findall(shown)]
+        if (step_down := limit.get("confirm", {}).get("step_down")) is not None:
+            if step_down.get("value") is not None:
+                numbers.append(float(step_down["value"]))
+            numbers += [float(n) for n in _NUMBER.findall(step_down.get("shown", ""))]
     if (grid := report.get("map")) is not None:   # measured counts only: the inferred ones are not facts to state
         numbers += [float(grid["counts"][key]) for key in ("run", "pass", "fail")]
         for axis in (grid["x"], grid["y"]):
             numbers += [float(n) for shown in axis["shown"] for n in _NUMBER.findall(shown)]
         numbers += [float(grid["checked"]["checked"]), float(grid["checked"]["wrong"])]
     # the confirmation: seeds, counts, and each confirmed failure's values and seed counts
-    verdicts = [verdict for limit in report["limits"] for verdict in limit.get("confirm", {}).values()]
+    verdicts = [verdict for limit in report["limits"] for verdict in _limit_verdicts(limit)]
     numbers += [float(CONFIRM_SEEDS), float(len(report.get("failures") or [])), float(len(report.get("dropped") or [])),
                 float(len(report.get("unconfirmed") or []))]
     for f in report.get("failures") or []:
@@ -1209,8 +1331,11 @@ def number_problems(text: str, report: dict) -> list[str]:
     allowed = allowed_numbers(report)
     edges = [value for limit in report["limits"] if not limit["never_broke"]
              for key in ("last_ok", "first_fail") for value in _values(limit, key)]
+    edges += [float(step_down["value"]) for limit in report["limits"]
+              if (step_down := limit.get("confirm", {}).get("step_down")) is not None
+              and step_down.get("value") is not None]
     # a number that is also a count, or a value of a combined failure (one may sit at a last OK value), may be said
-    verdicts = [v for limit in report["limits"] for v in limit.get("confirm", {}).values()] + \
+    verdicts = [v for limit in report["limits"] for v in _limit_verdicts(limit)] + \
                [f["confirm"] for f in report.get("failures") or []]
     other = [float(report["runs"]), float(CONFIRM_SEEDS), float(GRID), float(GRID * GRID), float(len(report["limits"])),
              float(len(report.get("failures") or [])), float(len(report.get("dropped") or []))]

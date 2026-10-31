@@ -546,19 +546,21 @@ design, until one robot fails, and report where. No earlier run is needed.
   `reliability`'s seeds: seed 0 is the run already made (the simulation is deterministic), seeds 1 and 2 change the
   terrain randomness and nudge the start by ±1 cm and ±1°. A failure is kept only when it reproduces: **reliable
   fail** (3 of 3) or **borderline** (2 of 3), labelled as such; one that fails only on its own seed is dropped and
-  counted (*"2 apparent failures didn't reproduce"*). Each limit gets a badge for its first failure and its last OK
-  value. The order, while the budget lasts: each limit's first failure and last OK value from the tightest first,
-  then Hunter failures closest to normal, then the inferred cells. Remaining Hunter failures are listed as
+  counted (*"2 apparent failures didn't reproduce"*). Each limit shows three bands: reliably OK (3/3), unreliable,
+  and fails, each with its seed count. If the last-OK point isn't reliable, the search checks one midpoint between it
+  and the scene's baseline on 3 seeds; limits are stepped down from the tightest first. If no confirmation runs are
+  left, the sentence says *"the reliable limit is below Y (not found within budget)"*. The order, while the budget
+  lasts: each limit's first failure and last OK value from the tightest first, step-down points for unreliable OK
+  values, Hunter failures closest to normal, then inferred cells. Remaining Hunter failures are listed as
   unconfirmed when the budget runs out.
 - **Inferred cells checked:** up to 2 inferred map cells (where the guess is least sure) are run for real. A cell
   whose run disagrees is corrected: it becomes measured, with its run id, outlined on the card, and the reply says
   so (*"1 inferred cell was wrong; corrected"*). The honesty line counts the cells checked and how many were wrong.
 - **Ranking:** the failures kept are ranked by how close to normal they are (each condition's share of its range,
   added in quadrature), and at the same distance the one with fewer conditions comes first. A combination is marked
-  **surprising** only when each condition in it is known to be fine alone on 3 seeds: its value is at or below the
-  condition's last OK value, and that OK value passed on every seed when rechecked (a condition that never broke
-  held at its harsh end). Below limits that weren't rechecked, it is *possibly surprising*, with the reason
-  (*"slope's OK value alone (16.9°) wasn't rechecked"*).
+  **surprising** only when each condition in it is at or below a known reliable OK point (passed on 3 of 3 seeds).
+  A one-run "never broke" result is not a reliable OK point. When a condition's reliable OK value is unknown, the
+  combination is *possibly surprising*, with the reason shown.
 - **Budget:** whatever the confirmation's share can't fit is listed as *not confirmed (out of budget)* in the
   honesty line and on the card.
 - **On the card:** the limits table has an *On 3 seeds* badge column; *Failures, closest to normal first* lists each
