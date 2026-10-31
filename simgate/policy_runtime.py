@@ -25,7 +25,9 @@ class InferenceModel(Protocol):
 class _OnnxModel:
     def __init__(self, path: Path, recurrent_state_size: int | None) -> None:
         ort = importlib.import_module("onnxruntime")
-        self.session = ort.InferenceSession(str(path), providers=["CPUExecutionProvider"])
+        options = ort.SessionOptions()   # a small policy network: one thread, no thread pool to wake each step
+        options.intra_op_num_threads = options.inter_op_num_threads = 1
+        self.session = ort.InferenceSession(str(path), sess_options=options, providers=["CPUExecutionProvider"])
         inputs, outputs = self.session.get_inputs(), self.session.get_outputs()
         is_recurrent = recurrent_state_size is not None
         expected_count = 3 if is_recurrent else 1

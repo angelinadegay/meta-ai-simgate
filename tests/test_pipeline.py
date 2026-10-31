@@ -2095,8 +2095,8 @@ def test_crashed_runs_are_a_system_problem_not_physics():
     real = batch.run_batch
 
     def crashing(which):
-        def run(spec, variations, on_result=None, timeout=batch.RUN_TIMEOUT_SECONDS, baseline=True):
-            results = real(spec, variations, None, timeout, baseline)
+        def run(spec, variations, on_result=None, timeout=batch.RUN_TIMEOUT_SECONDS, baseline=True, record=True):
+            results = real(spec, variations, None, timeout, baseline, record)
             for index, result in enumerate(results):
                 if which(index, result):
                     results[index] = batch._result_error(index, result["label"], result["changes"], "RuntimeError: boom")
@@ -2462,7 +2462,7 @@ def test_diagnose_marks_a_verdict_the_seeds_disagree_on_uncertain():
     outcomes = {"Experiment 1": (True, True), "Experiment 2": (True, False), "Experiment 3": (False, False)}
     batches = []
 
-    def fake_batch(spec, variations, on_result=None, timeout=None, baseline=True):
+    def fake_batch(spec, variations, on_result=None, timeout=None, baseline=True, record=True):
         batches.append([v["label"] for v in variations])
         rows = [result("Baseline", False, 8.0)] if baseline else []
         for variation in variations:
@@ -2511,7 +2511,7 @@ def test_diagnose_still_runs_a_follow_up_after_three_causes_on_two_seeds():
 
     batches = []
 
-    def fake_batch(spec, variations, on_result=None, timeout=None, baseline=True):
+    def fake_batch(spec, variations, on_result=None, timeout=None, baseline=True, record=True):
         batches.append(len(variations) + int(baseline))
         return ([result({}, 8.0)] if baseline else []) + [result(v, distance(v)) for v in variations]
 
@@ -2545,7 +2545,7 @@ def sandy_ramp():
 def test_finder_slope_limit_matches_a_direct_sweep_and_the_map_agrees():
     from simgate.batch import run_batch
     from simgate.diagnose import robot_metrics
-    from simgate.finder import BUDGETS, SEARCH_RUNS, _from_search, number_problems, find_failures
+    from simgate.finder import BUDGETS, SEARCH_RUNS, _from_search, find_failures, limit_sentences, number_problems
 
     spec = sandy_ramp()
     report = find_failures(spec, knobs=["slope_deg", "friction"])
@@ -2579,14 +2579,15 @@ def test_finder_slope_limit_matches_a_direct_sweep_and_the_map_agrees():
     assert report["honesty"].startswith(f"{report['runs']} runs, limits accurate to one search step (")
     assert (f"simulation only (search on one seed; one robot judged; {grid['inferred']} of 16 map cells inferred, not run). "
             "Confirmation: ") in report["honesty"]
-    assert number_problems(report["explanation"], report) == []   # the rules text passes its own check
+    assert report["explanation"].startswith(limit_sentences(report))   # the limits in code, then the interpretation
+    assert number_problems(report["explanation"][len(limit_sentences(report)):], report) == []
 
 
 def _fake_finder_batch(breaks):
     """A batch runner whose robot fails when breaks(variation) is true (and reaches the goal otherwise)."""
     seen = []
 
-    def fake(spec, variations, on_result=None, timeout=None, baseline=True):
+    def fake(spec, variations, on_result=None, timeout=None, baseline=True, record=True):
         seen.append(len(variations) + int(baseline))
         rows = []
         for variation in ([{}] if baseline else []) + list(variations):
@@ -2620,13 +2621,16 @@ def test_finder_budget_explainer_number_check_and_baseline_failure():
     assert slope["knob"] == "slope_deg" and slope["last_ok"] <= 17 < slope["first_fail"] and slope["step"] <= 30 / 16
     assert already["runs"] == 1 and already["limits"] == [] and "already fails as it is" in already["explanation"]
 
-    right = (f"The tightest limit is slope: it was OK at {slope['shown']['last_ok']} and failed at "
-             f"{slope['shown']['first_fail']}. Friction failed at {quick['limits'][1]['shown']['first_fail']}.")
-    wrong = "The tightest limit is slope: it fails at 21.0° on this sand."
-    late = f"Friction matters most. Slope failed at {slope['shown']['first_fail']}."
+    # the limit sentences are written in code; the Explainer only interprets them, with numbers from FACTS
+    limits = finder.limit_sentences(quick)
+    assert limits.startswith(f"Slope: OK at {slope['shown']['last_ok']}, got stuck at {slope['shown']['first_fail']} (")
+    right = f"Slope matters most here; both limits held up when rechecked on {finder.CONFIRM_SEEDS} seeds."
+    wrong = "Slope matters most: it fails at 21.0° on this sand."
+    repeats = f"Slope matters most, failing at {slope['shown']['first_fail']}."
     assert finder.number_problems(right, quick) == []
     assert finder.number_problems(wrong, quick) == ["It states 21.0, which isn't a number in FACTS."]
-    assert finder.number_problems(late, quick) == ["It doesn't start with the tightest limit, slope."]
+    assert finder.number_problems(repeats, quick) == [
+        f"It repeats {slope['shown']['first_fail'].rstrip('°')}, a limit value the sentences before it already state."]
 
     def explained(replies):
         chat, calls = scripted_models({"search found where a robot starts to fail": list(replies)})
@@ -2637,11 +2641,11 @@ def test_finder_budget_explainer_number_check_and_baseline_failure():
         finally:
             config.MOCK_MODE, llm.chat = original_mock, original_chat
 
-    text, calls = explained([wrong, right])   # a wrong limit: one retry naming the number, then the corrected text
-    assert text == right and "It states 21.0, which isn't a number in FACTS." in calls[-1][2][-1]["content"]
-    assert "FACTS" in calls[0][2][1]["content"] and slope["shown"]["first_fail"] in calls[0][2][1]["content"]
-    text, calls = explained([wrong, late])   # wrong twice: the rules text
-    assert len(calls) == 2 and text == finder.rules_text(quick)
+    text, calls = explained([wrong, right])   # a wrong number: one retry naming it, then the corrected text
+    assert text == f"{limits} {right}" and "It states 21.0, which isn't a number in FACTS." in calls[-1][2][-1]["content"]
+    assert "FACTS" in calls[0][2][1]["content"] and "ALREADY WRITTEN" in calls[0][2][1]["content"]
+    text, calls = explained([wrong, repeats])   # wrong twice: the rules' interpretation
+    assert len(calls) == 2 and text == f"{limits} {finder.rules_text(quick)}"
 
 
 def _run_finder(spec, breaks, **kwargs):
@@ -2715,7 +2719,7 @@ def test_finder_searches_gravity_on_any_world_only_when_asked():
 
 
 def test_finder_inferred_map_cells_are_labelled_counted_and_never_explained_as_measured():
-    from simgate.finder import GRID, facts_text, number_problems
+    from simgate.finder import GRID, facts_text, limit_sentences, number_problems
 
     spec = SceneSpec(domain="robot_terrain", terrain=Terrain(kind="flat", roughness=0), robot=Robot(kind="rover"),
                      mission=Mission(goal_place="east")).fill_defaults()
@@ -2735,8 +2739,9 @@ def test_finder_inferred_map_cells_are_labelled_counted_and_never_explained_as_m
 
     facts = facts_text(report)   # the Explainer sees only what ran
     assert f"{len(ran)} combinations run, {grid['counts']['pass']} passed, {grid['counts']['fail']} failed" in facts
-    assert "inferred" not in facts and "16" not in facts.split("changed together")[1]
-    assert number_problems(report["explanation"], report) == [] and "inferred" not in report["explanation"]
+    assert "inferred" not in facts and "16" not in facts.split("changed together")[1].split("ALREADY WRITTEN")[0]
+    interpretation = report["explanation"][len(limit_sentences(report)):]
+    assert number_problems(interpretation, report) == [] and "inferred" not in report["explanation"]
     page =(Path(__file__).resolve().parent.parent / "static" / "vendor" / "index.html").read_text(encoding="utf-8")
     assert "`${mark} inferred`" in page and "cell.run ? `${mark} ${cell.run}`" in page
 
@@ -2898,8 +2903,17 @@ def test_hunt_and_confirmation_fit_the_budget_and_say_what_was_not_confirmed():
     for budget in ("quick", "thorough"):
         report = _run_finder(walker, everything, knobs=["slope_deg", "friction", "speed"], budget=budget)
         assert report["runs"] == len(report["evidence"]) <= BUDGETS[budget], (budget, report["runs"])
-    tight = _run_finder(walker, everything, knobs=["slope_deg", "friction", "speed"])   # 4 searches leave 4 runs
-    assert tight["runs"] <= 30 and tight["unconfirmed"]
+    from simgate import finder
+
+    shares, budgets = dict(finder.SHARES["quick"]), dict(finder.BUDGETS)
+    try:   # a confirmation share too small for everything found
+        finder.SHARES["quick"].update(search=9, map=0, hunt=2, confirm=2)
+        finder.BUDGETS["quick"] = 13
+        tight = _run_finder(walker, everything, knobs=["slope_deg", "friction", "speed"])
+    finally:
+        finder.SHARES["quick"].update(shares)
+        finder.BUDGETS.update(budgets)
+    assert tight["runs"] <= 13 and tight["unconfirmed"]
     assert "not confirmed (out of budget): " in tight["honesty"]
     assert any(not limit["never_broke"] and "confirm" not in limit for limit in tight["limits"])   # shown "not confirmed"
 
@@ -2987,31 +3001,29 @@ def test_surprising_needs_each_conditions_ok_value_rechecked_on_three_seeds():
     assert '"possibly surprising", "tag maybe-surprising"' in page
 
 
-def test_explainer_never_calls_an_edge_the_limit_and_flags_single_run_failures():
-    from simgate.finder import EXPLAINER_SYSTEM, facts_text, number_problems, rules_text
+def test_limit_sentences_come_from_a_template_and_the_explainer_only_interprets():
+    from simgate.finder import EXPLAINER_SYSTEM, explain, facts_text, limit_sentences, number_problems
 
-    report = _run_finder(_hunter_world(), _alone, knobs=["slope_deg", "friction"])
+    report = _run_finder(_hunter_world(), _alone, knobs=["slope_deg", "friction", "push_n"])
     limits = {limit["knob"]: limit for limit in report["limits"]}
     slope, friction = limits["slope_deg"], limits["friction"]
     friction.pop("confirm", None)   # as when the budget ran out before friction was rechecked
-    facts = facts_text(report)
-    assert f"last OK at {slope['shown']['last_ok']}, first failure at {slope['shown']['first_fail']}" in facts
-    assert "friction" in facts and "from one run each, not rechecked" in facts.split("- friction")[1].split("\n")[0]
-    assert "never call either value" in EXPLAINER_SYSTEM and "single run" in EXPLAINER_SYSTEM
+    text = limit_sentences(report)
+    sure = slope["confirm"]
+    assert (f"Slope: OK at {slope['shown']['last_ok']}, got stuck at {slope['shown']['first_fail']} (rechecked on 3 "
+            f"seeds: OK {sure['ok_at']['passed']}/3, failed {3 - sure['fails_at']['passed']}/3).") in text
+    assert (f"Friction: OK at {friction['shown']['last_ok']}, got stuck at {friction['shown']['first_fail']} "
+            "(single runs, not rechecked).") in text
+    assert "Sideways push (at 2.0 s, for 0.3 s): never broke, up to 80 N (a single run)." in text
+    assert text.index("Slope:") < text.index("Friction:")   # tightest first
+    assert "ALREADY WRITTEN" in facts_text(report) and "push (at 2.0 s, for 0.3 s)" in facts_text(report)
+    assert "Do not repeat the limit values" in EXPLAINER_SYSTEM
 
-    start = f"The tightest limit is slope: OK at {slope['shown']['last_ok']}, failing at {slope['shown']['first_fail']}."
-    called_limit = start + f" Friction has a limit of {friction['shown']['last_ok']}."
-    assert f"It calls {friction['shown']['last_ok']} a limit; a limit lies between the last OK value and the first "            "failure." in number_problems(called_limit, report)
-    reached = start + f" The friction limit is reached at {friction['shown']['first_fail']} in a single run."
-    assert number_problems(reached, report) == [f"It calls {friction['shown']['first_fail']} a limit; a limit lies "
-                                                "between the last OK value and the first failure."]
-    settled = start + f" Friction failed at {friction['shown']['first_fail']}."
-    hedged = start + f" Friction failed at {friction['shown']['first_fail']} in a single run."
-    assert number_problems(settled, report) == [f"It states the friction failure at {friction['shown']['first_fail']} "
-                                                "without saying it comes from a single run (not rechecked)."]
-    assert number_problems(hedged, report) == []
-    text = rules_text(report)
-    assert "in a single run (not rechecked)" in text and number_problems(text, report) == []
+    # the interpretation: numbers from FACTS only, and never a limit value again (the sentences state them)
+    assert number_problems(f"Slope matters most; it held up on {3} seeds.", report) == []
+    assert number_problems(f"Friction has a limit of {friction['shown']['last_ok']}.", report) == [
+        f"It repeats {friction['shown']['last_ok']}, a limit value the sentences before it already state."]
+    assert explain(report, []).startswith(text)   # mock mode: the template, then the rules' interpretation
 
 
 def test_every_phase_gets_a_share_and_the_hunter_decides_while_its_share_lasts():
@@ -3034,7 +3046,7 @@ def test_every_phase_gets_a_share_and_the_hunter_decides_while_its_share_lasts()
         assert sum(1 for row in report["evidence"] if row["phase"] in (0, 1)) <= SHARES[budget]["search"]
 
     def proposals(knobs, messages=None):
-        return {"combinations": [{"values": {"slope_deg": round(knobs["slope_deg"]["low"] + k * 0.1, 3),
+        return {"combinations": [{"values": {"slope_deg": (knobs["slope_deg"]["low"], knobs["slope_deg"]["high"])[k],
                                              "friction": _window_middle(knobs, "friction")},
                                   "reason": f"slope fails alone at {knobs['slope_deg']['fail']}"} for k in range(2)]}
 
@@ -3160,6 +3172,134 @@ def test_default_time_limit_comes_from_the_distance_to_the_goal():
                      robots=[RobotEntry(id="r1", label="Rover", robot=Robot(kind="rover"), goal_place="east"),
                              RobotEntry(id="r2", label="Walker", robot=Robot(kind="walker"), goal_place="east")]).fill_defaults()
     assert "(Walker is the slowest to its goal)" in " ".join(race.assumptions)
+
+
+def _g1(**fields):
+    from simgate.library import LibraryRegistry
+
+    policy = LibraryRegistry().compatible_policies("g1")[0].id
+    return SceneSpec(domain="robot_terrain", terrain=Terrain(kind="flat", roughness=0, size_m=20),
+                     robot=Robot(kind="library", robot_id="g1", policy_id=policy),
+                     mission=Mission(goal_xy=[6.0, 0.0]), **fields).fill_defaults()
+
+
+def test_runs_stop_once_the_outcome_is_decided_and_batches_keep_no_frames():
+    from simgate.backends.mujoco_backend import PUSH_AT_S, STUCK_MOVE_M, STUCK_WINDOW_S
+    from simgate.batch import run_batch
+    from simgate.spec import Disturbance
+
+    def summary(spec, record):
+        sim = agents.route(spec)
+        frames = sum(len(chunk) for chunk in sim.run(spec, sim.build(spec, view=record), record=record))
+        return sim.summary(), frames
+
+    stuck = SceneSpec(domain="robot_terrain", terrain=Terrain(kind="flat", roughness=0), robot=Robot(kind="rover"),
+                      obstacles=[Obstacle(kind="step", height_m=0.15)]).fill_defaults()
+    m, frames = summary(stuck, False)
+    assert m["outcome"] == "stuck" and m["stopped_early"]["reason"] == "stuck" and frames == 0
+    assert m["stopped_early"]["at_s"] < m["stopped_early"]["planned_s"] == stuck.duration_s
+    assert (STUCK_WINDOW_S, STUCK_MOVE_M) == (3.0, 0.1)
+    recorded, frames = summary(stuck, True)   # recorded: the same outcome, and frames for the viewer
+    assert recorded["outcome"] == "stuck" and frames > 0
+
+    m, _ = summary(_g1(), False)
+    assert m["outcome"] == "reached" and m["stopped_early"]["reason"] == "reached"
+    pushed, _ = summary(_g1(disturbance=Disturbance(push_n=80)), False)   # the push comes 2 s in, once it walks
+    assert pushed["push_at_s"] == PUSH_AT_S == 2.0 and pushed["outcome"] == "fell"
+    assert pushed["stopped_early"]["reason"] == "fell" and pushed["stopped_early"]["at_s"] < 10
+
+    row = run_batch(stuck, [{"label": "same", "seed": stuck.terrain.seed}], baseline=False, record=False)[0]
+    assert row["ghost"] is None and row["ghost_status"].startswith("not recorded")
+    assert row["summary"]["stopped_making_progress_at_s"] == round(row["summary"]["stopped_early"]["at_s"] - 3.0, 2)
+
+
+def test_batch_workers_reuse_one_pool_one_thread_each_and_build_without_the_view():
+    import os
+
+    from simgate import batch
+    from simgate.policy_runtime import PROJECT_ROOT, _OnnxModel
+
+    assert batch.WORKERS == max(1, (os.cpu_count() or 1) - 1)
+    spec = SceneSpec(domain="robot_terrain", terrain=Terrain(kind="flat", roughness=0), robot=Robot(kind="rover"),
+                     mission=Mission(goal_place="east")).fill_defaults()
+    batch.run_batch(spec, [{"label": "a", "seed": spec.terrain.seed}], baseline=False, record=False)
+    pool = batch._pool
+    batch.run_batch(spec, [{"label": "b", "seed": spec.terrain.seed}], baseline=False, record=False)
+    assert pool is not None and batch._pool is pool   # kept between batches
+    assert all(os.environ.get(name) == "1" for name in batch.ONE_THREAD)   # inherited by the workers
+
+    from simgate.library import LibraryRegistry
+
+    card = LibraryRegistry().policy(LibraryRegistry().compatible_policies("g1")[0].id)
+    model = _OnnxModel((PROJECT_ROOT / str(card.file)).resolve(), card.recurrent_state_size)
+    options = model.session.get_session_options()
+    assert options.intra_op_num_threads == options.inter_op_num_threads == 1
+
+    g1 = _g1()
+    sim = agents.route(g1)
+    full, bare = sim.build(g1), sim.build(g1, view=False)
+    assert bare.code == full.code and "mesh_assets" in full.scene and "mesh_assets" not in bare.scene
+    assert bare.scene["mission"] == full.scene["mission"] and bare.scene["course"] == full.scene["course"]
+
+
+def test_quick_searches_three_conditions_and_gives_the_tightest_the_extra_runs():
+    from simgate.finder import SEARCH_RUNS
+
+    def three(v):   # slope breaks at 17° (57% of its range), push at 50 N (63%), friction below 0.3 (75%)
+        return _alone(v) or v.get("push_n", 0) > 50
+
+    named = _run_finder(_hunter_world(), three, knobs=["slope_deg", "friction", "push_n", "payload"])
+    assert len(named["knobs"]) == 3 and "4 conditions" not in " ".join(named["notes"])   # quick: at most 3
+    limits = {limit["knob"]: limit for limit in named["limits"]}
+    tight = named["limits"][0]
+    assert tight["knob"] == "slope_deg" and tight["runs"] == SEARCH_RUNS
+    assert all(limit["runs"] <= tight["runs"] and limit["step"] >= 0 for limit in named["limits"])
+    assert limits["slope_deg"]["step"] / 30 <= min(l["step"] / abs(l["harsh"] - l["baseline"]) for l in named["limits"])
+    page = (Path(__file__).resolve().parent.parent / "static" / "vendor" / "index.html").read_text(encoding="utf-8")
+    assert '"±"' in page and 'textEl("td", limit.shown.step)' in page
+
+
+def test_hunter_proposals_must_spread_out_and_the_rules_spread_too():
+    from simgate.finder import hunt_ranges, most_tested, parse_hunt, rules_hunt, spread_problems, too_close
+
+    report = _run_finder(_hunter_world(), lambda v: _alone(v) or v.get("push_n", 0) > 50,
+                         knobs=["slope_deg", "friction", "push_n"])
+    ranges = hunt_ranges(report["limits"])
+    assert set(ranges) == {"slope_deg", "friction", "push_n"}
+    window = {k: r["window"] for k, r in ranges.items()}
+    mid = {k: (lo + hi) / 2 for k, (lo, hi) in window.items()}
+    reason = f"slope fails alone at {ranges['slope_deg']['limit']['first_fail']}"
+    near = {"slope_deg": mid["slope_deg"] + 0.05 * (window["slope_deg"][1] - window["slope_deg"][0]),
+            "friction": mid["friction"]}
+    one = {"values": {"slope_deg": mid["slope_deg"], "friction": mid["friction"]}, "reason": reason}
+    assert too_close(one["values"], near, ranges) and not too_close(one["values"], {**near, "slope_deg": window["slope_deg"][1]}, ranges)
+
+    evidence = [ranges["slope_deg"]["limit"]["first_fail"]]
+    twins = {"combinations": [one, {"values": near, "reason": reason}]}
+    try:
+        parse_hunt(twins, ranges, 6, evidence, False)
+        raise AssertionError("a duplicate was accepted")
+    except ValueError as exc:
+        assert "Combination 2 is a duplicate of combination 1" in str(exc)
+
+    tried = [one["values"]] * 4   # slope and friction tested most: at least half must use something else
+    lopsided = {"combinations": [{"values": {"slope_deg": window["slope_deg"][0], "friction": window["friction"][1]},
+                                  "reason": reason},
+                                 {"values": {"slope_deg": window["slope_deg"][1], "friction": window["friction"][0]},
+                                  "reason": reason},
+                                 {"values": {"slope_deg": mid["slope_deg"], "push_n": mid["push_n"]}, "reason": reason}]}
+    try:
+        parse_hunt(lopsided, ranges, 6, evidence, False, tried)
+        raise AssertionError("the most tested pair took most proposals")
+    except ValueError as exc:
+        assert "At least 2 of the 3 proposals must use other conditions than friction and slope_deg" in str(exc)
+    assert most_tested(tried, ranges) == (frozenset({"slope_deg", "friction"}), 4)
+
+    rules = rules_hunt(ranges, 6, tried=tried)
+    assert rules and spread_problems(rules, ranges, tried) == []   # the rules keep the same spread
+    assert sum(frozenset(c["values"]) != frozenset({"slope_deg", "friction"}) for c in rules) * 2 >= len(rules)
+    first_round = [{"values": c["values"]} for c in report["hunt"]["results"] if c["round"] == 1]
+    assert first_round and spread_problems(first_round, ranges, []) == []   # what the rules actually ran
 
 
 def test_director_plans_find_failures_from_the_cue_phrases():

@@ -1,7 +1,9 @@
 """MuJoCo backend: robots on generated terrain."""
+import hashlib
 import json
 import math
 import xml.etree.ElementTree as ET
+from collections import deque
 from functools import lru_cache
 from pathlib import Path
 from typing import Iterator
@@ -291,6 +293,49 @@ SLIP_SPEED = 0.3         # m/s: touching point faster than this = sliding. The w
 FALL_TILT_DEG = 45.0     # tilt where a fall "starts" (used for its direction)
 FLIP_TILT_DEG = 100.0    # tilt that counts as tipped over
 HUMANOID_FLIP_TILT_DEG = 60.0   # a fallen humanoid lies near 80-90°, below FLIP_TILT_DEG; walking it stays under ~15°
+# A run stops once its outcome is decided: it reached the goal, fell (past 60° for a second, or past its own flip
+# tilt), or is stuck (moved less than 0.1 m in 3 s). A recorded run keeps going a moment so the viewer sees it.
+TIPPED_DEG, TIPPED_HOLD_S = 60.0, 1.0
+STUCK_WINDOW_S, STUCK_MOVE_M = 3.0, 0.1
+SHOW_AFTER_S = 1.5        # recorded runs: how long to keep showing a decided run
+PUSH_AT_S = 2.0           # the sideways push comes 2 s after the robot starts moving, once it is in its gait
+
+
+def push_time(spec: SceneSpec) -> float:
+    """When the push starts, in seconds after the robot starts moving (0 without a push)."""
+    if spec.disturbance is None:
+        return 0.0
+    return max(0.0, min(PUSH_AT_S, spec.duration_s - spec.disturbance.duration_s))
+
+
+class Outcome:
+    """Watches one robot for the moment its outcome is decided."""
+
+    def __init__(self) -> None:
+        self.tipped_since: float | None = None
+        self.window: deque = deque()
+        self.decided: dict | None = None
+
+    def tipped(self, tilt: float, t: float) -> float | None:
+        """When a tilt past 60° began, once it has lasted a second (it has fallen); else None."""
+        if tilt <= TIPPED_DEG:
+            self.tipped_since = None
+            return None
+        self.tipped_since = t if self.tipped_since is None else self.tipped_since
+        return self.tipped_since if t - self.tipped_since >= TIPPED_HOLD_S else None
+
+    def update(self, t: float, xy: np.ndarray, reached_at: float | None, fell: bool) -> None:
+        self.window.append((t, xy))
+        while len(self.window) > 1 and self.window[1][0] <= t - STUCK_WINDOW_S:
+            self.window.popleft()
+        if self.decided is not None:
+            return
+        if reached_at is not None:
+            self.decided = {"reason": "reached", "at_s": round(t, 2)}
+        elif fell:
+            self.decided = {"reason": "fell", "at_s": round(t, 2)}
+        elif self.window[0][0] <= t - STUCK_WINDOW_S and float(np.linalg.norm(xy - self.window[0][1])) < STUCK_MOVE_M:
+            self.decided = {"reason": "stuck", "at_s": round(t, 2)}
 
 
 def flip_tilt_deg(rb) -> float:
@@ -559,6 +604,22 @@ def sliding_contacts(model, data, parts: set[int], ground: set[int], speeds: lis
         touching += 1
         sliding += int(speed > SLIP_SPEED)
     return touching, sliding
+
+
+_SIMPLIFIED: dict[tuple, dict] = {}   # the same robot mesh, simplified once per process
+
+
+def _simplified(vertices: np.ndarray, faces: np.ndarray, target_vertices: int) -> dict:
+    """A mesh simplified for the browser, as lists; cached by its exact contents."""
+    key = (hashlib.sha1(vertices.tobytes() + faces.tobytes()).hexdigest(), target_vertices)
+    if key not in _SIMPLIFIED:
+        if len(_SIMPLIFIED) > 512:
+            _SIMPLIFIED.clear()
+        small_vertices, small_faces = _decimate_mesh(vertices, faces, target_vertices)
+        _SIMPLIFIED[key] = {"vertices": np.round(small_vertices, 3).reshape(-1).tolist(),
+                            "faces": small_faces.reshape(-1).tolist()}
+    cached = _SIMPLIFIED[key]
+    return {"vertices": list(cached["vertices"]), "faces": list(cached["faces"])}
 
 
 def _decimate_mesh(
@@ -933,15 +994,21 @@ class MuJoCoSimulator(Simulator):
 </mujoco>'''
         return xml, H, zmax
 
-    def build(self, spec: SceneSpec, code: str | None = None) -> BuildResult:
+    def build(self, spec: SceneSpec, code: str | None = None, view: bool = True) -> BuildResult:
+        """The scene's MJCF and, with ``view``, what the browser draws (geoms, terrain, simplified meshes). A batch
+        run is never drawn, so it builds without the view: simplifying a library robot's meshes is most of a
+        build."""
         template_xml, _, _ = self.template(spec)      # also resolves the start and goal
         xml = template_xml if code is None else code
         model = _model_from_xml(xml)                  # raises with a readable error if invalid
-        fixed_event = {"type": "scene", "code": xml, "language": self.language}
-        scene_budget = SCENE_EVENT_BUDGET_BYTES - len(json.dumps(fixed_event).encode("utf-8")) - 1024
-        if scene_budget <= 0:
-            raise ValueError("MuJoCo scene code exceeds the 5 MB event payload budget.")
-        scene = self._scene(model, spec, scene_budget)
+        if view:
+            fixed_event = {"type": "scene", "code": xml, "language": self.language}
+            scene_budget = SCENE_EVENT_BUDGET_BYTES - len(json.dumps(fixed_event).encode("utf-8")) - 1024
+            if scene_budget <= 0:
+                raise ValueError("MuJoCo scene code exceeds the 5 MB event payload budget.")
+            scene = self._scene(model, spec, scene_budget)
+        else:
+            scene = {"backend": self.name, "kind": "mujoco"}
         scene["mission"] = self.mission
         scene["terrain_size_m"] = spec.terrain.size_m
         scene["course"] = [vars(p) for p in self.course]
@@ -963,6 +1030,8 @@ class MuJoCoSimulator(Simulator):
             scene["robots"] = self.robot_entries
             scene["follow_geom"] = self.robot_entries[spec.robots[0].id]["follow_geom"]
             scene["robot_root_body"] = self.robot_entries[spec.robots[0].id]["root_body"]
+        if not view:
+            return BuildResult(code=xml, language=self.language, scene=scene)
         event_size = len(
             json.dumps(
                 {"type": "scene", "scene": scene, "code": xml, "language": self.language}
@@ -1047,15 +1116,9 @@ class MuJoCoSimulator(Simulator):
             face_count = int(model.mesh_facenum[mesh_id])
             vertices = model.mesh_vert[vert_start : vert_start + vertex_count].astype(np.float64)
             faces = model.mesh_face[face_start : face_start + face_count].astype(np.int32)
-            vertices, faces = _decimate_mesh(
-                vertices,
-                faces,
-                max(4, int(vertex_count * ratio)),
-            )
             meshes[str(mesh_id)] = {
                 "name": mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_MESH, mesh_id) or "",
-                "vertices": np.round(vertices, 3).reshape(-1).tolist(),
-                "faces": faces.reshape(-1).tolist(),
+                **_simplified(vertices, faces, max(4, int(vertex_count * ratio))),
             }
         return meshes
 
@@ -1420,7 +1483,7 @@ class MuJoCoSimulator(Simulator):
         ))
         return checks
 
-    def _run_multi(self, spec: SceneSpec, build: BuildResult, chunk_frames: int) -> Iterator[list[dict]]:
+    def _run_multi(self, spec: SceneSpec, build: BuildResult, chunk_frames: int, record: bool = True) -> Iterator[list[dict]]:
         model, data = self._make(build)
         mujoco.mj_forward(model, data)
         states = self._multi_states(spec, model, data)
@@ -1437,8 +1500,9 @@ class MuJoCoSimulator(Simulator):
         steps_per_frame = max(1, int(round(1.0 / (FPS * model.opt.timestep))))
         n_frames = int(spec.duration_s * FPS)
         settle_s = 0.5
-        push_start = max(0.0, (spec.duration_s - spec.disturbance.duration_s) / 2) if spec.disturbance else 0.0
+        push_start = push_time(spec)
         settled = False
+        watches, stopped = {robot_id: Outcome() for robot_id in states}, None
         for frame in range(n_frames):
             for _ in range(steps_per_frame):
                 active_time = data.time - settle_s
@@ -1467,6 +1531,9 @@ class MuJoCoSimulator(Simulator):
                 state["max_tilt"] = max(state["max_tilt"], tilt)
                 if tilt >= state["flip_tilt"] and state["flipped_at"] is None:
                     state["flipped_at"] = round(data.time - settle_s, 2)
+                watch = next(w for robot_id, w in watches.items() if states[robot_id] is state)
+                if settled and (tipped := watch.tipped(tilt, data.time - settle_s)) is not None and state["flipped_at"] is None:
+                    state["flipped_at"] = round(tipped, 2)       # past 60° for a second: it has fallen
                 xy = data.xpos[root][:2].copy()
                 if state["last_xy"] is not None:
                     state["path_len"] += float(np.linalg.norm(xy - state["last_xy"]))
@@ -1476,12 +1543,22 @@ class MuJoCoSimulator(Simulator):
                     distance = float(np.linalg.norm(nav.goal - xy))
                     state["distances"].append((round(data.time - settle_s, 2), distance, xy.copy()))
                 state["track"].update(data, xy, data.time - settle_s, state["flipped_at"] is not None)
-            frames.append({"t": round(frame / FPS, 3), "poses": self._poses(model, data)})
-            if len(frames) >= chunk_frames:
-                yield frames
-                frames = []
+                if settled:
+                    watch.update(data.time - settle_s, xy, state["navigator"].reached_at, state["flipped_at"] is not None)
+            if record:
+                frames.append({"t": round(frame / FPS, 3), "poses": self._poses(model, data)})
+                if len(frames) >= chunk_frames:
+                    yield frames
+                    frames = []
+            if settled and frame < n_frames - 1 and all(w.decided is not None for w in watches.values()):
+                last = max(w.decided["at_s"] for w in watches.values())   # every robot's outcome is decided
+                if not record or frame / FPS - last >= SHOW_AFTER_S:
+                    stopped = {"reason": "every robot decided", "at_s": last, "planned_s": spec.duration_s,
+                               "robots": {robot_id: w.decided["reason"] for robot_id, w in watches.items()}}
+                    break
         if frames:
             yield frames
+        self._multi_stopped = stopped
 
         per_robot = {}
         for robot_id, state in states.items():
@@ -1560,11 +1637,16 @@ class MuJoCoSimulator(Simulator):
             "robots": per_robot,
             "leaderboard": leaderboard,
             "robot_contacts": len(cross_pairs),
+            "stopped_early": self._multi_stopped,
+            **({"push_n": spec.disturbance.push_n, "push_at_s": push_time(spec),
+                "push_duration_s": spec.disturbance.duration_s} if spec.disturbance else {}),
         }
 
-    def run(self, spec: SceneSpec, build: BuildResult, chunk_frames: int = 30) -> Iterator[list[dict]]:
+    def run(self, spec: SceneSpec, build: BuildResult, chunk_frames: int = 30, record: bool = True) -> Iterator[list[dict]]:
+        """Simulate, yielding chunks of frames when ``record`` (a batch run that only needs the summary doesn't
+        record any: its replay re-simulates it with the same seed). Stops once the outcome is decided."""
         if len(spec.robots) > 1:
-            yield from self._run_multi(spec, build, chunk_frames)
+            yield from self._run_multi(spec, build, chunk_frames, record)
             return
         model, data = self._make(build)
         rover = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "rover")
@@ -1595,7 +1677,8 @@ class MuJoCoSimulator(Simulator):
         dist_log: list[tuple[float, float, np.ndarray]] = []    # (time, distance to goal, position) once per frame
         path_len, last_xy = 0.0, None
         settled = False
-        push_start = max(0.0, (spec.duration_s - spec.disturbance.duration_s) / 2) if spec.disturbance else 0.0
+        push_start = push_time(spec)
+        watch, stopped = Outcome(), None
         for f in range(n_frames):
             for s in range(steps_per_frame):
                 turn, go = 0.0, 1.0
@@ -1663,19 +1746,25 @@ class MuJoCoSimulator(Simulator):
                     fall_started_at, fall_dir, fall_ground = None, None, None    # it recovered; forget that wobble
                 if tilt > flip_tilt and flipped_at is None:
                     flipped_at = t_now
+                if (tipped := watch.tipped(tilt, t_now)) is not None and flipped_at is None:
+                    flipped_at = tipped                      # past 60° for a second: it has fallen
                 xy = np.array([x, y])
                 track.update(data, xy, t_now, fallen=fall_started_at is not None or flipped_at is not None)
+                watch.update(t_now, xy, nav.reached_at, flipped_at is not None)
                 if last_xy is not None:
                     path_len += float(np.linalg.norm(xy - last_xy))
                 last_xy = xy
                 if nav.goal is not None:
                     dist_log.append((t_now, float(np.linalg.norm(nav.goal - xy)), xy))
-            frames.append({"t": round(f / FPS, 3), "poses": self._poses(model, data)})
-            if len(frames) >= chunk_frames:
-                yield frames
-                frames = []
-            if nav.reached_at is not None and data.time - settle_s > nav.reached_at + 1.5:
-                break                                    # arrived and settled: no need to keep simulating
+            if record:
+                frames.append({"t": round(f / FPS, 3), "poses": self._poses(model, data)})
+                if len(frames) >= chunk_frames:
+                    yield frames
+                    frames = []
+            if watch.decided is not None and f < n_frames - 1 and \
+                    (not record or f / FPS - watch.decided["at_s"] >= SHOW_AFTER_S):
+                stopped = {**watch.decided, "planned_s": spec.duration_s}
+                break                                    # the outcome is decided: no need to keep simulating
         if frames:
             yield frames
 
@@ -1722,6 +1811,9 @@ class MuJoCoSimulator(Simulator):
             "typical_contact_slide_speed_m_s": round(float(np.median(slide_speeds)), 2) if slide_speeds else None,
             "unstable": instability_count(data) > 0,
             "left_terrain": self._summary_left_terrain,
+            "stopped_early": stopped,
+            **({"push_n": spec.disturbance.push_n, "push_at_s": push_time(spec),
+                "push_duration_s": spec.disturbance.duration_s} if spec.disturbance else {}),
             "tilt_trace": tilt_log[::step][:10] + ([tilt_log[-1]] if tilt_log and tilt_log[-1] not in tilt_log[::step][:10] else []),
             **self._mission_summary(nav, dist_log, path_len, flipped_at, start),
             **track.summary(spec, nav.reached_at is not None),

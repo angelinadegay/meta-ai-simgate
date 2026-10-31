@@ -182,8 +182,11 @@ steps in the event tree.
   steep ground.
 - Results show whether it reached the goal and how the run ended (reached, fell, stuck, out of time or went off
   the edge), plus time to the goal, closest and final distance, path length and path efficiency.
-- The path is drawn on the terrain: green if the robot arrived, red if it didn't. A run stops 1.5 s after the
-  robot arrives.
+- The path is drawn on the terrain: green if the robot arrived, red if it didn't.
+- **A run stops once its outcome is decided:** it reached the goal, fell (past 60° for a second, or past its own
+  flip tilt), or is stuck (moved less than 0.1 m in 3 s). The summary marks it (`stopped_early`: the reason, when,
+  and the time limit it had); a run you watch keeps going 1.5 s more so you see it happen. A race stops when every
+  robot's outcome is decided.
 
 ### 6. Obstacle courses
 
@@ -332,7 +335,8 @@ draft was used; the checks are what keep a wrong draft out of the Library.
   obstacle scale (when obstacles exist), lateral push and terrain seed. Surface changes reset friction
   to the surface preset. Gravity changes the gravity value directly and does not change the body/world,
   including for real terrain. Payload mass is added to the robot's mass (not for library robots such as the G1, whose trained policy
-  expects its exact body); a push lasts 0.3 seconds near the middle of the run.
+  expects its exact body); a push lasts 0.3 seconds and comes 2 s after the robot starts moving, once it is in its
+  gait (the run summary gives `push_at_s`).
 - A run passes if it reaches its goal. Without a goal, it passes if it stays upright and makes at least
   1 m of forward progress. The report card lists each outcome and measured progress or goal distance,
   maximum tilt and slip, followed by a summary of the pattern across runs.
@@ -341,6 +345,9 @@ draft was used; the checks are what keep a wrong draft out of the Library.
   decimals and compressed, with a 4 MiB ghost-track budget (the complete batch payload stays below
   about 5 MB). Slope, obstacle-scale and seed variations change geometry, so they remain in the report
   but are marked **not in ghost view**. The follow camera tracks the baseline.
+- Only the stress test records ghost tracks, because its ghost view plays them. The other analyses' batches (find
+  where it breaks, diagnose, redesign, repeated seeds) keep no frames and build without the browser view, since
+  nothing draws them: a run is fully described by its scene and seed, so replaying one means simulating it again.
 
 ### 11. Prove why it failed
 
@@ -476,16 +483,17 @@ design, until one robot fails, and report where. No earlier run is needed.
   | obstacle height | the scene's → 2× the robot's measured climb limit | the course has obstacles it could climb |
   | friction | the scene's → 0.1 | always |
   | roughness | the scene's → 1 | the ground isn't flat |
-  | sideways push (mid-run) | 0 → 80 N | always |
+  | sideways push (0.3 s, 2 s after it starts moving) | 0 → 80 N | always |
   | payload | 0 → 50% of the robot's mass | not a library robot (its policy expects its exact body) |
   | gravity | the scene's → 1.62 m/s² | the scene is on Earth, or the request mentions gravity (on any world) |
   | commanded speed | the scene's → +50%, and for walkers and library robots also → −50% (two half-searches of one condition) | always (rovers: faster only) |
 
 - **Phase 1, one change at a time:** every condition is searched at once, in parallel. Each starts at its harsh end;
   if the robot copes there, the condition *never broke*. Otherwise the bracket between the last value that was OK
-  and the first that failed is halved (at most 5 runs per condition, fewer when the search share is split between
-  more conditions: 2 conditions get 5 runs, so the bracket ends 1/16 of the range wide; 3 get 4, so 1/8). The scene as
-  it is runs first; if it already fails there is nothing to search, and the answer says to ask
+  and the first that failed is halved. Every condition gets 2 runs (its harsh end and one halving); then the rest of
+  the search's share goes to the **tightest** first (the one whose bracket is closest to the scene as it is), up to 5
+  runs, so the limit that matters most gets the finest bracket (1/16 of its range), then to the next. Quick searches
+  at most 3 conditions. The card shows each limit's precision (±, one search step). The scene as it is runs first; if it already fails there is nothing to search, and the answer says to ask
   why it failed instead.
 - **Phase 2, a map:** the two conditions whose limits are closest to the scene as it is (as a share of their range)
   are combined on a 4×4 grid reaching just past the limits. The edges come from phase 1; the cells nearest the
@@ -500,14 +508,14 @@ design, until one robot fails, and report where. No earlier run is needed.
   2 inferred cells checked by running them, none wrong."*
 - **Gravity:** a model plan that names gravity when the request doesn't is corrected (with a note), so another
   world keeps its own gravity unless you ask.
-- **Explainer:** 3–5 sentences from FACTS (the limits from the tightest), starting with the tightest limit. FACTS
-  give each condition's *last OK value* and *first failure* (the limit lies between them) and say how sure each is:
-  rechecked on 3 seeds, with its label, or *from one run each, not rechecked*. Code checks every number it states
-  against the envelope, that it starts with the tightest limit, that it never calls a last OK value or a first
-  failure "the limit" (*"It calls 0.25 a limit; a limit lies between the last OK value and the first failure."*),
-  and that a failure that wasn't rechecked is said to come from a single run. One retry with the exact problems,
-  then the rules text, which follows the same rules. Mock mode uses the rules text. The check covers the hunt and
-  confirmation counts too (seeds, failures kept, dropped, cells checked and corrected, points not confirmed).
+- **Limit sentences, then the Explainer:** code writes the limits from one template, tightest first, each saying how
+  sure it is: *"Sideways push (at 2.0 s, for 0.3 s): OK at 30 N, fell at 40 N (single runs, not rechecked)."*,
+  *"Slope: OK at 22.5°, fell at 26.2° (rechecked on 3 seeds: OK 3/3, failed 3/3)."*, *"Friction: never broke, up to
+  0.10 (a single run)."* The Explainer only writes the 1–3 sentences that follow, interpreting them (what matters
+  most, what failed together, how sure it is). It gets FACTS and the sentences already written; code checks every
+  number it states against the envelope and that it doesn't repeat a limit's value (*"It repeats 16.9, a limit value
+  the sentences before it already state."*), with one retry, then the rules' interpretation. No phrase matching is
+  needed: the limits are never in the model's words. Mock mode uses the rules' interpretation.
 
 #### The Hunter and confirmation
 
@@ -526,7 +534,13 @@ design, until one robot fails, and report where. No earlier run is needed.
   round, at most 4 combinations) or **stop**, with a reason; only a spent share ends the hunt without its decision,
   and the card and steps say which happened (*"Budget: the hunt's share ran out"*). The rules: the two most sensitive conditions at 80% of their limits, plus the most sensitive one with a
   push (or the next condition when the push wasn't searched); one more round at 70% when something failed, otherwise
-  stop. Every proposal, its reason and the decision show as steps (*"Hunter: slope 7° and push 12 N are each fine
+  stop. **Proposals must spread out:** one closer than 15% of each condition's window to another proposal, or to a
+  combination already run (measured map cells and earlier hunt runs), is rejected as a duplicate, and at least half
+  of each round's proposals must use other conditions than the pair tested most so far; the retry names which
+  (*"Combination 2 is a duplicate of combination 1"*, *"At least 2 of the 3 proposals must use other conditions
+  than friction and slope_deg, the most tested so far (6 runs)"*). The rules follow the same spread: every pair that
+  can be combined, the most sensitive first, filtered the same way. Every proposal, its reason and the decision show
+  as steps (*"Hunter: slope 7° and push 12 N are each fine
   alone, but both tip it backward; testing them together"*).
 - **Confirmation:** every failure the hunt found and every limit's boundary points are re-run on 3 seeds with
   `reliability`'s seeds: seed 0 is the run already made (the simulation is deterministic), seeds 1 and 2 change the
@@ -570,7 +584,7 @@ Without a key, it runs in mock mode.
 
 ### 16. Tests
 
-`python tests/test_pipeline.py` runs 151 offline tests (simulations, the agents with scripted models, uploads and
+`python tests/test_pipeline.py` runs 155 offline tests (simulations, the agents with scripted models, uploads and
 the page's wiring). rasterio is in requirements.txt, so the real-terrain integration test runs too; without it
 that test reports "skip" with the reason.
 
@@ -707,7 +721,11 @@ that test reports "skip" with the reason.
 | `failures_are_ranked_simplest_first` | Failures are ranked by distance from normal, fewer conditions first at the same distance |
 | `hunter_reason_must_cite_a_measured_result_not_its_window` | A Hunter reason that only quotes a window is rejected, and the retry says to cite a measured result |
 | `surprising_needs_each_conditions_ok_value_rechecked_on_three_seeds` | A combined failure is surprising only when each condition's OK value passed on 3 seeds; when one fails on other seeds it is possibly surprising, with the reason |
-| `explainer_never_calls_an_edge_the_limit_and_flags_single_run_failures` | FACTS say "last OK" and "first failure" and mark limits not rechecked; the check rejects "a limit of 0.25" and a single-run failure stated as settled, and accepts it said as a single run |
+| `limit_sentences_come_from_a_template_and_the_explainer_only_interprets` | The limits are written in code, tightest first, each with how sure it is and the push's timing; the Explainer's interpretation may not repeat a limit's value or state a number not in FACTS |
+| `runs_stop_once_the_outcome_is_decided_and_batches_keep_no_frames` | A rover at a step stops as stuck, the G1 as reached or (pushed 2 s in) fell, each marked in the summary; a batch run keeps no frames, and its stop time still gives when it stopped making progress |
+| `batch_workers_reuse_one_pool_one_thread_each_and_build_without_the_view` | Every core but one, one pool kept between batches, one thread per worker (BLAS/OpenMP and ONNX), and a build without the browser view gives the same MJCF |
+| `quick_searches_three_conditions_and_gives_the_tightest_the_extra_runs` | Quick searches at most 3 named conditions; the tightest gets 5 runs and the finest bracket; the card shows ± |
+| `hunter_proposals_must_spread_out_and_the_rules_spread_too` | A proposal within 15% of each window of another is a duplicate; at least half must avoid the most tested pair; the rules' proposals pass the same check |
 | `every_phase_gets_a_share_and_the_hunter_decides_while_its_share_lasts` | The quick and thorough shares, with unused runs rolling forward; the Hunter makes the stop decision while runs are left; a spent share ends the hunt as the budget's decision |
 | `confirmation_goes_failures_first_then_the_tightest_limit_then_the_others` | Rechecks run in order: the hunt's failures, the tightest limit's failure and OK value, then the next limit's |
 | `one_message_builds_the_scene_then_runs_the_analysis_it_asks_for` | "... — where does it break?", "... and stress test it", "... then why did it fail?" split into a build and its follow-up; one message builds the course then shows the Envelope; "why" runs the scene first; a model that skips the build is retried, and a missing then is set by the guard |
@@ -776,7 +794,7 @@ Things to try:
 | `simgate/spec.py` | The shared scene spec, reference defaults and missions |
 | `simgate/presets.py` | Reference gravity and friction values |
 | `simgate/agents.py` | Planner, Router, Builder and Explainer, each with a model or mock rules |
-| `simgate/batch.py` | Parallel robot-condition runs and compressed ghost tracks |
+| `simgate/batch.py` | Parallel robot-condition runs (one pool kept between batches, a worker per core but one, one thread each) and compressed ghost tracks |
 | `simgate/diagnose.py` | Prove why: reproduce a failed run, test single-change hypotheses on 2 seeds, verdicts and conclusion |
 | `simgate/timing.py` | The default time limit: distance to the goal at the robot's measured nominal speed, × 2.5, within 20–120 s |
 | `simgate/finder.py` | Find where it breaks: world conditions searched one at a time, a 4×4 map of the two tightest, the honesty line and the checked Explainer |

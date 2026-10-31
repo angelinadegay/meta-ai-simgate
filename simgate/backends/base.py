@@ -37,7 +37,7 @@ class Simulator(ABC):
     language: str
 
     @abstractmethod
-    def build(self, spec: SceneSpec, code: str | None = None) -> BuildResult:
+    def build(self, spec: SceneSpec, code: str | None = None, view: bool = True) -> BuildResult:
         """Create the simulation from a spec (or from code an agent wrote)."""
 
     @abstractmethod
@@ -45,7 +45,7 @@ class Simulator(ABC):
         """Physics and sanity checks before results are shown."""
 
     @abstractmethod
-    def run(self, spec: SceneSpec, build: BuildResult, chunk_frames: int = 30) -> Iterator[list[dict]]:
+    def run(self, spec: SceneSpec, build: BuildResult, chunk_frames: int = 30, record: bool = True) -> Iterator[list[dict]]:
         """Run and yield chunks of frames for live streaming."""
 
     @abstractmethod

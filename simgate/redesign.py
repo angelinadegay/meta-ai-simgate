@@ -408,7 +408,7 @@ def robustness(spec: SceneSpec, changes: dict, robot_id: str | None) -> dict:
     friction = designed.environment.friction or 0.8
     checks = [{"label": f"seed {seed + 1}", "seed": seed + 1}, {"label": f"seed {seed + 2}", "seed": seed + 2},
               {"label": "friction -10%", "friction": round(friction * 0.9, 3)}]
-    results = run_batch(designed, checks, baseline=False)
+    results = run_batch(designed, checks, baseline=False, record=False)
     outcomes = [(check["label"], result_metrics(result, robot_id)) for check, result in zip(checks, results)
                 if not result.get("error")]   # a crashed check is a system problem, not a robustness result
     failed = [label for label, metrics in outcomes if not metrics["passed"]]
@@ -537,7 +537,7 @@ def _redesign(spec: SceneSpec, summary: dict, constraints: str | None, diagnosis
 
         _emit(on_step, "Batch runner", "designs", f"Running {len(candidates)} designs in parallel.", "", "working")
         results = run_batch(world, [_variation(c["changes"], robot_id, f"Design {i}")
-                                    for i, c in enumerate(candidates, 1)], baseline=False)
+                                    for i, c in enumerate(candidates, 1)], baseline=False, record=False)
         report["tried_count"] += len(results)
         for candidate, result in zip(candidates, results):
             after = result_metrics(result, robot_id)

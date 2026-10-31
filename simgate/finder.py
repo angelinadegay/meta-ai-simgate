@@ -14,6 +14,8 @@ unused rolls forward to the next.
 """
 
 import re
+from collections import Counter
+from itertools import combinations
 from typing import Any, Callable
 
 from . import config, cost, llm, reliability
@@ -44,7 +46,6 @@ SHARES = {"quick": {"search": 14, "map": 6, "hunt": 5, "confirm": 5},
 PHASES = ("search", "map", "hunt", "confirm")
 BUDGETS = {budget: sum(shares.values()) for budget, shares in SHARES.items()}   # quick 30, thorough 60
 KNOB_COUNT = {"quick": 3, "thorough": 4}
-MAX_KNOBS = 4
 SEARCH_RUNS = 5          # per condition at most: its harsh end, then 4 halvings (fewer when the search share is tight)
 GRID = 4
 MAP_BATCH = 6            # map cells run together
@@ -165,7 +166,7 @@ def _choose(fits: dict[str, float], budget: str, named: list[str] | None) -> tup
             elif knob not in chosen:
                 chosen.append(knob)
         if len(chosen) >= 2:
-            return chosen[:MAX_KNOBS], notes
+            return chosen[:KNOB_COUNT[budget]], notes   # quick: at most 3, thorough: 4
         extra = [knob for knob in RULE_ORDER if knob in fits and knob not in chosen]
         return (chosen + extra)[:2], notes   # fewer than 2 named: one more from the rules
     return [knob for knob in RULE_ORDER if knob in fits][:KNOB_COUNT[budget]], notes
@@ -228,7 +229,7 @@ class Runner:
         variations = [{"label": f"run {len(self.evidence) + i + 1}", **(variation or {"seed": seed})}
                       for i, (_, variation) in enumerate(jobs)]
         rows = []
-        for (setting, variation), result in zip(jobs, run_batch(self.scene, variations, baseline=False)):
+        for (setting, variation), result in zip(jobs, run_batch(self.scene, variations, baseline=False, record=False)):
             row = {"id": f"r{len(self.evidence) + 1}", **setting, "change": variation, **self.judge(result)}
             self.evidence.append(row)
             rows.append(row)
@@ -253,15 +254,33 @@ class Runner:
 
 # ── Phase 1: each condition's breaking point ─────────────────────────────────
 
-def search(runner: Runner, knobs: list[str], context: dict, on_step: StepCallback | None,
-           runs_each: int = SEARCH_RUNS) -> list[dict]:
+FIRST_RUNS = 2           # every condition's harsh end and one halving, before the extra runs are given out
+
+
+def allot(state: dict[str, dict], base: dict[str, float], left: int) -> dict[str, int]:
+    """Each condition's run cap once all have had FIRST_RUNS: the runs left go to the tightest first (the one whose
+    bracket is closest to the scene as it is), up to SEARCH_RUNS each, so its limit gets the finest bracket."""
+    caps = {knob: s["runs"] for knob, s in state.items()}
+    open_ = [knob for knob, s in state.items() if not s["done"] and s["fail"] is not None]
+    for knob in sorted(open_, key=lambda k: harshness(k, (state[k]["ok"] + state[k]["fail"]) / 2, base[k])):
+        extra = min(SEARCH_RUNS - state[knob]["runs"], left)
+        caps[knob] += extra
+        left -= extra
+    return caps
+
+
+def search(runner: Runner, knobs: list[str], context: dict, on_step: StepCallback | None) -> list[dict]:
     """Binary-search every condition at once (one change per run): its harsh end first, then halve the bracket
-    between the last value that was OK and the first that failed. At most ``runs_each`` runs per condition."""
+    between the last value that was OK and the first that failed. Each gets FIRST_RUNS runs, then the tightest gets
+    the extra runs of the search's share first (at most SEARCH_RUNS per condition)."""
     base = context["base"]
     state = {knob: {"ok": base[knob], "fail": None, "ok_run": "r1", "fail_run": None, "failure": None, "runs": 0,
                     "done": False, "crashed": 0} for knob in knobs}
-    for step in range(runs_each):
-        active = [knob for knob in knobs if not state[knob]["done"] and state[knob]["runs"] < runs_each]
+    caps = {knob: FIRST_RUNS for knob in knobs}
+    for step in range(SEARCH_RUNS):
+        if step == FIRST_RUNS:
+            caps = allot(state, base, runner.left)
+        active = [knob for knob in knobs if not state[knob]["done"] and state[knob]["runs"] < caps[knob]]
         if not active:
             break
         jobs = []
@@ -474,6 +493,14 @@ def below_limits(values: dict[str, float], limits: list[dict]) -> bool:
     return True
 
 
+def _spread_line(tried: list[dict[str, float]], ranges: dict[str, dict]) -> str:
+    pair, count = most_tested(tried, ranges)
+    if pair is None:
+        return ""
+    return (f"\nMost tested so far: {' and '.join(sorted(pair))} ({_plural(count, 'run')}); at least half your "
+            "proposals must use other conditions.")
+
+
 def hunter_facts(report: dict, ranges: dict[str, dict], most: int) -> str:
     lines = [f"- robot: {report['robot_label']}; failure counted: {FAILURES[report['failure']]}; "
              "the scene as it is passes (run r1)",
@@ -509,6 +536,8 @@ Rules:
 - Each reason cites the measured results from FACTS (the values that were OK or failed alone, or measured
   combinations), not the windows, for example "falls backward at 12° and slips at friction 0.3: 9° at friction 0.45
   may combine both".
+- Spread out: a proposal closer than 15% of each condition's window to another proposal, or to a combination
+  already run, is a duplicate; and at least half the proposals use other conditions than the pair tested most.
 - decision and its reason are only needed when RESULTS are given: "hunt more" proposes at most 4 new combinations,
   "stop" proposes none."""
 
@@ -535,7 +564,82 @@ def _cites(reason: str, values: list[float]) -> bool:
                    for value in values) for token in _NUMBER.findall(reason))
 
 
-def parse_hunt(data: dict, ranges: dict[str, dict], most: int, evidence: list[float], decide: bool) -> dict:
+SPREAD = 0.15   # of each condition's window: a proposal closer than this to another one (or to a run) is a duplicate
+
+
+def _width(r: dict) -> float:
+    return max(r["high"] - r["low"], 1e-6)
+
+
+def too_close(a: dict[str, float], b: dict[str, float], ranges: dict[str, dict]) -> bool:
+    """The same conditions, each within 15% of its window of the other's value."""
+    if set(a) != set(b) or not set(a) <= set(ranges):
+        return False
+    return all(abs(harshness(k, a[k], ranges[k]["limit"]["baseline"]) - harshness(k, b[k], ranges[k]["limit"]["baseline"]))
+               < SPREAD * _width(ranges[k]) for k in a)
+
+
+def tried_so_far(report: dict, results: list[dict]) -> list[dict[str, float]]:
+    """The combinations already run: the measured map cells and the hunt's own."""
+    tried = []
+    if (grid := report.get("map")) is not None:
+        for j, row in enumerate(grid["cells"]):
+            for i, cell in enumerate(row):
+                if cell["how"] == "run":
+                    tried.append({grid["x"]["knob"]: grid["x"]["values"][i], grid["y"]["knob"]: grid["y"]["values"][j]})
+    return tried + [c["values"] for c in results if c.get("run")]
+
+
+def most_tested(tried: list[dict[str, float]], ranges: dict[str, dict]) -> tuple[frozenset | None, int]:
+    """The set of conditions run together most so far, and how often, when proposals could use another set."""
+    counts = Counter(frozenset(values) for values in tried)
+    if not counts:
+        return None, 0
+    pair, n = counts.most_common(1)[0]
+    others = [frozenset(two) for two in combinations(ranges, 2) if frozenset(two) != pair and frozenset(two) not in SIBLINGS]
+    return (pair, n) if others else (None, 0)
+
+
+def spread_problems(proposals: list[dict], ranges: dict[str, dict], tried: list[dict[str, float]]) -> list[str]:
+    """Duplicates (of each other or of a combination already run) and too many on the most tested pair."""
+    issues = []
+    for n, combo in enumerate(proposals, 1):
+        values = combo["values"]
+        if (twin := next((m for m, other in enumerate(proposals[:n - 1], 1) if too_close(values, other["values"], ranges)),
+                         None)) is not None:
+            issues.append(f"Combination {combo.get('number', n)} is a duplicate of combination "
+                          f"{proposals[twin - 1].get('number', twin)}: each value is within {SPREAD * 100:.0f}% of its "
+                          "window of the other's; spread the proposals out.")
+        elif (ran := next((t for t in tried if too_close(values, t, ranges)), None)) is not None:
+            issues.append(f"Combination {combo.get('number', n)} duplicates a combination already run "
+                          f"({', '.join(f'{k} {raw(v)}' for k, v in ran.items())}): within {SPREAD * 100:.0f}% of each "
+                          "window; try somewhere new.")
+    pair, count = most_tested(tried, ranges)
+    if pair is not None and proposals:
+        same = sum(1 for combo in proposals if frozenset(combo["values"]) == pair)
+        need = -(-len(proposals) // 2)
+        if len(proposals) - same < need:
+            issues.append(f"At least {need} of the {len(proposals)} proposals must use other conditions than "
+                          f"{' and '.join(sorted(pair))}, the most tested so far ({_plural(count, 'run')}).")
+    return issues
+
+
+def spread_out(candidates: list[dict], ranges: dict[str, dict], tried: list[dict[str, float]], most: int) -> list[dict]:
+    """The rules' proposals under the same spread: no duplicates, and at least half off the most tested pair."""
+    pair, _ = most_tested(tried, ranges)
+    kept: list[dict] = []
+    for c in candidates:
+        if not any(too_close(c["values"], t, ranges) for t in tried + [k["values"] for k in kept]):
+            kept.append(c)
+    other = [c for c in kept if pair is None or frozenset(c["values"]) != pair]
+    same = [c for c in kept if c not in other]
+    chosen = other[:most]
+    chosen += same[:min(most - len(chosen), len(chosen) if pair is not None else most)]
+    return sorted(chosen, key=kept.index)
+
+
+def parse_hunt(data: dict, ranges: dict[str, dict], most: int, evidence: list[float], decide: bool,
+               tried: list[dict[str, float]] | None = None) -> dict:
     """Validate the Hunter's JSON; raises ValueError naming every problem, so one retry can fix them all."""
     if not isinstance(data, dict):
         raise ValueError("Reply with one JSON object.")
@@ -580,8 +684,10 @@ def parse_hunt(data: dict, ranges: dict[str, dict], most: int, evidence: list[fl
                             "or a measured combination), not only the windows")
         if problems:
             errors.append(f"Combination {n}: " + "; ".join(problems) + ".")
-        elif clean not in [c["values"] for c in out]:
-            out.append({"values": clean, "reason": reason})
+        else:
+            out.append({"values": clean, "reason": reason, "number": n})
+    errors += spread_problems(out, ranges, tried or [])
+    out = [{"values": c["values"], "reason": c["reason"]} for c in out]
     decision, why = data.get("decision"), str(data.get("reason") or "").strip()
     if decide:
         if decision not in ("hunt more", "stop"):
@@ -612,28 +718,30 @@ def _alone(r: dict) -> str:
     return f"{limit['name']} is OK alone at {raw(limit['last_ok'])} and fails at {raw(limit['first_fail'])} ({limit['failure']})"
 
 
-def rules_hunt(ranges: dict[str, dict], most: int, share: float = 0.8) -> list[dict]:
-    """The two most sensitive conditions at 80% of their limits, plus the most sensitive one with a push (or, when
-    the push can't be set, with the next condition)."""
-    order = list(ranges)   # the limits come sorted from the tightest
-
-    def pair(a: str, b: str) -> dict:
-        return {"values": {a: _at(ranges[a], share), b: _at(ranges[b], share)},
-                "reason": f"{_alone(ranges[a])}; {_alone(ranges[b])}: at {share * 100:.0f}% of each, together they may fail"}
-
-    combos = []
-    if len(order) >= 2:
-        top = order[0]
-        partners = [k for k in order[1:] if frozenset({top, k}) not in SIBLINGS]
-        if partners:
-            combos.append(pair(top, partners[0]))
-            second = "push_n" if "push_n" in partners[1:] else next(iter(partners[1:]), None)
-            if second is not None:
-                combos.append(pair(top, second))
-    return combos[:most]
+def _pair(ranges: dict[str, dict], a: str, b: str, share: float) -> dict:
+    return {"values": {a: _at(ranges[a], share), b: _at(ranges[b], share)},
+            "reason": f"{_alone(ranges[a])}; {_alone(ranges[b])}: at {share * 100:.0f}% of each, together they may fail"}
 
 
-def rules_decide(results: list[dict], ranges: dict[str, dict], most: int) -> dict:
+def _pairs(ranges: dict[str, dict]) -> list[tuple[str, str]]:
+    """Every pair that can be combined, the most sensitive first (the limits come sorted from the tightest); the
+    most sensitive condition with a push before its other partners."""
+    order = list(ranges)
+    pairs = [(a, b) for i, a in enumerate(order) for b in order[i + 1:] if frozenset({a, b}) not in SIBLINGS]
+    if pairs and "push_n" in order[1:]:
+        top = pairs[0][0]
+        with_push = [(a, b) for a, b in pairs if a == top and b == "push_n"]
+        pairs = pairs[:1] + with_push + [p for p in pairs[1:] if p not in with_push]
+    return pairs
+
+
+def rules_hunt(ranges: dict[str, dict], most: int, share: float = 0.8, tried: list[dict] | None = None) -> list[dict]:
+    """The two most sensitive conditions at 80% of their limits, the most sensitive one with a push (or, when the
+    push can't be set, with the next condition), then the other pairs; spread out like the Hunter's."""
+    return spread_out([_pair(ranges, a, b, share) for a, b in _pairs(ranges)], ranges, tried or [], most)
+
+
+def rules_decide(results: list[dict], ranges: dict[str, dict], most: int, tried: list[dict] | None = None) -> dict:
     failed = [c for c in results if c.get("broke")]
     if most <= 0:
         return {"decision": "stop", "reason": "No runs are left for another round.", "combinations": []}
@@ -643,7 +751,8 @@ def rules_decide(results: list[dict], ranges: dict[str, dict], most: int) -> dic
     milder = [{"values": {k: _at(ranges[k], 0.7) for k in c["values"]},
                "reason": f"{combo_text(c['values'])} failed together; trying 70% of each limit to see how mild it gets"}
               for c in failed]
-    milder = [c for c in milder if c["values"] not in [r["values"] for r in results]]
+    others = [_pair(ranges, a, b, 0.8) for a, b in _pairs(ranges)]   # pairs not tried yet, to keep the spread
+    milder = spread_out(milder + others, ranges, tried if tried is not None else [r["values"] for r in results], most)
     if not milder:
         return {"decision": "stop", "reason": "The failing combinations are already at the bottom of their windows.",
                 "combinations": []}
@@ -652,9 +761,9 @@ def rules_decide(results: list[dict], ranges: dict[str, dict], most: int) -> dic
 
 
 def _ask_hunter(messages: list[dict], ranges: dict, most: int, evidence: list[float], decide: bool,
-                calls: list[dict]) -> dict | None:
+                calls: list[dict], tried: list[dict[str, float]]) -> dict | None:
     parsed, attempts = llm.chat_json(messages, config.PLANNER_MODEL,
-                                     lambda data: parse_hunt(data, ranges, most, evidence, decide))
+                                     lambda data: parse_hunt(data, ranges, most, evidence, decide, tried))
     calls.append({"agent": "Hunter", "purpose": "decide" if decide else "propose", "attempts": attempts})
     return parsed
 
@@ -697,16 +806,17 @@ def hunt(runner: Runner, report: dict, ranges: dict[str, dict], context: dict, o
         info["decisions"].append({"decision": "stop", "reason": why, "by": "budget"})
         _emit(on_step, "Hunter", "decide", "Hunter: looking for combinations.", why, "warning")
         return info
-    facts = hunter_facts(report, ranges, most)
+    tried = tried_so_far(report, [])
+    facts = hunter_facts(report, ranges, most) + _spread_line(tried, ranges)
     proposal = None
     if not config.MOCK_MODE:
         proposal = _ask_hunter([{"role": "system", "content": HUNTER_SYSTEM}, {"role": "user", "content": facts}],
-                               ranges, most, measured_values(report, ranges), False, report["model_calls"])
+                               ranges, most, measured_values(report, ranges), False, report["model_calls"], tried)
         if proposal is None:
             info["by"] = "rules"
             _emit(on_step, "Hunter", "decide", "Hunter: proposing combinations.",
                   "The Hunter's reply failed validation twice, so the rules' combinations are tested instead.", "warning")
-    combos = proposal["combinations"] if proposal else rules_hunt(ranges, most)
+    combos = proposal["combinations"] if proposal else rules_hunt(ranges, most, tried=tried)
     info["results"] += _hunt_round(runner, combos, context, 1, on_step)
 
     more = min(HUNT_MORE, runner.left)
@@ -719,19 +829,20 @@ def hunt(runner: Runner, report: dict, ranges: dict[str, dict], context: dict, o
         lines = [f"- {combo_text(c['values'])} ({', '.join(f'{k} {raw(v)}' for k, v in c['values'].items())}): "
                  + ("crashed" if c["broke"] is None else f"FAILED ({c['failure']})" if c["broke"] else "OK")
                  + f" (run {c['run']})" for c in info["results"]]
-        facts_now = facts.rsplit("\nRuns left", 1)[0] + f"\nRuns left for hunting: {more}."
+        tried = tried_so_far(report, info["results"])
+        facts_now = facts.rsplit("\nRuns left", 1)[0] + f"\nRuns left for hunting: {more}." + _spread_line(tried, ranges)
         decision = _ask_hunter([{"role": "system", "content": HUNTER_SYSTEM},
                                 {"role": "user", "content": facts_now + "\nRESULTS of round 1:\n" + "\n".join(lines)
                                  + f"\nDecide: \"hunt more\" (at most {more} new combinations) or \"stop\", with a reason."}],
-                               ranges, more, measured_values(report, ranges, info["results"]), True, report["model_calls"])
+                               ranges, more, measured_values(report, ranges, info["results"]), True, report["model_calls"],
+                               tried)
         by = "model" if decision is not None else "rules"
-    decision = decision or rules_decide(info["results"], ranges, more)
+    decision = decision or rules_decide(info["results"], ranges, more, tried_so_far(report, info["results"]))
     info["decisions"].append({"decision": decision["decision"], "reason": decision["reason"], "by": by})
     _emit(on_step, "Hunter", "decide", "The budget ends the hunt." if by == "budget" else
           f"Hunter decides: {decision['decision']}.", decision["reason"])
     if decision["decision"] == "hunt more":
-        tried = [c["values"] for c in info["results"]]
-        fresh = [c for c in decision["combinations"] if c["values"] not in tried][:more]
+        fresh = decision["combinations"][:more]
         if fresh:
             info["results"] += _hunt_round(runner, fresh, context, 2, on_step)
     return info
@@ -961,16 +1072,42 @@ def _rechecked(limit: dict) -> str:
                "; the OK value not rechecked"))
 
 
+def _push_note(report: dict) -> str:
+    push = report.get("push")
+    return f" (at {push['at_s']:.1f} s, for {push['for_s']:.1f} s)" if push else ""
+
+
+def limit_sentences(report: dict) -> str:
+    """The limits, written in code from one template, tightest first: "Sideways push (at 2.0 s, for 0.3 s): OK at
+    30 N, fell at 40 N (single runs, not rechecked)." The Explainer only writes what follows."""
+    sentences = []
+    for limit in report["limits"]:
+        shown = limit["shown"]
+        name = limit["name"].capitalize() + (_push_note(report) if limit["knob"] == "push_n" else "")
+        if limit["never_broke"]:
+            sentences.append(f"{name}: never broke, up to {shown['harsh']} (a single run).")
+            continue
+        confirm = limit.get("confirm", {})
+        fail, ok = confirm.get("fails_at"), confirm.get("ok_at")
+        if fail is None:
+            sure = "single runs, not rechecked"
+        else:
+            sure = (f"rechecked on {CONFIRM_SEEDS} seeds: " + (f"OK {ok['passed']}/{ok['total']}, " if ok else "")
+                    + f"failed {fail['total'] - fail['passed']}/{fail['total']}" + ("" if ok else "; the OK value a single run"))
+        sentences.append(f"{name}: OK at {shown['last_ok']}, {limit['failure']} at {shown['first_fail']} ({sure}).")
+    return " ".join(sentences)
+
+
 def facts_text(report: dict) -> str:
     lines = [f"- robot: {report['robot_label']}; failure counted: {FAILURES[report['failure']]}; runs: {report['runs']}"]
     for limit in report["limits"]:
         shown = limit["shown"]
+        name = limit["name"] + (_push_note(report) if limit["knob"] == "push_n" else "")
         if limit["never_broke"]:
-            lines.append(f"- {limit['name']} (now {shown['baseline']}): never broke up to {shown['harsh']}")
+            lines.append(f"- {name} (now {shown['baseline']}): never broke up to {shown['harsh']}")
         else:
-            lines.append(f"- {limit['name']} (now {shown['baseline']}): last OK at {shown['last_ok']}, first failure at "
-                         f"{shown['first_fail']} ({limit['failure']}); the limit lies between them, accurate to "
-                         f"{shown['step']}; {_rechecked(limit)}")
+            lines.append(f"- {name} (now {shown['baseline']}): last OK at {shown['last_ok']}, first failure at "
+                         f"{shown['first_fail']} ({limit['failure']}), accurate to {shown['step']}; {_rechecked(limit)}")
     for f in report.get("failures") or []:   # confirmed only: what didn't reproduce is counted, not described
         if f["kind"] == "combined":
             lines.append(f"- together: {f['text']} failed ({f['failure']})"
@@ -989,62 +1126,39 @@ def facts_text(report: dict) -> str:
         lines.append(f"- {len(dropped)} apparent failures didn't reproduce on other seeds and were dropped")
     if (unconfirmed := report.get("unconfirmed")):
         lines.append(f"- not confirmed for lack of budget: {len(unconfirmed)}")
-    return "FACTS (the limits are ordered from the tightest; use these numbers as written):\n" + "\n".join(lines)
-
-
-def _how_sure(limit: dict) -> str:
-    again = limit.get("confirm", {}).get("fails_at")
-    if again is None:
-        return " in a single run (not rechecked)"
-    return f", failing on {again['total'] - again['passed']} of {again['total']} seeds when rechecked"
+    return ("FACTS (the limits are ordered from the tightest; use these numbers as written):\n" + "\n".join(lines)
+            + "\n\nALREADY WRITTEN for the reader, just before your text:\n" + limit_sentences(report))
 
 
 def rules_text(report: dict) -> str:
-    broke = [limit for limit in report["limits"] if not limit["never_broke"]]
-    held = [limit for limit in report["limits"] if limit["never_broke"]]
+    """The interpretation after the limit sentences, by rules: what failed together, the map, or that nothing broke."""
     sentences = []
-    if broke:
-        top = broke[0]
-        sentences.append(f"The tightest limit is {top['name']}: it was OK at {top['shown']['last_ok']} and failed at "
-                         f"{top['shown']['first_fail']} ({top['failure']}){_how_sure(top)}, against "
-                         f"{top['shown']['baseline']} now.")
-        combined = [f for f in report.get("failures") or [] if f["kind"] == "combined"]
-        if combined:
-            f = next((f for f in combined if f["surprising"]), combined[0])
-            sentences.append(f"Together, {f['text']} failed ({f['failure']})"
-                             + (", although each was fine on its own" if f["surprising"] else
-                                ", below each single limit found in one run" if f["surprise_note"] else "")
-                             + f"; it was {_seeds(f['confirm'])}.")
-        for limit in broke[1:]:
-            sentences.append(f"{limit['name'].capitalize()} was OK at {limit['shown']['last_ok']} and failed at "
-                             f"{limit['shown']['first_fail']} ({limit['failure']}){_how_sure(limit)}.")
-    else:
+    combined = [f for f in report.get("failures") or [] if f["kind"] == "combined"]
+    if combined:
+        f = next((f for f in combined if f["surprising"]), combined[0])
+        sentences.append(f"Together, {f['text']} failed ({f['failure']})"
+                         + (", although each was fine on its own" if f["surprising"] else
+                            ", below each single limit found in one run" if f["surprise_note"] else "")
+                         + f"; it was {_seeds(f['confirm'])}.")
+    if not any(not limit["never_broke"] for limit in report["limits"]):
         sentences.append("It never broke within the tested ranges.")
-    for limit in held:
-        sentences.append(f"It never broke on {limit['name']}, up to {limit['shown']['harsh']}.")
     if (grid := report.get("map")) is not None and grid["counts"]["run"]:
         counts = grid["counts"]
         sentences.append(f"With {grid['x']['name']} and {grid['y']['name']} changed together, {counts['run']} combinations "
                          f"were run: {counts['pass']} passed and {counts['fail']} failed.")
-    if len(sentences) < 3:
+    if not sentences:
         sentences.append(f"This comes from {report['runs']} simulation runs.")
-    return " ".join(sentences[:5])
+    return " ".join(sentences[:3])
 
 
 EXPLAINER_SYSTEM = """You are the Explainer. A search found where a robot starts to fail as the world gets harsher.
-Write 3 to 5 plain sentences for a non-expert. Start with the most important limit: the first one in FACTS. Use only
-numbers that appear in FACTS, written as they are there; never estimate, round differently or add a number. A limit
-lies between its last OK value and its first failure: never call either value "the limit" or "its limit". A result
-marked "from one run each, not rechecked" comes from a single run: whenever you mention it, say so (for example "in
-a single run"). Say "reliably" or "consistently" only for what was rechecked as a reliable fail. Do not suggest
-changing the robot. No headings or lists."""
+The limits are already written for the reader, by code, just before your text (see ALREADY WRITTEN). Write 1 to 3
+plain sentences for a non-expert that interpret them: which matters most for this robot, what the combined failures
+show, and how sure the results are. Do not repeat the limit values; refer to the conditions by name. Use only
+numbers that appear in FACTS, written as they are there; never estimate, round differently or add a number. Do not
+suggest changing the robot. No headings or lists."""
 
 _NUMBER = re.compile(r"(?<![\w.])\d+(?:\.\d+)?")
-# "a limit of 0.25", "its limit is 0.25", "the friction limit is reached at 0.20"
-_LIMIT_VALUE = re.compile(r"\blimits?(?:\s+[a-z]+){0,2}?\s+(?:of|at|is|was|being)\s+(?:about\s+|around\s+|roughly\s+)?"
-                          r"(\d+(?:\.\d+)?)", re.I)   # up to 2 plain words between: never across a colon or comma
-_ONE_RUN = re.compile(r"\bsingle run\b|\bone run\b|\bonce\b|\bnot (?:yet )?rechecked\b|\bunconfirmed\b|\bnot confirmed\b"
-                      r"|\bone seed\b|\bone test\b", re.I)
 
 
 def _matches(token: str, values: list[float]) -> bool:
@@ -1060,6 +1174,8 @@ def _values(limit: dict, key: str) -> list[float]:
 def allowed_numbers(report: dict) -> list[float]:
     """Every number the envelope states: values in their own units and as shown (percentages), steps, counts."""
     numbers = [float(report["runs"]), float(GRID), float(GRID * GRID), TIPPED_DEG, float(len(report["limits"]))]
+    if (push := report.get("push")):
+        numbers += [float(push["at_s"]), float(push["for_s"])]
     for limit in report["limits"]:
         for key in ("baseline", "harsh", "last_ok", "first_fail", "step"):
             if limit[key] is not None:
@@ -1077,47 +1193,44 @@ def allowed_numbers(report: dict) -> list[float]:
                 float(len(report.get("unconfirmed") or []))]
     for f in report.get("failures") or []:
         verdicts.append(f["confirm"])
-        numbers += [float(v) for v in f["values"].values()] + [float(n) for n in _NUMBER.findall(f["text"])]
+        if f["kind"] == "combined":
+            numbers += [float(v) for v in f["values"].values()] + [float(n) for n in _NUMBER.findall(f["text"])]
     for verdict in verdicts:
         numbers += [float(verdict["passed"]), float(verdict["total"]), float(verdict["total"] - verdict["passed"])]
     return numbers
 
 
 def number_problems(text: str, report: dict) -> list[str]:
-    """Each number in the text must be one the envelope states (as written, or that value rounded as written); the
-    text must start with the tightest limit; it never calls a last OK value or a first failure "the limit"; and a
-    failure that wasn't rechecked is said to come from a single run."""
+    """The interpretation's numbers: each one the envelope states (as written, or that value rounded as written),
+    and none of them a limit's value, which the code's sentences already state."""
     allowed = allowed_numbers(report)
+    edges = [value for limit in report["limits"] if not limit["never_broke"]
+             for key in ("last_ok", "first_fail") for value in _values(limit, key)]
+    # a number that is also a count, or a value of a combined failure (one may sit at a last OK value), may be said
+    verdicts = [v for limit in report["limits"] for v in limit.get("confirm", {}).values()] + \
+               [f["confirm"] for f in report.get("failures") or []]
+    other = [float(report["runs"]), float(CONFIRM_SEEDS), float(GRID), float(GRID * GRID), float(len(report["limits"])),
+             float(len(report.get("failures") or [])), float(len(report.get("dropped") or []))]
+    other += [float(n) for v in verdicts for n in (v["passed"], v["total"], v["total"] - v["passed"])]
+    other += [float(v) for f in report.get("failures") or [] if f["kind"] == "combined" for v in f["values"].values()]
+    other += [float(n) for f in report.get("failures") or [] if f["kind"] == "combined" for n in _NUMBER.findall(f["text"])]
+    if (grid := report.get("map")) is not None:
+        other += [float(n) for n in (*grid["counts"].values(), *grid["checked"].values())]
     issues = []
     for token in _NUMBER.findall(text):
         if not _matches(token, allowed):
-            issues.append(f'It states {token}, which isn\'t a number in FACTS.')
-    broke = [limit for limit in report["limits"] if not limit["never_broke"]]
-    if broke:
-        first = re.split(r"(?<=[.!?])\s+", text.strip(), maxsplit=1)[0]
-        if broke[0]["name"].split()[-1].lower() not in first.lower():
-            issues.append(f"It doesn't start with the tightest limit, {broke[0]['name']}.")
-    edges = [value for limit in broke for key in ("last_ok", "first_fail") for value in _values(limit, key)]
-    for match in _LIMIT_VALUE.finditer(text):
-        if _matches(match.group(1), edges):
-            issues.append(f"It calls {match.group(1)} a limit; a limit lies between the last OK value and the first "
-                          "failure.")
-    sentences = re.split(r"(?<=[.!?])\s+", text.strip())
-    for limit in broke:
-        if limit.get("confirm", {}).get("fails_at") is not None:
-            continue
-        fails = _values(limit, "first_fail")
-        if any(not _ONE_RUN.search(s) and any(_matches(t, fails) for t in _NUMBER.findall(s)) for s in sentences):
-            issues.append(f"It states the {limit['name']} failure at {limit['shown']['first_fail']} without saying it "
-                          "comes from a single run (not rechecked).")
+            issues.append(f"It states {token}, which isn't a number in FACTS.")
+        elif _matches(token, edges) and not _matches(token, other):
+            issues.append(f"It repeats {token}, a limit value the sentences before it already state.")
     return issues
 
 
 def explain(report: dict, calls: list[dict]) -> str:
-    """The Explainer's text, checked number by number against the envelope (one retry with the exact problems,
-    then the rules text)."""
+    """The limit sentences (code), then the Explainer's interpretation, checked number by number against the
+    envelope (one retry with the exact problems, then the rules' interpretation)."""
+    limits = limit_sentences(report)
     if config.MOCK_MODE:
-        return rules_text(report)
+        return f"{limits} {rules_text(report)}".strip()
     messages = [{"role": "system", "content": EXPLAINER_SYSTEM}, {"role": "user", "content": facts_text(report)}]
     attempts = []
     for attempt in range(2):
@@ -1126,12 +1239,12 @@ def explain(report: dict, calls: list[dict]) -> str:
         attempts.append({"attempt": attempt + 1, "valid": not issues, "problems": issues})
         if not issues:
             calls.append({"agent": "Explainer", "purpose": "envelope", "attempts": attempts})
-            return text
+            return f"{limits} {text}".strip()
         messages += [{"role": "assistant", "content": text},
                      {"role": "user", "content": "Your reply has problems: " + " ".join(issues)
-                      + " Rewrite it using only the numbers in FACTS, starting with the tightest limit."}]
+                      + " Rewrite it using only the numbers in FACTS, without repeating the limit values."}]
     calls.append({"agent": "Explainer", "purpose": "envelope", "attempts": attempts})
-    return rules_text(report)
+    return f"{limits} {rules_text(report)}".strip()
 
 
 # ── The search ───────────────────────────────────────────────────────────────
@@ -1174,6 +1287,12 @@ def _find(spec: SceneSpec, robot_id: str | None, failure: str, budget: str, name
                               "skipped": {k: v for k, v in skipped.items() if named and k in named}, "limits": [],
                               "map": None, "evidence": [], "runs": 0, "model_calls": [], "failures": [], "dropped": [],
                               "unconfirmed": [], "hunt": {"by": "rules", "results": [], "decisions": []}}
+    if "push_n" in chosen:   # when the push comes, for the limit sentence and FACTS
+        from .backends.mujoco_backend import push_time
+        from .spec import Disturbance
+
+        pushed = spec.model_copy(update={"disturbance": spec.disturbance or Disturbance(push_n=1.0)})
+        report["push"] = {"at_s": push_time(pushed), "for_s": pushed.disturbance.duration_s}
     others = f" The other robots stay as they are and only {entry.label} is judged." if len(spec.robots) > 1 else ""
     _emit(on_step, "Finder", "conditions", "Choosing the world conditions to search (never the robot's design).",
           f"Searching {', '.join(KNOBS[k]['name'] for k in chosen)} for where {entry.label} "
@@ -1199,7 +1318,7 @@ def _find(spec: SceneSpec, robot_id: str | None, failure: str, budget: str, name
         entry_["used"] = len(runner.evidence) - entry_["from"]
         carry = entry_["allowed"] - entry_["used"]
 
-    allowed = start("search")   # the scene as it is counts toward the search
+    start("search")   # the scene as it is counts toward the search
     _emit(on_step, "Batch runner", "baseline", "Running the scene as it is first.", "", "working")
     first = runner.run([({"phase": 0, "knob": None, "value": None}, {})])[0]
     if first["broke"] is not False:
@@ -1212,8 +1331,7 @@ def _find(spec: SceneSpec, robot_id: str | None, failure: str, budget: str, name
         return report
     _emit(on_step, "Batch runner", "baseline", "Running the scene as it is.", "It passes as it is (run r1).")
 
-    runs_each = max(2, min(SEARCH_RUNS, (allowed - 1) // len(chosen)))
-    report["limits"] = search(runner, chosen, context, on_step, runs_each)
+    report["limits"] = search(runner, chosen, context, on_step)
     finish("search")
     pair = report["limits"][:2]
     start("map")

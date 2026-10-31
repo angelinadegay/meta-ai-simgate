@@ -108,7 +108,7 @@ class OpenSeesSimulator(Simulator):
         return [2 * math.pi / math.sqrt(w2) for w2 in eig if w2 > 0]
 
     # ── interface ─────────────────────────────────────────────────────────
-    def build(self, spec: SceneSpec, code: str | None = None) -> BuildResult:
+    def build(self, spec: SceneSpec, code: str | None = None, view: bool = True) -> BuildResult:
         nodes, _ = self._model(spec)
         _, columns, beams, _ = frame_geometry(spec)
         scene = {
@@ -156,7 +156,7 @@ class OpenSeesSimulator(Simulator):
                             f"Peak ground acceleration {ld.pga_g} g at {ld.freq_hz} Hz."))
         return checks
 
-    def run(self, spec: SceneSpec, build: BuildResult, chunk_frames: int = 30) -> Iterator[list[dict]]:
+    def run(self, spec: SceneSpec, build: BuildResult, chunk_frames: int = 30, record: bool = True) -> Iterator[list[dict]]:
         s, ld = spec.structure, spec.load
         nodes, grid = self._model(spec)
         periods = self._periods(min(2, s.stories * (s.bays + 1)))

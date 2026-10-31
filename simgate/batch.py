@@ -15,6 +15,42 @@ RUN_TIMEOUT_SECONDS = 120.0
 MAX_BATCH_RUNS = 24
 MAX_BATCH_GHOST_BYTES = 4 * 1024 * 1024
 Surface = Literal["rock", "regolith", "gravel", "sand", "mud", "ice"]
+WORKERS = max(1, (os.cpu_count() or 1) - 1)   # every core but one
+_pool: ProcessPoolExecutor | None = None      # kept between batches: starting a worker re-imports MuJoCo and ONNX
+# One thread per worker: a worker per core, each starting a thread per core (BLAS, OpenMP, onnxruntime) for tiny
+# workloads, is mostly contention.
+ONE_THREAD = {name: "1" for name in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS")}
+
+
+def _single_threaded() -> None:
+    """Worker initializer (the variables are also inherited, so they are set before the worker's imports)."""
+    os.environ.update(ONE_THREAD)
+
+
+_pool_uploads: str | None = None   # the uploads folder the pool's workers were started with
+
+
+def _executor() -> ProcessPoolExecutor:
+    global _pool, _pool_uploads
+    if _pool is not None and (getattr(_pool, "_broken", False)   # a worker died: start a fresh pool
+                              or os.environ.get("SIMGATE_UPLOADS_DIR") != _pool_uploads):   # workers read it at start
+        _discard_pool()
+    if _pool is None:
+        _pool_uploads = os.environ.get("SIMGATE_UPLOADS_DIR")
+        for name, value in ONE_THREAD.items():   # workers are spawned with this process's environment
+            os.environ.setdefault(name, value)
+        _pool = ProcessPoolExecutor(max_workers=WORKERS, initializer=_single_threaded)
+    return _pool
+
+
+def _discard_pool() -> None:
+    """After a timeout: stop every worker, so a stuck run can't hold one, and start fresh next time."""
+    global _pool
+    if _pool is not None:
+        for process in list((_pool._processes or {}).values()):
+            process.terminate()
+        _pool.shutdown(wait=False, cancel_futures=True)
+        _pool = None
 
 
 class Variation(BaseModel):
@@ -302,7 +338,8 @@ def _encode_ghost(geom_ids: list[int], frames: list[list]) -> dict:
     }
 
 
-def _run_worker(run_id: int, label: str, base_spec_json: str, raw_variation: dict | None) -> dict:
+def _run_worker(run_id: int, label: str, base_spec_json: str, raw_variation: dict | None, record: bool = True) -> dict:
+    """One run. Without ``record`` no frames are kept (no ghost track): replaying it re-simulates the same seed."""
     changes = {key: value for key, value in raw_variation.items() if key != "label"} if raw_variation else {}
     try:
         from . import agents
@@ -317,12 +354,12 @@ def _run_worker(run_id: int, label: str, base_spec_json: str, raw_variation: dic
         if spec.domain != "robot_terrain":
             raise ValueError("Stress tests currently support robot scenes only.")
         sim = agents.route(spec)
-        build = sim.build(spec)
-        ghost_allowed = not any(key in changes for key in GEOMETRY_KNOBS)
+        build = sim.build(spec, view=False)   # never drawn: its replay re-simulates it
+        ghost_allowed = record and not any(key in changes for key in GEOMETRY_KNOBS)
         ghost_ids, chassis_index = _robot_geom_ids(build.code) if ghost_allowed else ([], -1)
         ghost_frames = []
         frame_number = 0
-        for chunk in sim.run(spec, build):
+        for chunk in sim.run(spec, build, record=record):
             for frame in chunk:
                 if ghost_allowed and frame_number % 2 == 0:
                     robot_poses = [
@@ -338,6 +375,9 @@ def _run_worker(run_id: int, label: str, base_spec_json: str, raw_variation: dic
             reason = "; ".join(f"{robot['label']}: {robot['reason']}" for robot in per_robot.values())
         else:
             stopped_at = _stopped_time(ghost_frames, chassis_index, summary.get("outcome")) if ghost_allowed else None
+            early = summary.get("stopped_early") or {}
+            if stopped_at is None and early.get("reason") == "stuck":   # it stopped moving 3 s before the stop
+                stopped_at = max(0.0, round(early["at_s"] - 3.0, 2))
             if stopped_at is not None:
                 summary["stopped_making_progress_at_s"] = stopped_at
             passed = robot_passed(summary, spec.mission is not None and spec.mission.has_goal())
@@ -351,7 +391,8 @@ def _run_worker(run_id: int, label: str, base_spec_json: str, raw_variation: dic
             "reason": reason,
             **({"robots": per_robot} if per_robot is not None else {}),
             "ghost": _encode_ghost(ghost_ids, ghost_frames) if ghost_allowed else None,
-            "ghost_status": "available" if ghost_allowed else "not in ghost view",
+            "ghost_status": "available" if ghost_allowed else "not in ghost view" if record else
+                            "not recorded (a replay re-simulates the same seed)",
         }
     except Exception as exc:
         return _result_error(run_id, label, changes, f"{type(exc).__name__}: {exc}")
@@ -368,9 +409,11 @@ def run_batch(
     on_result: Callable[[dict], None] | None = None,
     timeout: float = RUN_TIMEOUT_SECONDS,
     baseline: bool = True,
+    record: bool = True,
 ) -> list[dict]:
     """Run an unchanged baseline (unless ``baseline`` is False) and each valid variation in separate
-    worker processes.
+    worker processes (every core but one, kept between batches). ``record=False`` keeps no frames: for analyses
+    that only need each run's summary.
 
     Results are returned in baseline/input order and also sent to ``on_result`` as
     workers finish. Invalid variations become error rows without aborting the batch.
@@ -383,7 +426,6 @@ def run_batch(
     results: dict[int, dict] = {}
     baseline_label = "Baseline"
     base_json = base_spec.model_dump_json()
-    executor: ProcessPoolExecutor | None = None
     running: dict[Future, tuple[int, str, float]] = {}
     requested_changes: dict[int, dict] = {}
     ghost_bytes = 0
@@ -402,11 +444,7 @@ def run_batch(
         _notify(on_result, result)
 
     try:
-        worker_count = min(
-            max(len(raw_variations) + int(baseline), 1),
-            max(1, (os.cpu_count() or 1) - 1),
-        )
-        executor = ProcessPoolExecutor(max_workers=worker_count)
+        executor = _executor()
         jobs = [(0, baseline_label, None)] if baseline else []
         for run_id, raw in enumerate(raw_variations, start=1):
             label = raw.get("label") if isinstance(raw, dict) else None
@@ -424,7 +462,7 @@ def run_batch(
 
         cost.add_runs(len(jobs))
         for run_id, label, raw in jobs:
-            future = executor.submit(_run_worker, run_id, label, base_json, raw)
+            future = executor.submit(_run_worker, run_id, label, base_json, raw, record)
             running[future] = (run_id, label, time.monotonic() + timeout)
 
         while running:
@@ -459,15 +497,11 @@ def run_batch(
                     store(_result_error(run_id, label, requested_changes.get(run_id, {}),
                                         "Worker stopped after another run timed out."))
                     future.cancel()
-                processes = list((executor._processes or {}).values())
-                for process in processes:
-                    process.terminate()
-                executor.shutdown(wait=False, cancel_futures=True)
-                executor = None
+                _discard_pool()
                 break
-    finally:
-        if executor is not None:
-            executor.shutdown(wait=True, cancel_futures=True)
+    except BaseException:
+        _discard_pool()   # interrupted mid-batch: don't leave runs going in a pool that is reused
+        raise
 
     if overflow:
         cap_id = MAX_BATCH_RUNS - 1

@@ -810,16 +810,16 @@ function renderEnvelope(r) {
   if ((r.limits || []).length) {
     const table = document.createElement("table"); table.className = "envelope-table";
     const head = document.createElement("tr");
-    for (const name of ["Condition", "Now", "OK at", "Fails at", "How", "On 3 seeds"]) head.appendChild(textEl("th", name));
+    for (const name of ["Condition", "Now", "OK at", "Fails at", "±", "How", "On 3 seeds"]) head.appendChild(textEl("th", name));
     table.appendChild(head);
     for (const limit of r.limits) {
       const tr = document.createElement("tr");
       tr.append(textEl("td", limit.name), textEl("td", limit.shown.baseline));
       if (limit.never_broke) {
-        const held = textEl("td", `never broke up to ${limit.shown.harsh}`, "held"); held.colSpan = 3; tr.appendChild(held);
+        const held = textEl("td", `never broke up to ${limit.shown.harsh}`, "held"); held.colSpan = 4; tr.append(held, textEl("td", ""));
       } else {
         tr.append(textEl("td", `${limit.shown.last_ok} (${limit.ok_run})`), textEl("td", `${limit.shown.first_fail} (${limit.fail_run})`),
-          textEl("td", limit.failure || ""), seedsCell(limit.confirm));
+          textEl("td", limit.shown.step), textEl("td", limit.failure || ""), seedsCell(limit.confirm));   // ± one search step
       }
       tr.title = `accurate to ${limit.shown.step}; ${limit.runs} search runs`;
       table.appendChild(tr);

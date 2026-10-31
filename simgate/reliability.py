@@ -91,7 +91,7 @@ def run_seeded(spec: SceneSpec, variations: list[dict | None], seeds: int,
     chunk = MAX_BATCH_RUNS - 1
     for start in range(0, len(jobs), chunk):
         part = jobs[start:start + chunk]
-        for (index, _, _), result in zip(part, run_batch(spec, [job[2] for job in part], on_result, baseline=False)):
+        for (index, _, _), result in zip(part, run_batch(spec, [job[2] for job in part], on_result, baseline=False, record=False)):
             grouped[index].append(result)
     return grouped
 

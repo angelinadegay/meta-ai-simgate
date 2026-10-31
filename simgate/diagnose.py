@@ -8,6 +8,7 @@ from typing import Any, Callable, Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 from . import config, cost, llm
+from .backends.mujoco_backend import push_time
 from .batch import _validate_variation, crash_report, run_batch
 from .reliability import seeded
 from .spec import SceneSpec
@@ -289,7 +290,7 @@ def rule_hypotheses(spec: SceneSpec, m: dict) -> list[dict]:
                                                      f"{abs(m['cross_slope_deg']):.0f}° of sideways slope",
                       "intervention": {"face_uphill": True}})
     if spec.disturbance is not None:
-        found.append({"cause": "push", "why": f"a {spec.disturbance.push_n:g} N push hit it mid-run",
+        found.append({"cause": "push", "why": f"a {spec.disturbance.push_n:g} N push hit it {push_time(spec):.1f} s in",
                       "intervention": {"no_push": True}})
     found = [h for h in found if _applicable(spec, h["intervention"]) is None]
     named = {h["cause"] for h in found}
@@ -389,7 +390,7 @@ def _run(spec: SceneSpec, interventions: list[dict], robot_id: str | None) -> li
             change["robot_id"] = robot_id
         for k in range(SEEDS):
             variations.append({"label": f"Experiment {index}" + (f", seed {k + 1}" if k else ""), **seeded(spec, change, k)})
-    results = run_batch(spec, variations, baseline=False)
+    results = run_batch(spec, variations, baseline=False, record=False)
     return [results[index * SEEDS:(index + 1) * SEEDS] for index in range(len(interventions))]
 
 
@@ -688,7 +689,7 @@ def _diagnose(spec: SceneSpec, summary: dict, robot_id: str | None, on_step: Ste
     spec = pin_task(spec, summary)
     _emit(on_step, "Batch runner", "reproduce", "Rerunning the unchanged scene on 2 seeds to check the failure repeats.",
           "", "working")
-    reproductions = run_batch(spec, [{"label": f"Baseline, seed {k + 1}", **seeded(spec, None, k)} for k in range(1, SEEDS)])
+    reproductions = run_batch(spec, [{"label": f"Baseline, seed {k + 1}", **seeded(spec, None, k)} for k in range(1, SEEDS)], record=False)
     report["runs"] = len(reproductions)
     base_result = reproductions[0]
     base = result_metrics(base_result, robot_id)
