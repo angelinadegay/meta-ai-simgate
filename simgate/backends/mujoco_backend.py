@@ -1715,7 +1715,7 @@ class MuJoCoSimulator(Simulator):
                         sideways = np.array([-nav_heading[1], nav_heading[0]])
                         data.xfrc_applied[rover, 3:5] = spec.disturbance.push_n * sideways
                 mujoco.mj_step(model, data)
-                if settled and parts and flipped_at is None and s % 4 == 0:     # ~125 Hz slip sampling
+                if settled and parts and flipped_at is None and s % 8 == 0:     # ~62 Hz slip sampling
                     touching, sliding = sliding_contacts(model, data, parts, ground, slide_speeds)
                     if touching:
                         slip_log.append((data.time, touching, sliding))
