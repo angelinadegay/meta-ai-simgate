@@ -467,13 +467,13 @@ design, until one robot fails, and report where. No earlier run is needed.
 
 - **What counts as failing:** *task* (the default) is missing the goal; *safety* (when the request mentions falling,
   tipping or safety) is falling or tilting past 60°. One robot is judged: the one named, or the first.
-- **Budget:** *quick* (the default) uses at most 30 runs; *thorough* (*"thoroughly"*, *"in depth"*) at most 60.
+- **Budget:** *quick* (the default) uses at most 40 runs; *thorough* (*"thoroughly"*, *"in depth"*) at most 80.
   Every phase has a share, and what a phase leaves unused rolls forward to the next:
 
   | Budget | Search (with the scene as it is) | Map | Hunt | Confirm |
   | --- | --- | --- | --- | --- |
-  | quick | 14 | 6 | 5 | 5 |
-  | thorough | 24 | 12 | 12 | 12 |
+  | quick | 14 | 6 | 5 | 15 |
+  | thorough | 24 | 12 | 12 | 32 |
 
 - **Conditions** (2–4 that fit the scene, picked by rules in this order, or the ones the request names):
 
@@ -547,8 +547,9 @@ design, until one robot fails, and report where. No earlier run is needed.
   terrain randomness and nudge the start by ±1 cm and ±1°. A failure is kept only when it reproduces: **reliable
   fail** (3 of 3) or **borderline** (2 of 3), labelled as such; one that fails only on its own seed is dropped and
   counted (*"2 apparent failures didn't reproduce"*). Each limit gets a badge for its first failure and its last OK
-  value. The order, while the budget lasts: the hunt's failures first, then the tightest limit's first failure and
-  last OK value, then the other limits the same way, then the inferred cells.
+  value. The order, while the budget lasts: each limit's first failure and last OK value from the tightest first,
+  then Hunter failures closest to normal, then the inferred cells. Remaining Hunter failures are listed as
+  unconfirmed when the budget runs out.
 - **Inferred cells checked:** up to 2 inferred map cells (where the guess is least sure) are run for real. A cell
   whose run disagrees is corrected: it becomes measured, with its run id, outlined on the card, and the reply says
   so (*"1 inferred cell was wrong; corrected"*). The honesty line counts the cells checked and how many were wrong.
@@ -564,7 +565,7 @@ design, until one robot fails, and report where. No earlier run is needed.
   kept failure with its badge, a *surprising* (or dashed *possibly surprising*) tag, its pass count and confidence interval, its run ids and the
   Hunter's reason; then the Hunter's decisions, what was dropped and what wasn't confirmed.
 
-Found on a 4-wheel rover driving east on Earth sand (quick, rules, 26 of 30 runs): OK at a 22.5° slope (passed on
+Found in an earlier quick scan on a 4-wheel rover driving east on Earth sand (rules, 26 of the then-30-run budget): OK at a 22.5° slope (passed on
 3 of 3 seeds) and fell at 26.2° (failed on 3 of 3), with 3 conditions sharing the search, so 4 runs each (a direct
 sweep in 2.5° steps passes at 22.5° and fails from 25°); friction alone and roughness alone never broke. The Hunter found what neither shows alone: slope 21.0° with friction 0.18, and then the milder slope
 18.4° with friction 0.22, both reliable fails on 3 seeds and marked surprising; slope 21.0° with roughness 0.80 held.
@@ -707,8 +708,8 @@ that test reports "skip" with the reason.
 | `wilson_interval_labels_and_seeded_repeats` | Wilson intervals match known values (3/3 → 44–100%), the reliable pass/borderline/reliable fail labels, a crashed run left out of the count, seed 0 unchanged and seed k adding terrain seed + k, and the start nudge staying within ±1 cm and ±1° and repeating for the same seed |
 | `diagnose_marks_a_verdict_the_seeds_disagree_on_uncertain` | With faked batch results, a cause that passes on one seed and not the other is "uncertain", the conclusion opens "Confirmed: obstacle. Uncertain: slipping (the 2 seeds disagreed).", 8 runs are used (2 reproductions + 3 experiments × 2 seeds; a cause passed on its own, so no follow-up), a model conclusion calling it ruled out is rejected, and the cost is reported |
 | `diagnose_still_runs_a_follow_up_after_three_causes_on_two_seeds` | With faked batch results, after 3 causes on 2 seeds each, two causes that each only partly help are tested together as a follow-up on 2 seeds and confirmed: 2 + 6 + 2 = 10 runs within the 12-rerun budget |
-| `finder_slope_limit_matches_a_direct_sweep_and_the_map_agrees` | On Earth sand the finder's slope bracket overlaps a direct 2.5° sweep's (passes at 22.5°, fails from 25°), within 30 runs and 5 per condition, each run one change; the map's edges agree with phase 1; the honesty line and the rules text's numbers check out |
-| `finder_budget_explainer_number_check_and_baseline_failure` | With a faked batch runner: a thorough search uses 4 conditions within 60 runs and fills the map; the slope bracket is 1/16 of its range; a scene that already fails stops after 1 run; the number check rejects "fails at 21.0°" and a reply that doesn't start with the tightest limit, retries once and falls back to the rules text |
+| `finder_slope_limit_matches_a_direct_sweep_and_the_map_agrees` | On Earth sand the finder's slope bracket overlaps a direct 2.5° sweep's (passes at 22.5°, fails from 25°), within 40 runs and 5 per condition, each run one change; the map's edges agree with phase 1; the honesty line and the rules text's numbers check out |
+| `finder_budget_explainer_number_check_and_baseline_failure` | With a faked batch runner: a thorough search uses 4 conditions within 80 runs and fills the map; the slope bracket is 1/16 of its range; a scene that already fails stops after 1 run; the number check rejects "fails at 21.0°" and a reply that doesn't start with the tightest limit, retries once and falls back to the rules text |
 | `finder_searches_speed_both_ways_for_legged_and_library_robots` | A walker (and a library robot) gets speed searched faster and slower as one condition with two half-searches of at most 5 runs each, finding both limits; a rover is searched faster only |
 | `finder_searches_gravity_on_any_world_only_when_asked` | On Mars, "where does it break if gravity drops?" searches gravity from 3.71 m/s² and finds its limit; without the word it isn't searched; gravity named only by the model is removed with a note |
 | `finder_inferred_map_cells_are_labelled_counted_and_never_explained_as_measured` | Inferred map cells have no run id while run cells point to phase-2 runs; the counts add up, the honesty line counts the inferred cells, FACTS for the Explainer state only the combinations that ran, and the card labels inferred cells |
@@ -716,7 +717,7 @@ that test reports "skip" with the reason.
 | `hunter_failing_combination_is_confirmed_marked_surprising_and_explained_with_checked_numbers` | A combination that fails although each condition is fine alone is a reliable fail on 3 seeds (seed 0 its own run, seeds 1–2 nudged), marked surprising, shown as Hunter steps, and explained with numbers that pass the check; each limit gets a badge |
 | `failure_that_does_not_reproduce_is_dropped_and_counted` | A failure only on its own seed is dropped and counted in the honesty line and FACTS; one that fails on 2 of 3 seeds is kept as borderline |
 | `hunter_stop_ends_the_hunt_and_hunt_more_runs_one_more_round` | "stop" ends after round 1; "hunt more" runs one more round; the rules stop when nothing combined failed |
-| `hunt_and_confirmation_fit_the_budget_and_say_what_was_not_confirmed` | Quick and thorough stay within 25 and 60 runs; when the search leaves too few runs, what wasn't confirmed is listed in the honesty line |
+| `hunt_and_confirmation_fit_the_budget_and_say_what_was_not_confirmed` | Quick and thorough stay within 40 and 80 runs; when the search leaves too few runs, what wasn't confirmed is listed in the honesty line |
 | `inferred_map_cell_contradicted_by_a_real_run_is_corrected_and_reported` | An inferred cell a real run contradicts becomes measured with its run id, is counted as wrong and reported as corrected |
 | `failures_are_ranked_simplest_first` | Failures are ranked by distance from normal, fewer conditions first at the same distance |
 | `hunter_reason_must_cite_a_measured_result_not_its_window` | A Hunter reason that only quotes a window is rejected, and the retry says to cite a measured result |

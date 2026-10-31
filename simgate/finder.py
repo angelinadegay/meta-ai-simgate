@@ -9,7 +9,7 @@ every condition stays below its own single limit but together might fail; the ru
 The confirmation re-runs every failure found and the phase-1 boundary points on 3 seeds, keeps only what reproduces
 and runs up to 2 inferred map cells for real. The limits, the failures ranked from the closest to normal, the map,
 the runs behind them and the cost are reported with an honesty line written in code, and the Explainer's numbers are
-checked against them. Each phase has a share of the quick (30 runs) or thorough (60) budget; what one leaves
+checked against them. Each phase has a share of the quick (40 runs) or thorough (80) budget; what one leaves
 unused rolls forward to the next.
 """
 
@@ -41,10 +41,10 @@ KNOBS: dict[str, dict[str, Any]] = {
 RULE_ORDER = ["slope_deg", "obstacle_scale", "friction", "roughness", "push_n", "payload", "gravity", "speed"]
 BOTH_WAYS = ("walker", "library")   # robots whose speed is searched in both directions
 # every phase gets a share of the budget; what a phase leaves unused rolls forward to the next one
-SHARES = {"quick": {"search": 14, "map": 6, "hunt": 5, "confirm": 5},
-          "thorough": {"search": 24, "map": 12, "hunt": 12, "confirm": 12}}
+SHARES = {"quick": {"search": 14, "map": 6, "hunt": 5, "confirm": 15},
+          "thorough": {"search": 24, "map": 12, "hunt": 12, "confirm": 32}}
 PHASES = ("search", "map", "hunt", "confirm")
-BUDGETS = {budget: sum(shares.values()) for budget, shares in SHARES.items()}   # quick 30, thorough 60
+BUDGETS = {budget: sum(shares.values()) for budget, shares in SHARES.items()}   # quick 40, thorough 80
 KNOB_COUNT = {"quick": 3, "thorough": 4}
 SEARCH_RUNS = 5          # per condition at most: its harsh end, then 4 halvings (fewer when the search share is tight)
 GRID = 4
@@ -874,19 +874,22 @@ def _verdict(rows: list[dict], wanted: str) -> dict:
 
 def confirm(runner: Runner, report: dict, context: dict, on_step: StepCallback | None) -> None:
     """Re-run every failure found and the phase-1 boundary points on seeds 1 and 2 (seed 0 is the run already made),
-    and run up to 2 inferred map cells for real. In order of what matters most, while the budget lasts: the hunt's
-    failures; then each limit from the tightest, its first failure and its last OK value; then the inferred cells."""
+    and run up to 2 inferred map cells for real. While the budget lasts, confirm each limit's first failure and last
+    OK value from the tightest first, then Hunter failures closest to normal, then inferred cells."""
     evidence = {row["id"]: row for row in runner.evidence}
     base = context["base"]
     items = []   # (what, the original row, wanted)
-    for c in report["hunt"]["results"]:
-        if c["broke"]:
-            items.append(({"kind": "combined", "combo": c}, evidence[c["run"]], "fail"))
     for limit in report["limits"]:
         if not limit["never_broke"]:
             items.append(({"kind": "limit", "limit": limit, "side": "fails_at"}, evidence[limit["fail_run"]], "fail"))
             if limit["ok_run"] in evidence:
                 items.append(({"kind": "limit", "limit": limit, "side": "ok_at"}, evidence[limit["ok_run"]], "pass"))
+    hunt_failures = sorted(
+        (combo for combo in report["hunt"]["results"] if combo["broke"]),
+        key=lambda combo: (distance(combo["values"], base), len(combo["values"]), combo["run"]),
+    )
+    for combo in hunt_failures:
+        items.append(({"kind": "combined", "combo": combo}, evidence[combo["run"]], "fail"))
     checks = _inferred_to_check(report.get("map"))
 
     jobs, planned, unconfirmed, left, rerun = [], [], [], runner.left, set()

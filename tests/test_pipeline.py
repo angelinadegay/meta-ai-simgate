@@ -2556,7 +2556,7 @@ def test_finder_slope_limit_matches_a_direct_sweep_and_the_map_agrees():
 
     spec = sandy_ramp()
     report = find_failures(spec, knobs=["slope_deg", "friction"])
-    assert report["runs"] <= BUDGETS["quick"] == 30 and report["runs"] == len(report["evidence"]) == report["cost"]["runs"]
+    assert report["runs"] <= BUDGETS["quick"] == 40 and report["runs"] == len(report["evidence"]) == report["cost"]["runs"]
     slope = next(limit for limit in report["limits"] if limit["knob"] == "slope_deg")
     assert not slope["never_broke"] and slope["runs"] <= SEARCH_RUNS and slope["baseline"] == 0
     evidence = {row["id"]: row for row in report["evidence"]}
@@ -2622,8 +2622,8 @@ def test_finder_budget_explainer_number_check_and_baseline_failure():
         already = finder.find_failures(spec)
     finally:
         finder.run_batch = real
-    assert len(thorough["knobs"]) == 4 and thorough["runs"] <= 60 and thorough["map"]["counts"]["unknown"] == 0
-    assert quick["runs"] <= 30
+    assert len(thorough["knobs"]) == 4 and thorough["runs"] <= 80 and thorough["map"]["counts"]["unknown"] == 0
+    assert quick["runs"] <= 40
     slope = quick["limits"][0]
     assert slope["knob"] == "slope_deg" and slope["last_ok"] <= 17 < slope["first_fail"] and slope["step"] <= 30 / 16
     assert already["runs"] == 1 and already["limits"] == [] and "already fails as it is" in already["explanation"]
@@ -3038,9 +3038,9 @@ def test_every_phase_gets_a_share_and_the_hunter_decides_while_its_share_lasts()
 
     from simgate.finder import BUDGETS, PHASES, SHARES
 
-    assert BUDGETS == {"quick": 30, "thorough": 60}
-    assert SHARES["quick"] == {"search": 14, "map": 6, "hunt": 5, "confirm": 5}
-    assert SHARES["thorough"] == {"search": 24, "map": 12, "hunt": 12, "confirm": 12}
+    assert BUDGETS == {"quick": 40, "thorough": 80}
+    assert SHARES["quick"] == {"search": 14, "map": 6, "hunt": 5, "confirm": 15}
+    assert SHARES["thorough"] == {"search": 24, "map": 12, "hunt": 12, "confirm": 32}
     for budget in ("quick", "thorough"):
         report = _run_finder(_hunter_world(Robot(kind="walker", legs=4)), lambda v: _alone(v) or _together(v),
                              knobs=["slope_deg", "friction", "speed"], budget=budget)
@@ -3086,17 +3086,85 @@ def test_every_phase_gets_a_share_and_the_hunter_decides_while_its_share_lasts()
                                   "reason": "The hunt's share of the budget (1 run) is spent, so the hunt stops here."}]
 
 
-def test_confirmation_goes_failures_first_then_the_tightest_limit_then_the_others():
+def test_confirmation_checks_tight_limits_before_hunter_failures():
     report = _run_finder(_hunter_world(), lambda v: _alone(v) or _together(v), knobs=["slope_deg", "friction"],
                          budget="thorough")
     evidence = {row["id"]: row for row in report["evidence"]}
     order = list(dict.fromkeys(row["confirms"] for row in report["evidence"] if "confirms" in row))
     hunted = [c["run"] for c in report["hunt"]["results"] if c["broke"]]
-    tight, other = report["limits"][0], report["limits"][1]
-    assert order[:len(hunted)] == hunted
-    assert order[len(hunted):len(hunted) + 2] == [tight["fail_run"], tight["ok_run"]]
-    assert order[len(hunted) + 2:len(hunted) + 4] == [other["fail_run"], other["ok_run"]]
+    boundaries = [run for limit in report["limits"] if not limit["never_broke"]
+                  for run in (limit["fail_run"], limit["ok_run"]) if run is not None]
+    assert order[:len(boundaries)] == boundaries
+    assert set(order[len(boundaries):]) <= set(hunted)
     assert all(evidence[r]["phase"] == 4 for r in [row["id"] for row in report["evidence"] if "confirms" in row])
+
+
+def test_quick_confirmation_reserves_seed_runs_for_all_limit_boundaries():
+    from simgate import finder
+
+    spec = _hunter_world()
+    base = {"slope_deg": 0.0, "friction": 0.9, "push_n": 0.0}
+    evidence = []
+    limits = []
+    for index, (knob, last_ok, first_fail) in enumerate((
+        ("slope_deg", 10.0, 20.0), ("friction", 0.4, 0.2), ("push_n", 40.0, 70.0),
+    )):
+        fail_id, ok_id = f"run-{index * 2 + 1}", f"run-{index * 2 + 2}"
+        evidence.extend([
+            {"id": fail_id, "broke": True, "failure": "fell", "change": {knob: first_fail},
+             "knob": knob, "value": first_fail},
+            {"id": ok_id, "broke": False, "failure": None, "change": {knob: last_ok},
+             "knob": knob, "value": last_ok},
+        ])
+        limits.append({
+            "knob": knob, "name": finder.KNOBS[knob]["name"], "baseline": base[knob],
+            "harsh": finder.KNOBS[knob]["harsh"], "last_ok": last_ok, "first_fail": first_fail,
+            "failure": "fell", "never_broke": False, "fail_run": fail_id, "ok_run": ok_id,
+            "shown": {"last_ok": finder.show(knob, last_ok), "first_fail": finder.show(knob, first_fail)},
+        })
+
+    combos = []
+    for index in range(8):
+        run_id = f"run-{index + 7}"
+        values = {"slope_deg": 20.0, "friction": 0.2}
+        evidence.append({"id": run_id, "broke": True, "failure": "fell", "change": values,
+                         "knob": "slope_deg+friction", "value": list(values.values())})
+        combos.append({"values": values, "reason": "combined conditions failed", "round": 1,
+                       "run": run_id, "broke": True, "failure": "fell"})
+
+    original_by_id = {row["id"]: row for row in evidence}
+
+    class LimitedRunner:
+        left = 16
+        robot_id = "r1"
+        scene = spec
+
+        def __init__(self):
+            self.evidence = evidence
+            self.jobs = []
+
+        def run(self, jobs):
+            self.jobs.extend(jobs)
+            return [{"id": f"confirm-{index}", "confirms": setting["confirms"],
+                     "broke": original_by_id[setting["confirms"]]["broke"],
+                     "failure": original_by_id[setting["confirms"]].get("failure")}
+                    for index, (setting, _) in enumerate(jobs)]
+
+    report = {"limits": limits, "hunt": {"results": combos}, "map": None, "runs": 0,
+              "model_calls": [], "unconfirmed": []}
+    runner = LimitedRunner()
+    finder.confirm(runner, report, {"base": base}, None)
+
+    assert len(runner.jobs) == 16   # all six limits' extra seeds, then two Hunter failures
+    for limit in report["limits"]:
+        assert limit["confirm"]["fails_at"]["total"] == 3
+        assert limit["confirm"]["ok_at"]["total"] == 3
+    confirmed_combos = [item["confirms"] for item, _ in runner.jobs[12:]]
+    nearest = sorted(combos, key=lambda combo: (
+        finder.distance(combo["values"], base), len(combo["values"]), combo["run"]
+    ))[:2]
+    assert confirmed_combos == [combo["run"] for combo in nearest for _ in range(2)]
+    assert len(report["unconfirmed"]) == 6
 
 
 def test_one_message_builds_the_scene_then_runs_the_analysis_it_asks_for():
