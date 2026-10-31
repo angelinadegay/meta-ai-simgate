@@ -61,9 +61,17 @@ def test_three_rover_race_has_non_overlapping_spawns_and_leaderboard():
     checks = sim.validate(spec, build)
     assert all(check.passed for check in checks), [check for check in checks if not check.passed]
     assert [row.id for row in spec.robots] == ["r1", "r2", "r3"]
-    assert sum(len(chunk) for chunk in sim.run(spec, build)) == int(spec.duration_s * 30)
-    leaderboard = sim.summary()["leaderboard"]
+    frames = sum(len(chunk) for chunk in sim.run(spec, build))
+    summary = sim.summary()
+    stopped = summary["stopped_early"]
+    assert frames < int(spec.duration_s * 30)
+    assert stopped["reason"] == "every robot decided" and stopped["planned_s"] == spec.duration_s
+    assert stopped["robots"] == {"r1": "reached", "r2": "reached", "r3": "reached"}
+    assert stopped["at_s"] >= max(robot["time_to_goal_s"] for robot in summary["robots"].values()) - 0.1
+    leaderboard = summary["leaderboard"]
     assert len(leaderboard) == 3 and all(row["goal_reached"] for row in leaderboard)
+    assert {row["id"] for row in leaderboard} == {"r1", "r2", "r3"}
+    assert all(row["result"].startswith("arrived in ") for row in leaderboard)
     assert all(row["brain"] == "wheel controller" for row in leaderboard)
     arrival_times = [row["time_to_goal_s"] for row in leaderboard]
     assert arrival_times == sorted(arrival_times)
