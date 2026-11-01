@@ -821,6 +821,15 @@ Things to try:
 To add a simulator: add a domain to `SceneSpec`, subclass `Simulator` in `backends/`, register it in
 `backends/__init__.py`, and add a viewer branch in `static/index.html`.
 
+## Visuals
+
+Terrain textures, seeded rock meshes, lighting, robot materials, path markers and building skins are browser-only
+presentation. They do not change MuJoCo models, OpenSees analyses or simulation results; the quality control only
+changes rendering cost. Real-terrain RGB orthos are optional, cropped and oriented with the elevation data, and
+retain their source and credit in preset metadata. The public Jezero DTM checked for this viewer has no matching
+true-color ortho, so it uses the procedural terrain material. HiRISE elevation and ortho data are credited to
+NASA/JPL/University of Arizona (CC0 1.0); three.js is vendored under MIT (see `static/vendor/three-LICENSE`).
+
 ## Known limits
 
 - Robots steer straight at the goal and go over obstacles; there's no route planning around them yet.
