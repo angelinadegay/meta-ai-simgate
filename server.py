@@ -150,7 +150,10 @@ async def ws(socket: WebSocket):
             elif msg.get("type") == "show_design":
                 await session.show_design()
             elif msg.get("type") == "library_select":
-                await session.select_library(msg["robot_id"], msg["policy_id"], msg["world_id"])
+                await session.select_library(msg["robot_id"], msg["policy_id"], msg["world_id"],
+                                             start_scene=bool(msg.get("start_scene")),
+                                             terrain_kind=msg.get("terrain_kind", "hills"),
+                                             title=msg.get("title", ""), obstacles=msg.get("obstacles"))
             elif text := (msg.get("text") or "").strip():
                 await session.handle(text)
     except WebSocketDisconnect:

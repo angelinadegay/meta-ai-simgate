@@ -3994,6 +3994,30 @@ def test_library_selection_builds_and_checks_the_selected_robot():
     assert any(check.name == "Library policy loads and validates" and check.passed for check in session.checks)
 
 
+def test_library_launch_builds_without_planning_call():
+    import asyncio
+
+    from simgate.orchestrator import Session
+
+    async def emit(event):
+        events.append(event)
+
+    events = []
+    original_plan = agents.plan
+    agents.plan = lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("library launch called the planner"))
+    try:
+        session = Session(emit)
+        asyncio.run(session.select_library("g1", "g1_walking", "mars-regolith", start_scene=True,
+                                           terrain_kind="hills", title="G1 · Mars hills"))
+    finally:
+        agents.plan = original_plan
+    assert session.spec is not None and session.spec.terrain.kind == "hills"
+    assert session.spec.environment.body == "mars" and session.spec.robot.robot_id == "g1"
+    assert any(event["type"] == "scene" for event in events)
+    assert any(event["type"] == "checks" for event in events)
+    assert any(event["type"] == "question" for event in events)
+
+
 def test_library_selection_sets_up_one_scene_only():
     import asyncio
 

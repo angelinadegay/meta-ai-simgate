@@ -276,7 +276,8 @@ class Session:
         spec.title = f"{robot_card.name} on {spec.terrain.kind if spec.terrain else 'generated'} terrain, {world.body.title()}"
         spec.fill_defaults()
 
-    async def select_library(self, robot_id: str, policy_id: str, world_id: str) -> None:
+    async def select_library(self, robot_id: str, policy_id: str, world_id: str, *, start_scene: bool = False,
+                             terrain_kind: str = "hills", title: str = "", obstacles: list[dict] | None = None) -> None:
         from .library import LibraryRegistry
 
         registry = LibraryRegistry()
@@ -287,6 +288,31 @@ class Session:
             raise ValueError(f"Unknown world library id: {world_id}")
         if policy not in registry.compatible_policies(robot_id):
             raise ValueError(f"Policy {policy_id!r} is not compatible with robot {robot_id!r}.")
+        if start_scene and self.spec is None:
+            from .spec import Environment, Mission, Obstacle, Robot, SceneSpec, Terrain
+
+            kind = world.terrain_kind
+            if kind != "real":
+                kind = terrain_kind
+            terrain = Terrain(kind=kind, preset=world.terrain_preset if kind == "real" else None)
+            goal = "highest" if terrain.kind in {"hills", "rocky", "craters"} else "east"
+            spec = SceneSpec(
+                domain="robot_terrain",
+                title=title or f"{robot.name} · {world.name}",
+                environment=Environment(body=world.body, gravity=world.gravity_m_s2, surface=world.surface,
+                                        friction=world.friction),
+                terrain=terrain,
+                robot=Robot(kind="rover"),
+                mission=Mission(goal_place=goal),
+                obstacles=[Obstacle.model_validate(item) for item in (obstacles or [])],
+            )
+            self.library_selection = (robot.id, policy.id, world.id)
+            self._apply_library_selection(spec)
+            if title:
+                spec.title = title
+            self.library_selection = None
+            await self.build_and_check(spec)
+            return
         self.library_selection = (robot.id, policy.id, world.id)
         await self.emit({
             "type": "library_selected",
