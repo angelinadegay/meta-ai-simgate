@@ -873,12 +873,30 @@ function addAgent(ev) {
 // One click = one run: every Run button goes inactive once a run is requested or starts.
 function disableRunButtons() { document.querySelectorAll(".chip.run").forEach((b) => { b.disabled = true; }); }
 function chips(container, items, primary) {
-  for (const t of items) {
-    const b = document.createElement("button"); b.type = "button"; b.className = "chip" + (t === primary ? " primary" : ""); b.textContent = t;
-    if (t === primary) b.classList.add("run");
-    b.onclick = () => { if (b.classList.contains("run")) disableRunButtons(); send(t); };
+  for (const item of items) {
+    const option = typeof item === "string" ? { label: item, message: item } : item;
+    if (!option?.label) continue;
+    const isPrimary = option.label === primary || option.primary;
+    const b = document.createElement("button"); b.type = "button"; b.className = "chip" + (isPrimary ? " primary" : ""); b.textContent = option.label;
+    if (/^run(?: again| anyway)?$/i.test(option.label)) b.classList.add("run");
+    b.onclick = () => {
+      if (b.classList.contains("run")) disableRunButtons();
+      if (option.action?.type === "show_design") {
+        if (sendEvent({ type: "show_design" })) addMsg("Show runs", "user");
+      } else if (option.action?.type === "open_upload") {
+        showWorkbench(); openUpload(option.action.kind || "policy");
+      } else if (option.action?.type === "replay_weakest_spot") {
+        sendEvent({ type: "replay_weakest_spot" });
+      } else send(option.message || option.label);
+    };
     container.appendChild(b);
   }
+}
+function appendActionChips(parent, actions) {
+  if (!actions?.length) return;
+  const row = document.createElement("div"); row.className = "quick"; chips(row, actions, null);
+  const actionsSlot = parent.querySelector(".card-actions");
+  if (actionsSlot) actionsSlot.appendChild(row); else parent.appendChild(row);
 }
 renderHomeExamples();
 
@@ -1496,7 +1514,10 @@ ws.onmessage = (m) => {
       break;
     case "question": {
       setRequestProgress("Scene ready; waiting for your next step.", "done");
-      const d = addMsg(ev.message); const q = document.createElement("div"); q.className = "quick";
+      const d = addMsg(ev.message);
+      if (ev.note) d.appendChild(textEl("span", ev.note, "cost-note"));
+      const q = document.createElement("div"); q.className = "quick";
+      if (ev.actions) { chips(q, ev.actions, null); d.appendChild(q); break; }
       if (ev.chips) { chips(q, ev.chips, null); d.appendChild(q); break; }   // the next step after an analysis
       const label = ev.message.startsWith("This scene already ran") ? "Run again"
         : ev.message.startsWith("This scene still fails") ? "Run anyway" : "Run";
@@ -1540,11 +1561,12 @@ ws.onmessage = (m) => {
       if (!preRun) setRequestProgress("Results summarized. Complete.", "done");
       const d = preRun ? addMsg(ev.message)
         : updateLatestInsight(ev.message) ? latestInsight
-          : addInsight(parts[0].trim() || "Simulation insight", parts.slice(1).join("").trim() || ev.message, "results");
+          : addInsight(ev.reason || parts[0].trim() || "Simulation insight", parts.slice(1).join("").trim() || ev.message, "results");
+      if (!preRun && ev.reason && d === latestInsight) d.querySelector("strong").textContent = ev.reason;
+      appendActionChips(d, ev.actions);
       if (batchIsActive) $("stressExplanation").textContent = ev.message;
       if (ev.chips) {   // after a failed run, offer to find out why or to make it pass (naming the robot in a race)
-        const q = document.createElement("div"); q.className = "quick";
-        chips(q, ev.chips, null); d.appendChild(q);
+        appendActionChips(d, ev.chips);
       }
       break;
     }

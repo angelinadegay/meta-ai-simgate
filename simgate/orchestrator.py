@@ -10,6 +10,8 @@ from . import agents, cost
 from .backends.base import BuildResult, Check, Simulator, blocking_failures
 from .batch import crash_report, measured
 from .director import FOLLOW_UP_WORDS, Director, follow_up_plan
+from .facts import facts as scene_facts
+from .next_actions import next_actions
 from .workflows import SessionState
 from .spec import SceneSpec
 
@@ -135,10 +137,42 @@ class Session:
             await self.emit({"type": "explanation", "message": message})   # a chat line without a Run chip
             await self.run()
             return
+        if unchanged:
+            if world.report is not None:
+                report_type = world.report.get("type", "")
+                workflow = "finder" if report_type == "envelope" else report_type
+                guidance = next_actions(workflow, {"report": world.report}, scene_facts(spec, self.last_summary or {}), spec)
+                event = {
+                    "type": "question",
+                    "message": guidance["reason"],
+                    "actions": guidance["actions"],
+                    "stress_test_available": spec.domain == "robot_terrain",
+                }
+                if report_type == "envelope" and world.report.get("honesty"):
+                    event["note"] = world.report["honesty"]
+                await self.emit(event)
+                return
+            await self.emit({
+                "type": "question",
+                "message": message,
+                "chips": self._next_chips(world.report),
+                "stress_test_available": spec.domain == "robot_terrain",
+            })
+            return
+        if world.report is not None:
+            report_type = world.report.get("type", "")
+            workflow = "finder" if report_type == "envelope" else report_type
+            guidance = next_actions(workflow, {"report": world.report}, scene_facts(spec, world.results or {}), spec)
+        elif blocking_failures(self.checks):
+            guidance = next_actions("checks", {
+                "kind": "check_failed", "checks": [check.__dict__ for check in self.checks],
+            }, scene_facts(spec, world.results or {}), spec)
+        else:
+            guidance = next_actions("scene", {"kind": "ready"}, scene_facts(spec, world.results or {}), spec)
         await self.emit({
             "type": "question",
-            "message": message,
-            "chips": self._next_chips(world.report),
+            "message": guidance["reason"],
+            "actions": guidance["actions"],
             "stress_test_available": spec.domain == "robot_terrain",
         })
 
@@ -558,5 +592,13 @@ class Session:
         await self.agent("Explainer", "working", "Explaining what happened…")
         text = await asyncio.to_thread(agents.explain, self.spec, metrics)
         await self.agent("Explainer", "done", "Done.")
-        chips = self._failure_chips(metrics) if self.spec.domain == "robot_terrain" else None
-        await self.emit({"type": "explanation", "message": text, **({"chips": chips} if chips else {})})
+        if self.spec.domain == "robot_terrain":
+            from .facts import facts as build_facts
+
+            outcome = "run_passed" if metrics.get("goal_reached") else "run_failed"
+            guidance = next_actions(outcome, {"kind": outcome, "passed": bool(metrics.get("goal_reached")),
+                                              "metrics": metrics}, build_facts(self.spec, metrics), self.spec)
+        else:
+            guidance = None
+        await self.emit({"type": "explanation", "message": text,
+                         **({"reason": guidance["reason"], "actions": guidance["actions"]} if guidance else {})})

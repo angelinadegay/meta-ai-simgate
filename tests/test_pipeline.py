@@ -647,7 +647,9 @@ def test_answer_first_does_not_leave_an_empty_scene():
 
     session, events = asyncio.run(scenario())
     assert session.build is not None and len(session.spec.robots) == 1
-    assert events[-1]["type"] == "question" and events[-1]["message"] == "Run it?"
+    assert events[-1]["type"] == "question"
+    assert events[-1]["message"] == "The scene passed its physics checks and is ready to run."
+    assert [action["label"] for action in events[-1]["actions"]] == ["Run", "Find where it breaks", "Stress test"]
 
 
 def test_new_plan_scenes_keep_the_planned_title():
@@ -2021,6 +2023,121 @@ def test_browser_handles_the_analysis_events():
     assert 'msg.get("type") == "show_design"' in (root / "server.py").read_text(encoding="utf-8")
 
 
+def test_next_actions_cover_the_outcome_matrix():
+    from simgate.facts import facts
+    from simgate.next_actions import next_actions
+
+    scene = SceneSpec(
+        domain="robot_terrain",
+        terrain=Terrain(kind="real", preset="gale"),
+        robot=Robot(kind="library", robot_id="g1", policy_id="g1_walking"),
+    ).fill_defaults()
+
+    def check_result(result, labels):
+        assert result["reason"].strip().endswith((".", "!", "?"))
+        assert 2 <= len(result["actions"]) <= 4
+        assert [action["label"] for action in result["actions"]] == labels
+        assert all(action.get("message") or action.get("action") for action in result["actions"])
+
+    ready = next_actions("scene", {"kind": "ready"}, facts(scene, {}), scene)
+    check_result(ready, ["Run", "Find where it breaks", "Stress test"])
+    assert ready["actions"][0]["message"] == "run"
+
+    start_failure = next_actions("checks", {
+        "kind": "check_failed", "start_slope_deg": 14,
+        "checks": [{"name": "Robot rests on terrain", "detail": "No stable stance at start.", "passed": False}],
+    }, {}, scene)
+    check_result(start_failure, ["Start on flatter ground", "Try gentler terrain (hills)",
+                                 "Use a 6-legged walker", "Run anyway"])
+    assert "G1" in start_failure["reason"] and "14°" in start_failure["reason"]
+
+    units_failure = next_actions("checks", {
+        "kind": "check_failed",
+        "checks": [{"name": "Robot units", "detail": "Mass and mesh units conflict.", "passed": False}],
+    }, {}, scene)
+    assert "units" in units_failure["reason"]
+
+    spawn_failure = next_actions("checks", {
+        "kind": "check_failed", "start_slope_deg": 14,
+        "checks": [{"name": "Spawn slope", "detail": "14° at spawn.", "passed": False}],
+    }, {}, scene)
+    assert "14°" in spawn_failure["reason"]
+
+    other_check = next_actions("checks", {
+        "kind": "check_failed",
+        "checks": [{"name": "Model compiles", "detail": "Missing a joint.", "passed": False}],
+    }, {}, scene)
+    assert "model compiles" in other_check["reason"]
+
+    passed_facts = facts(scene, {"simulator": "MuJoCo", "goal_reached": True, "time_to_goal_s": 12.5})
+    passed = next_actions("run", {"kind": "run_passed", "passed": True,
+                                  "metrics": {"goal_reached": True, "time_to_goal_s": 12.5}}, passed_facts, scene)
+    check_result(passed, ["Find where it breaks", "Make it harder", "Race it against a rover"])
+    assert "12.5 seconds" in passed["reason"]
+
+    failed_metrics = {"simulator": "MuJoCo", "goal_reached": False, "outcome": "fell", "final_distance_m": 34.99}
+    failed_facts = facts(scene, failed_metrics)
+    failed = next_actions("run", {"kind": "run_failed", "passed": False, "metrics": failed_metrics}, failed_facts, scene)
+    check_result(failed, ["Why did it fail?", "Make it pass", "Find where it breaks"])
+    assert "fell" in failed["reason"]
+
+    diagnosis = next_actions("diagnosis", {"report": {"type": "diagnosis", "reproduced": True, "hypotheses": [
+        {"cause": "obstacle", "verdict": "confirmed"},
+    ]}}, failed_facts, scene)
+    check_result(diagnosis, ["Make it pass", "Make the obstacle smaller", "Replay the failure"])
+    assert "obstacle" in diagnosis["reason"]
+
+    redesign_found = next_actions("redesign", {"report": {
+        "type": "redesign", "winner": {"description": "six wheels", "changes": {"wheels": 6}},
+    }}, failed_facts, scene)
+    check_result(redesign_found, ["Use this design", "Re-check the limits", "Show runs"])
+    assert redesign_found["actions"][2]["action"] == {"type": "show_design"}
+
+    redesign_empty = next_actions("redesign", {"report": {
+        "type": "redesign", "tried_count": 4,
+        "best_attempt": {"description": "six wheels", "summary": "still fell"},
+        "diagnosis": {"conclusion": "A steep route was confirmed."},
+    }}, failed_facts, scene)
+    check_result(redesign_empty, ["Find a gentler route", "Try gentler terrain (hills)",
+                                  "Race it against a rover", "Upload a better policy"])
+    assert "trained robot body is fixed" in redesign_empty["reason"]
+    assert "steep route" in redesign_empty["reason"]
+
+    fragile = next_actions("redesign", {"report": {"type": "redesign",
+        "fragile": {"description": "six wheels", "changes": {"wheels": 6}, "fragile": True}}}, failed_facts, scene)
+    assert fragile["actions"][0] == {"label": "Use fragile design", "message": "use fragile design"}
+
+    finder = next_actions("finder", {"report": {"type": "envelope", "limits": [
+        {"name": "sideways push", "first_fail": 15.0},
+    ]}}, failed_facts, scene)
+    check_result(finder, ["Replay the weakest spot", "Why?", "Make it pass"])
+    assert "15" in finder["reason"]
+
+    ambiguous = next_actions("ambiguous", {"reason": "Which world should I change?", "options": [
+        {"label": "Earth gravity on Gale", "message": "Earth gravity on this same terrain"},
+        {"label": "Earth terrain", "message": "Earth terrain instead"},
+        {"label": "Keep Mars", "message": "Keep Mars"},
+    ]}, failed_facts, scene)
+    check_result(ambiguous, ["Earth gravity on Gale", "Earth terrain", "Keep Mars"])
+
+    unrecognized = next_actions("planner_unrecognized", {}, {}, scene)
+    check_result(unrecognized, ["Change the terrain", "Change the robot", "Set a goal"])
+    assert unrecognized["reason"].startswith("I didn't catch that") and unrecognized["reason"].endswith("?")
+
+
+def test_session_uses_next_actions_for_ready_scene_and_run_result():
+    session, (ready_events,) = session_turns("4-wheel rover on flat ground")
+    ready = next(event for event in ready_events if event["type"] == "question")
+    assert ready["message"] == "The scene passed its physics checks and is ready to run."
+    assert [action["label"] for action in ready["actions"]] == ["Run", "Find where it breaks", "Stress test"]
+
+    session, (run_events,) = session_turns("4-wheel rover on flat ground, go")
+    explanation = [event for event in run_events if event["type"] == "explanation"][-1]
+    assert explanation["reason"].endswith(".")
+    assert len(explanation["actions"]) == 3
+    assert all(action.get("message") or action.get("action") for action in explanation["actions"])
+
+
 def test_websocket_emitter_stops_after_a_send_disconnect():
     import asyncio
 
@@ -2074,6 +2191,18 @@ def test_browser_groups_result_metrics_and_shows_live_progress():
                    'setRequestProgress("Results summarized. Complete.", "done")',
                    'setRequestProgress(AGENT_PROGRESS[ev.agent]'):
         assert needed in page, needed
+
+
+def test_browser_dispatches_structured_next_action_chips():
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parent.parent
+    page = (root / "static" / "vendor" / "index.html").read_text(encoding="utf-8")
+    assert 'if (ev.actions) { chips(q, ev.actions, null);' in page
+    assert 'typeof item === "string" ? { label: item, message: item } : item' in page
+    assert "send(option.message || option.label)" in page
+    assert 'option.action?.type === "show_design"' in page
+    assert 'option.action?.type === "open_upload"' in page
 
 
 def test_browser_quality_stays_manual_without_fps_downgrade():
@@ -2164,13 +2293,13 @@ def test_full_session_why_then_make_it_pass():
     diagnosis = next(e["report"] for e in why if e["type"] == "diagnosis")
     assert diagnosis["reproduced"] and any(h["verdict"] == "confirmed" and h["cause"] == "obstacle"
                                            for h in diagnosis["hypotheses"])
-    assert why[-1]["type"] == "question" and why[-1]["chips"] == ["Make it pass"]
+    assert why[-1]["type"] == "question" and why[-1]["actions"][0]["label"] == "Make it pass"
     assert not any(e["type"] in ("scene", "spec") for e in why)   # the scene itself didn't change
 
     fix = turns["make it pass"][0]
     redesign = next(e["report"] for e in fix if e["type"] == "redesign")
     assert redesign["winner"] and redesign["winner"]["robustness"]["total"] == 3
-    assert fix[-1]["chips"] == ["Use this design"]
+    assert fix[-1]["actions"][0]["label"] == "Use this design"
     for turn, agents_seen in ((why, {"Explainer", "Batch runner"}), (fix, {"Designer", "Batch runner", "Checker"})):
         steps = [e for e in turn if e["type"] == "step"]
         ids = {e["id"] for e in steps}
@@ -2269,14 +2398,15 @@ def test_race_diagnosis_and_redesign_target_one_robot():
 def test_failure_chips_name_the_robot_that_failed():
     _, (race, why, rover) = session_turns(MIXED_RACE, "Why did the Walker fail?", "why did the rover fail?")
     explained = [e for e in race if e["type"] == "explanation"][-1]
-    assert explained["chips"] == ["Why did the Walker fail?", "Make the Walker pass"]
+    assert [action["label"] for action in explained["actions"]] == ["Why did it fail?", "Make it pass", "Find where it breaks"]
     assert next(e["report"] for e in why if e["type"] == "diagnosis")["robot_id"] == "r2"
-    assert why[-1]["chips"] == ["Make the Walker pass"]
-    assert rover[-1]["chips"] == ["Why did the Walker fail?", "Make the Walker pass"]   # the rover won
+    assert why[-1]["actions"][0]["label"] == "Make it pass"
+    assert [action["label"] for action in rover[-1]["actions"]] == [
+        "Why did the Walker fail?", "Make the Walker pass", "Find where it breaks"]   # the rover passed
 
     _, (_, won) = session_turns("race three rovers to the far side", "run")
     assert all(robot["goal_reached"] for robot in next(e["metrics"] for e in won if e["type"] == "metrics")["robots"].values())
-    assert "chips" not in [e for e in won if e["type"] == "explanation"][-1]
+    assert "actions" in [e for e in won if e["type"] == "explanation"][-1]
 
 
 def test_crashed_runs_are_a_system_problem_not_physics():
@@ -2578,7 +2708,7 @@ def test_robustness_decides_the_winner():
     report = next(e["report"] for e in fix if e["type"] == "redesign")
     assert len(checked) == 2 and report["winner"]["changes"] == checked[1] and report["winner"]["robustness"]["passed"] == 3
     assert any(d["decision"] == "next-best" and "passed only 1/3" in d["reason"] for d in report["decisions"])
-    assert fix[-1]["chips"] == ["Use this design"]
+    assert fix[-1]["actions"][0]["label"] == "Use this design"
 
     checked.clear()
     try:   # nothing holds up: no winner, the best one is shown as fragile and can still be applied
@@ -2591,7 +2721,7 @@ def test_robustness_decides_the_winner():
     assert report["winner"] is None and report["fragile"]["fragile"] and report["fragile"]["changes"] in checked
     assert "Found a design that passed once but isn't reliable (1/3)" in report["message"]
     assert "Smallest change that passes" not in report["message"]
-    assert fix[-1]["chips"] == ["Use fragile design"]
+    assert fix[-1]["actions"][0]["label"] == "Use fragile design"
     for name, value in report["fragile"]["changes"].items():
         assert getattr(session.spec.robots[0].robot, name) == value
     assert not [e for e in use if e["type"] == "error"]
@@ -3454,7 +3584,7 @@ def test_one_message_builds_the_scene_then_runs_the_analysis_it_asks_for():
     kinds = [e["type"] for e in turn]
     assert kinds.index("scene") < kinds.index("envelope") and "Run it?" not in [e.get("message") for e in turn]
     report = next(e["report"] for e in turn if e["type"] == "envelope")
-    assert report["runs"] <= 30 and turn[-1]["type"] == "question" and turn[-1]["message"].endswith(report["honesty"])
+    assert report["runs"] <= 30 and turn[-1]["type"] == "question" and turn[-1]["note"] == report["honesty"]
 
     _, (why,) = session_turns("Rover on Mars hills to the summit then why did it fail?")   # it runs first
     assert "run_start" in [e["type"] for e in why]
@@ -3680,7 +3810,7 @@ def test_director_plans_find_failures_from_the_cue_phrases():
     report = next(e["report"] for e in found if e["type"] == "envelope")
     assert report["runs"] <= 30 and report["honesty"] and report["cost"]["runs"] == report["runs"]
     assert "obstacle_scale" in [limit["knob"] for limit in report["limits"]]   # a course: its obstacles are a condition
-    assert found[-1]["type"] == "question" and found[-1]["message"].endswith(report["honesty"])
+    assert found[-1]["type"] == "question" and found[-1]["note"] == report["honesty"]
     assert session.costs[1]["runs"] == report["runs"]
     page = (Path(__file__).resolve().parent.parent / "static" / "vendor" / "index.html").read_text(encoding="utf-8")
     for needed in ('id="envelopeCard"', 'case "envelope": {', 'renderEnvelope(ev.report);', '"Find where it breaks"',
