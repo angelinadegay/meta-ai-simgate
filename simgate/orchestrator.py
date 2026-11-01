@@ -277,7 +277,8 @@ class Session:
         spec.fill_defaults()
 
     async def select_library(self, robot_id: str, policy_id: str, world_id: str, *, start_scene: bool = False,
-                             terrain_kind: str = "hills", title: str = "", obstacles: list[dict] | None = None) -> None:
+                             terrain_kind: str = "hills", title: str = "", obstacles: list[dict] | None = None,
+                             scene_spec: dict | None = None, robot_settings: dict | None = None) -> None:
         from .library import LibraryRegistry
 
         registry = LibraryRegistry()
@@ -291,6 +292,14 @@ class Session:
         if start_scene and self.spec is None:
             from .spec import Environment, Mission, Obstacle, Robot, SceneSpec, Terrain
 
+            if scene_spec is not None:
+                spec = SceneSpec.model_validate(scene_spec).fill_defaults()
+                if spec.domain != "robot_terrain":
+                    raise ValueError("A saved Library world must be a robot terrain scene.")
+                if title:
+                    spec.title = title
+                await self.build_and_check(spec)
+                return
             kind = world.terrain_kind
             if kind != "real":
                 kind = terrain_kind
@@ -308,9 +317,18 @@ class Session:
             )
             self.library_selection = (robot.id, policy.id, world.id)
             self._apply_library_selection(spec)
+            if robot.source == "builtin" and robot_settings:
+                allowed = {"wheels"} if robot.id == "rover" else {"legs"} if robot.id == "walker" else set()
+                if set(robot_settings) - allowed:
+                    raise ValueError(f"Unsupported setup options for {robot.name}.")
+                updated = Robot.model_validate({**spec.robot.model_dump(), **robot_settings})
+                spec.robot = updated
+                spec.robots[0].robot = updated.model_copy(deep=True)
+                spec.fill_defaults()
             if title:
                 spec.title = title
             self.library_selection = None
+            await self.agent("Director", "done", f"Using the selected {robot.name} and {world.name}; no planning call needed.")
             await self.build_and_check(spec)
             return
         self.library_selection = (robot.id, policy.id, world.id)
@@ -395,6 +413,15 @@ class Session:
         self.awaiting_approval = not blocking_failures(checks)
         await self.emit({"type": "question", "message": "Does this look right? Say \"run\" to start, or tell me what to change.",
                          "stress_test_available": spec.domain == "robot_terrain"})
+
+    async def restore_scene(self, scene_data: dict) -> None:
+        """Rebuild a locally saved, validated scene without planning a new one."""
+        try:
+            spec = SceneSpec.model_validate(scene_data).fill_defaults()
+            self.library_selection = None
+            await self.build_and_check(spec)
+        except Exception as error:  # noqa: BLE001 - malformed local storage is shown, never run
+            await self.emit({"type": "error", "message": f"Could not reopen this saved scene: {error}"})
 
     async def run_stress(self, text: str) -> None:
         assert self.spec is not None and self.spec.domain == "robot_terrain"

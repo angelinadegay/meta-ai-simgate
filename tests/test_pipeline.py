@@ -2021,6 +2021,39 @@ def test_browser_handles_the_analysis_events():
     assert 'msg.get("type") == "show_design"' in (root / "server.py").read_text(encoding="utf-8")
 
 
+def test_home_chooser_visibility_tracks_active_view():
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parent.parent
+    page = (root / "static" / "vendor" / "index.html").read_text(encoding="utf-8")
+    workbench_transition = page.split("function showWorkbench()", 1)[1].split("function showHome", 1)[0]
+    home_transition = page.split('function showHome(tab = "explore")', 1)[1].split("function showPanel", 1)[0]
+    assert '$("chooser").hidden = true;' in workbench_transition
+    assert "renderChooser();" in home_transition
+
+
+def test_workbench_uses_desktop_grid_columns():
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parent.parent
+    page = (root / "static" / "vendor" / "index.html").read_text(encoding="utf-8")
+    workbench_style = page.split(".work {", 1)[1].split("}", 1)[0]
+    assert "display: grid;" in workbench_style
+    assert "grid-template-columns: 320px minmax(0, 1fr);" in workbench_style
+
+
+def test_browser_renders_every_server_event_type():
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parent.parent
+    page = (root / "static" / "vendor" / "index.html").read_text(encoding="utf-8")
+    event_types = ("hello", "agent", "step", "scene", "spec", "checks", "question", "run_start", "frames",
+                   "metrics", "diagnosis", "envelope", "redesign", "batch_start", "batch_result", "batch_done",
+                   "report", "explanation", "error", "cost", "reset", "library_selected")
+    for event_type in event_types:
+        assert f'case "{event_type}"' in page, f"No browser handler for {event_type}"
+
+
 def test_visual_rock_and_facade_helpers_use_stable_render_inputs():
     from pathlib import Path
 
@@ -3583,7 +3616,7 @@ def test_director_plans_find_failures_from_the_cue_phrases():
     assert found[-1]["type"] == "question" and found[-1]["message"].endswith(report["honesty"])
     assert session.costs[1]["runs"] == report["runs"]
     page = (Path(__file__).resolve().parent.parent / "static" / "vendor" / "index.html").read_text(encoding="utf-8")
-    for needed in ('id="envelopeCard"', 'case "envelope": renderEnvelope(ev.report)', '"Find where it breaks"',
+    for needed in ('id="envelopeCard"', 'case "envelope": {', 'renderEnvelope(ev.report);', '"Find where it breaks"',
                    'showCost("envelopeCost", r.cost)', 'id="envelopeHonesty"', "envelope-map"):
         assert needed in page, needed
 
@@ -4016,6 +4049,53 @@ def test_library_launch_builds_without_planning_call():
     assert any(event["type"] == "scene" for event in events)
     assert any(event["type"] == "checks" for event in events)
     assert any(event["type"] == "question" for event in events)
+
+
+def test_library_launch_applies_supported_wheel_variant_without_planning_call():
+    import asyncio
+
+    from simgate.orchestrator import Session
+
+    events = []
+
+    async def emit(event):
+        events.append(event)
+
+    original_plan = agents.plan
+    agents.plan = lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("library launch called the planner"))
+    try:
+        session = Session(emit)
+        asyncio.run(session.select_library("rover", "rover_wheel_controller", "mars-regolith", start_scene=True,
+                                           terrain_kind="hills", robot_settings={"wheels": 6}))
+    finally:
+        agents.plan = original_plan
+    assert session.spec is not None and session.spec.robot.wheels == 6
+    assert session.spec.robots[0].robot.wheels == 6
+    assert any(event["type"] == "scene" for event in events)
+
+
+def test_saved_scene_restore_builds_without_planning_call():
+    import asyncio
+
+    from simgate.orchestrator import Session
+    from simgate.spec import Load
+
+    events = []
+
+    async def emit(event):
+        events.append(event)
+
+    spec = SceneSpec(domain="structure", structure=Structure(stories=3, bays=2, visual_style="office"), load=Load())
+    original_plan = agents.plan
+    agents.plan = lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("restore called the planner"))
+    try:
+        session = Session(emit)
+        asyncio.run(session.restore_scene(spec.model_dump(mode="json")))
+    finally:
+        agents.plan = original_plan
+    assert session.spec is not None and session.spec.structure.stories == 3
+    assert any(event["type"] == "scene" for event in events)
+    assert any(event["type"] == "checks" for event in events)
 
 
 def test_library_selection_sets_up_one_scene_only():

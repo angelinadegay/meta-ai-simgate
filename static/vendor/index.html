@@ -5,11 +5,13 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>SimGate</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 <style>
   :root {
-    --bg: #f6f4fb; --panel: #fff; --panel-2: #f1eef8; --line: #dfd9ec;
-    --text: #302b3e; --muted: #736d80; --accent: #7864c8; --ok: #187d6c; --warn: #9a6a13; --bad: #b64758;
+    --ink: #25243b; --muted: #878596; --stroke: #eae8ef; --bg: #faf9fb;
+    --violet: #6c56c7; --vsoft: #f0edfb; --shadow: 0 16px 50px #3027510d;
+    --ok: #438466; --ok-bg: #e9f6ee; --warn: #9a6a13; --warn-bg: #fff5df; --bad: #a94858; --bad-bg: #fff0f1;
+    --text: var(--ink); --panel: #fff; --panel-2: #f7f6f9; --line: var(--stroke); --accent: var(--violet);
     --planner: #7d68c9; --router: #4a83b8; --builder: #b27635; --checker: #398570; --simulator: #a65c83; --explainer: #378da1; --director: #6f5bb7;
   }
   * { box-sizing: border-box; }
@@ -189,19 +191,305 @@
     .card { font-size: 11px; padding: 8px 10px; } .check small { display: none; }
     #player { left: 8px; right: 8px; bottom: 8px; } #note { display: none; } #code { width: calc(100% - 28px); }
   }
+  /* Concept-matched Explore and workbench shell. */
+  html, body { min-height: 100%; background: var(--bg); color: var(--ink); font-family: "DM Sans", sans-serif; }
+  body { height: 100dvh; overflow: hidden; }
+  .app { display: block; height: 100dvh; min-height: 0; }
+  .top { height: 72px; display: flex; align-items: center; justify-content: space-between; gap: 20px; padding: 0 clamp(20px, 4vw, 72px); background: #fff; border-bottom: 1px solid #f0eef3; }
+  .brand { display: inline-flex; align-items: center; gap: 10px; padding: 0; color: var(--ink); font: 700 20px/1 "Space Grotesk", sans-serif; }
+  .brand-mark { width: 31px; height: 31px; display: grid; place-items: center; border-radius: 11px; background: #292540; color: white; }
+  .brand-mark svg { width: 21px; height: 21px; }
+  .brand small { margin-left: 1px; color: #a8a2b4; font: 500 11px "DM Sans", sans-serif; }
+  .nav { display: flex; align-items: center; gap: 25px; color: #666376; font-size: 13px; }
+  .nav button { padding: 8px 0; color: inherit; transition: color .18s ease; }
+  .nav button:hover, .nav button[aria-current="page"] { color: var(--violet); }
+  .avatar { width: 32px; height: 32px; display: grid; place-items: center; border-radius: 50%; background: #e9e3f9; color: #6b57b6; font-weight: 700; }
+  .mode { margin: 0; padding: 7px 10px; border: 1px solid #dceee2; border-radius: 99px; background: var(--ok-bg); color: var(--ok); font-size: 11px; white-space: nowrap; }
+  .home { height: calc(100dvh - 72px); max-width: 1240px; margin: 0 auto; padding: 66px 30px 60px; overflow: auto; }
+  .hero { text-align: center; }
+  .eyebrow { display: flex; align-items: center; justify-content: center; gap: 8px; color: #8972cc; font-size: 10px; font-weight: 700; letter-spacing: 2px; text-transform: uppercase; }
+  .hero h1 { margin: 18px 0 14px; color: var(--ink); font: 600 clamp(38px, 4vw, 58px)/1.1 "Space Grotesk", sans-serif; letter-spacing: -1.7px; }
+  .hero h1 em { color: #7c67c6; font-style: normal; }
+  .subtitle { margin: 0; color: #858394; font-size: 15px; }
+  .prompt { max-width: 742px; margin: 32px auto 0; padding: 17px 18px 13px; border: 1px solid #e8e4ee; border-radius: 18px; background: #fff; box-shadow: 0 12px 45px #3a2e6210; text-align: left; }
+  .prompt textarea { width: 100%; min-height: 54px; resize: vertical; border: 0; outline: 0; background: transparent; color: #343045; font: 15px/1.6 "DM Sans", sans-serif; }
+  .prompt textarea::placeholder { color: #a6a2b0; }
+  .prompt-foot { display: flex; align-items: center; justify-content: space-between; }
+  .prompt-tools { display: flex; align-items: center; gap: 8px; }
+  .icon-btn { width: 34px; height: 34px; display: grid; place-items: center; border-radius: 9px; color: #777486; }
+  .icon-btn:hover { background: #f3f1f9; }
+  .icon-btn svg { width: 17px; height: 17px; }
+  .icon-btn:disabled { opacity: .44; cursor: not-allowed; }
+  .go { width: 36px; height: 36px; display: grid; place-items: center; border: 0; border-radius: 11px; background: #6d58c9; color: white; box-shadow: 0 5px 14px #6d58c936; }
+  .go svg { width: 18px; height: 18px; }
+  .hints { display: flex; justify-content: center; flex-wrap: wrap; gap: 9px; margin: 17px 0 0; }
+  .chip { padding: 8px 13px; border: 1px solid var(--stroke); border-radius: 99px; background: #fff; color: #6d697b; font-size: 12px; transition: border-color .18s, background .18s, color .18s, transform .18s; }
+  .chip:hover { border-color: #c9beed; background: #f7f3ff; color: #6751b9; transform: translateY(-1px); }
+  .chip.primary { border-color: var(--violet); background: var(--violet); color: #fff; }
+  .section { margin-top: 58px; }
+  .section-head { display: flex; align-items: end; justify-content: space-between; gap: 16px; margin-bottom: 18px; }
+  .section-head h2 { margin: 0 0 4px; font: 600 22px/1.2 "Space Grotesk", sans-serif; letter-spacing: -.3px; }
+  .section-head p { margin: 0; color: #9390a0; font-size: 13px; }
+  .text-link { color: #7664b6; font-size: 12px; font-weight: 650; }
+  .tile-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 16px; }
+  .tile { min-width: 0; overflow: hidden; padding: 0; border: 1px solid #eceaf0; border-radius: 15px; background: #fff; box-shadow: 0 4px 14px #20203b04; text-align: left; transition: transform .2s, box-shadow .2s, border-color .2s; }
+  .tile:hover { transform: translateY(-4px); border-color: #cfc5ed; box-shadow: var(--shadow); }
+  .tile-grid .thumb-motion { animation-play-state: paused; }
+  .tile:hover .thumb-motion { animation-play-state: running; }
+  .tile.selected { border-color: #8d78d4; box-shadow: 0 0 0 2px #e8defc; }
+  .thumb { position: relative; height: 155px; overflow: hidden; background: #ede8f2; }
+  .thumb svg, .thumb img { display: block; width: 100%; height: 100%; object-fit: cover; }
+  .thumb-motion { display: block; width: 100%; height: 100%; animation: terrainDrift 15s ease-in-out infinite alternate; }
+  .terrain-moon .thumb-motion { animation-name: terrainDriftMoon; }
+  .terrain-earth .thumb-motion { animation-name: terrainDriftEarth; }
+  .terrain-lab .thumb-motion { animation-name: terrainDriftLab; }
+  .tile-label { position: absolute; top: 10px; left: 10px; padding: 6px 8px; border-radius: 6px; background: #ffffffdf; color: #59506c; font-size: 10px; font-weight: 650; backdrop-filter: blur(8px); }
+  .tile-info { padding: 14px 15px 15px; }
+  .tile-info h3 { margin: 0 0 5px; font-size: 14px; font-weight: 650; }
+  .tile-info p { margin: 0; color: #9793a1; font-size: 11.5px; }
+  .robots .thumb { height: 180px; background: radial-gradient(circle at 50% 20%, #fff 0, #ebe7f3 73%); }
+  .robots .tile:nth-child(2) .thumb { background: radial-gradient(circle at 50% 20%, #fff 0, #e9edf0 73%); }
+  .robots .tile:nth-child(3) .thumb { background: radial-gradient(circle at 50% 20%, #fff 0, #f6e7de 73%); }
+  .robots .tile:nth-child(4) .thumb { background: radial-gradient(circle at 50% 20%, #fff 0, #ede9ef 73%); }
+  .robots .thumb-motion { animation: robotFloat 4.8s ease-in-out infinite; }
+  .robots .tile:nth-child(3) .thumb-motion { animation-name: robotFloatRover; animation-duration: 5.9s; }
+  .badge { display: inline-block; margin: 0 0 7px; padding: 4px 7px; border-radius: 6px; background: #f4f1fb; color: #7864b8; font-size: 10px; font-weight: 650; }
+  .empty-state { padding: 34px; border: 1px dashed #d8d3e2; border-radius: 14px; color: var(--muted); text-align: center; }
+  .chooser { position: fixed; z-index: 20; left: 50%; bottom: 22px; display: flex; align-items: center; gap: 16px; max-width: calc(100vw - 32px); padding: 10px 11px 10px 20px; border-radius: 15px; background: #2d2941; color: white; box-shadow: 0 14px 50px #26223f3b; font-size: 12px; transform: translateX(-50%); }
+  .chooser button { flex: none; padding: 11px 14px; border-radius: 10px; background: #faf9ff; color: #392d58; font-size: 12px; font-weight: 700; }
+  .work { display: grid; height: calc(100dvh - 72px); min-height: 0; grid-template-columns: 320px minmax(0, 1fr); background: #fff; }
+  .side { min-height: 0; display: flex; flex-direction: column; border-right: 1px solid #ece9f0; background: #fff; }
+  .side-head { padding: 18px 21px 15px; border-bottom: 1px solid #f0eef4; }
+  .back { display: block; margin: 0 0 17px; padding: 0; color: #817b96; font-size: 12px; }
+  .side h2 { margin: 0 0 4px; font: 600 19px/1.2 "Space Grotesk", sans-serif; }
+  .side-sub { color: #9a96a5; font-size: 12px; }
+  #log { flex: 1; min-height: 0; overflow-y: auto; padding: 20px 19px; display: flex; flex-direction: column; gap: 10px; }
+  .msg { max-width: 95%; padding: 12px 14px; border-radius: 13px 13px 13px 4px; white-space: pre-wrap; font-size: 13px; line-height: 1.65; }
+  .msg.user { align-self: flex-end; margin-left: 20px; border-radius: 13px 13px 4px 13px; background: #f0edf7; }
+  .msg.bot { border: 0; background: transparent; }
+  .msg.err { border: 1px solid #f0cdd2; background: var(--bad-bg); color: #852b3b; }
+  .msg .cost-note { display: block; margin-top: 8px; color: var(--muted); font: 10px "JetBrains Mono", monospace; }
+  .insight-card { padding: 14px; border: 1px solid #eee9f7; border-radius: 12px; background: #f8f6fd; }
+  .insight-card .tinycap { color: #7d6bb0; font-size: 10px; font-weight: 700; letter-spacing: 1px; text-transform: uppercase; }
+  .insight-card strong { display: block; margin: 6px 0 3px; font-size: 15px; }
+  .insight-card p { margin: 0; color: #868093; font-size: 12px; line-height: 1.55; }
+  .insight-card .card-actions { margin-top: 10px; }
+  .agent-steps { border: 1px solid #ece8f4; border-radius: 11px; background: #fff; overflow: hidden; }
+  .agent-steps summary { padding: 10px 12px; color: #5e586f; font-size: 11px; font-weight: 650; cursor: pointer; }
+  .agent-step-list { display: grid; gap: 6px; padding: 0 10px 10px; }
+  .step-row { padding: 8px 9px; border: 1px solid #efedf2; border-radius: 8px; background: #fbfafc; font-size: 11px; }
+  .step-row summary { padding: 0; }
+  .step-row.working { border-color: #b7a8e8; }
+  .step-row.warning { border-color: #e4c47d; }
+  .step-row.error { border-color: #e6aeb8; }
+  .step-row .step-meta { padding: 6px 0 0; color: var(--muted); white-space: pre-wrap; overflow-wrap: anywhere; }
+  #form { flex: none; display: flex; gap: 8px; padding: 13px 14px; border-top: 1px solid #f0edf4; }
+  #form input { flex: 1; min-width: 0; padding: 10px 12px; border: 1px solid #e9e6f0; border-radius: 12px; background: #fff; color: var(--ink); font: 12px "DM Sans", sans-serif; }
+  #form button { padding: 0 14px; border: 0; border-radius: 10px; background: var(--violet); color: #fff; font-size: 12px; font-weight: 700; }
+  .stage { position: relative; display: flex; min-width: 0; flex-direction: column; background: #f5f3f6; }
+  .stage-top { z-index: 3; height: 64px; flex: none; display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 0 23px; border-bottom: 1px solid #ece9f0; background: #fff; }
+  .stage-title { font-size: 14px; font-weight: 700; }
+  .stage-subtitle { margin-left: 8px; color: #aaa4b1; font-size: 11px; }
+  .stage-actions { display: flex; align-items: center; gap: 8px; }
+  .stage-actions button { padding: 8px 10px; border: 1px solid #e6e3eb; border-radius: 9px; background: #fff; font-size: 11px; }
+  .stage-actions .status { display: inline-flex; align-items: center; gap: 7px; padding: 7px 10px; border-radius: 99px; background: var(--ok-bg); color: var(--ok); font-size: 11px; white-space: nowrap; }
+  .status .dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+  .scene { position: relative; flex: 1; min-height: 260px; overflow: hidden; background: #d8bbc1; }
+  #view { position: absolute; inset: 0; }
+  #view canvas { display: block; width: 100%; height: 100%; }
+  .empty { position: absolute; inset: 0; display: grid; place-items: center; color: #746d7f; text-align: center; pointer-events: none; }
+  .scene-hud { position: absolute; z-index: 2; top: 18px; left: 18px; max-width: 260px; padding: 11px 14px; border-radius: 11px; background: #ffffffdf; color: #6e5b5b; box-shadow: 0 5px 30px #6b3c3c15; font-size: 11px; backdrop-filter: blur(15px); }
+  .scene-hud strong { display: block; margin-bottom: 5px; color: var(--ink); font-size: 12px; }
+  .presentation-insight { position: absolute; z-index: 4; top: 18px; left: 18px; width: min(440px, calc(100% - 36px)); padding: 13px 15px; border: 1px solid #ece8f4; border-radius: 12px; background: #ffffffed; box-shadow: var(--shadow); backdrop-filter: blur(15px); }
+  .presentation-insight strong { display: block; margin-bottom: 4px; font-size: 13px; }
+  .presentation-insight p { margin: 0; color: #777486; font-size: 11px; line-height: 1.5; }
+  #tools { position: absolute; z-index: 4; top: 18px; right: 18px; left: auto; display: flex; flex-wrap: wrap; justify-content: end; gap: 6px; max-width: calc(100% - 300px); }
+  #tools .chip { background: #ffffffed; }
+  #tools .chip.on { border-color: var(--violet); color: var(--violet); }
+  #robotCameras { position: absolute; z-index: 3; top: 62px; left: 18px; display: flex; flex-wrap: wrap; gap: 5px; max-width: 360px; }
+  #robotCameras .chip, #pickHint { background: #ffffffdf; }
+  #pickHint { position: absolute; z-index: 3; top: 62px; left: 18px; color: var(--violet); font-size: 12px; }
+  #code { position: absolute; z-index: 3; top: 64px; left: 18px; bottom: 76px; width: min(560px, 55%); display: none; overflow: auto; margin: 0; padding: 12px; border: 1px solid var(--stroke); border-radius: 12px; background: #fffc; color: #443b57; font: 11px/1.45 "JetBrains Mono", monospace; }
+  .goal-pill { position: absolute; z-index: 3; right: 20px; bottom: 20px; padding: 10px 12px; border-radius: 9px; background: #ffffffd9; font-size: 11px; }
+  .hud { position: absolute; z-index: 5; }
+  #player { right: auto; bottom: 18px; left: 18px; width: min(430px, calc(100% - 36px)); }
+  #player .card { display: flex; align-items: center; gap: 12px; width: 100%; padding: 11px 13px; border: 0; border-radius: 12px; background: #fffc; color: #584c59; backdrop-filter: blur(15px); }
+  #play { width: 30px; height: 30px; border: 0; border-radius: 50%; background: var(--violet); color: white; font: 700 13px "DM Sans", sans-serif; }
+  #scrub { flex: 1; min-width: 30px; accent-color: var(--violet); }
+  #time { min-width: 64px; color: var(--muted); text-align: right; font: 10px "JetBrains Mono", monospace; }
+  #note { color: var(--muted); font-size: 10px; }
+  .agentbar { flex: none; min-height: 150px; padding: 16px 23px 18px; border-top: 1px solid #edeaf1; background: #fff; }
+  .agentbar-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+  .agentbar h3 { margin: 0; font-size: 13px; }
+  .agentbar small { color: #9e99a8; font-size: 10px; }
+  .agent-flow { display: flex; align-items: center; gap: 5px; margin-top: 15px; overflow-x: auto; }
+  .agent-flow .connector { height: 1px; min-width: 6px; flex: 1; margin: -20px 0 0; background: #dcd6e8; }
+  .agent-card { position: relative; z-index: 1; display: flex; min-width: 66px; flex-direction: column; align-items: center; gap: 5px; padding: 0 4px; border: 0; border-radius: 10px; background: #fff; cursor: pointer; }
+  .agent-icon { width: 36px; height: 36px; display: grid; place-items: center; border: 1px solid #ebe5f2; border-radius: 13px; background: #f5f2f9; color: #73688a; transition: transform .2s, box-shadow .2s; }
+  .agent-card.active .agent-icon { border-color: transparent; background: linear-gradient(135deg, #7565d3, #b182da); color: #fff; box-shadow: 0 5px 16px #846ac15c; transform: translateY(-2px); }
+  .agent-card.done .agent-icon { border-color: #d9eddf; background: #edf6f0; }
+  .agent-card b { font-size: 10px; font-weight: 650; }
+  .agent-card small { font-size: 9px; white-space: nowrap; }
+  .agent-detail { position: absolute; z-index: 8; right: 20px; bottom: 174px; width: 282px; padding: 16px; border: 1px solid #ece8f4; border-radius: 14px; background: #fff; box-shadow: 0 20px 70px #291d492f; }
+  .agent-detail h3 { margin: 0 0 7px; font-size: 14px; }
+  .agent-detail p { margin: 0; color: #80798e; font-size: 12px; line-height: 1.6; }
+  .agent-recent { display: grid; gap: 6px; margin-top: 11px; }
+  .agent-recent p { margin: 0; padding: 8px; border-radius: 8px; background: #f7f5fa; font-size: 11px; }
+  .agent-detail .close { float: right; padding: 0 0 4px 8px; color: #7b7586; }
+  .detail-panel { position: absolute; z-index: 7; top: 14px; right: 14px; bottom: 14px; width: min(410px, calc(100% - 28px)); display: flex; flex-direction: column; overflow: hidden; border: 1px solid #ece8f4; border-radius: 15px; background: #fff; box-shadow: 0 20px 70px #291d492f; transform: translateX(calc(100% + 24px)); transition: transform .22s ease; }
+  #topright.detail-panel { top: 14px; right: 14px; width: min(410px, calc(100% - 28px)); max-height: none; overflow: hidden; }
+  .detail-panel.open { transform: translateX(0); }
+  .detail-head { display: flex; align-items: center; justify-content: space-between; padding: 15px 17px 10px; }
+  .detail-head h2 { margin: 0; font: 600 17px "Space Grotesk", sans-serif; }
+  .detail-tabs { display: flex; gap: 4px; padding: 0 14px 10px; border-bottom: 1px solid #f0edf4; }
+  .detail-tabs button { padding: 7px 10px; border-radius: 8px; color: #777486; font-size: 11px; }
+  .detail-tabs button.selected { background: var(--vsoft); color: var(--violet); font-weight: 700; }
+  .detail-body { flex: 1; min-height: 0; overflow: auto; padding: 12px; }
+  .detail-body .card { margin-bottom: 8px; border-radius: 11px; box-shadow: none; }
+  .details-only { display: none; }
+  .show-details .details-only { display: block; }
+  .scene-facts { display: grid; gap: 7px; color: #777486; font-size: 11px; }
+  .scene-facts strong { color: var(--ink); font-size: 12px; }
+  .upload-kind-tabs { display: flex; gap: 5px; padding: 2px 0 7px; border-bottom: 1px solid #f0edf4; }
+  .upload-kind-tabs button[aria-pressed="true"] { background: var(--vsoft); color: var(--violet); border-color: #d7cdf2; }
+  .panel-section[hidden] { display: none; }
+  .status.running { background: #f0edfb; color: var(--violet); }
+  .status.failed { background: var(--bad-bg); color: var(--bad); }
+  .status.finding { background: var(--warn-bg); color: var(--warn); }
+  .presentation .side { display: none; }
+  .presentation #workbench { grid-template-columns: minmax(0, 1fr); }
+  .presentation .stage-top { height: 56px; }
+  .presentation .agentbar { min-height: 175px; }
+  .presentation .detail-panel { width: 310px; top: 66px; bottom: 156px; }
+  .fragile { color: var(--warn); }
+  .check small { color: var(--muted); }
+  .envelope-map .cell { color: #25243b; }
+  .cost-line { font: 10px "JetBrains Mono", monospace; }
+  #libraryPanel { max-height: 45%; overflow-y: auto; padding: 8px 3px; border-bottom: 0; }
+  #libraryPanel summary { color: var(--ink); }
+  .library-item { border-radius: 9px; background: #fff; }
+  .library-item:hover { border-color: #cfc5ed; }
+  .library-actions { gap: 7px; }
+  .upload-questions .error { color: #a93849; }
+  #uploadDialog { width: min(500px, calc(100vw - 30px)); border-radius: 16px; box-shadow: var(--shadow); }
+  .upload-form { max-height: calc(100dvh - 32px); overflow: auto; }
+  .app button:focus-visible, .app input:focus-visible, .app textarea:focus-visible, .app select:focus-visible, .tile:focus-visible { outline: 3px solid #bba8ff; outline-offset: 3px; }
+  .worlds .thumb-motion { animation-duration: 15s; }
+  @keyframes robotFloat { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-8px); } }
+  @keyframes robotFloatRover { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-5px) translateX(3px); } }
+  @keyframes terrainDrift { 0% { transform: scale(1.03) translate3d(-8px,4px,0); } 100% { transform: scale(1.1) translate3d(8px,-4px,0); } }
+  @keyframes terrainDriftMoon { 0% { transform: scale(1.04) translate3d(-6px,5px,0); } 100% { transform: scale(1.11) translate3d(6px,-3px,0); } }
+  @keyframes terrainDriftEarth { 0% { transform: scale(1.03) translate3d(-4px,4px,0); } 100% { transform: scale(1.08) translate3d(7px,-5px,0); } }
+  @media (max-width: 850px) {
+    .home { padding: 44px 20px 50px; }
+    .tile-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    #workbench { height: calc(100dvh - 64px); display: flex; flex-direction: column; overflow: auto; }
+    .stage { order: 0; min-height: 64vh; }
+    .side { order: 1; min-height: 36vh; border-top: 1px solid #ece9f0; border-right: 0; }
+    .side-head { padding: 14px 17px; }
+    .back { margin-bottom: 10px; }
+    #log { min-height: 160px; }
+    .agentbar { min-height: 142px; }
+    #topright.detail-panel { position: fixed; top: auto; right: 0; bottom: 0; left: 0; width: 100%; height: min(72dvh, 640px); max-height: none; border-radius: 16px 16px 0 0; transform: translateY(calc(100% + 20px)); }
+    .detail-panel.open { transform: translateY(0); }
+    .agent-detail { position: fixed; right: 14px; bottom: 145px; }
+  }
+  @media (max-width: 610px) {
+    .top { height: 64px; padding: 0 16px; gap: 8px; }
+    .nav { gap: 10px; }
+    .nav .nav-text { display: none; }
+    .home { height: calc(100dvh - 64px); padding: 44px 16px 80px; }
+    .hero h1 { font-size: 40px; }
+    .section { margin-top: 44px; }
+    .thumb { height: 125px; }
+    .robots .thumb { height: 144px; }
+    .work { height: calc(100dvh - 64px); }
+    .stage-top { height: 57px; padding: 0 12px; }
+    .stage-subtitle { display: none; }
+    .stage-actions { gap: 4px; }
+    .stage-actions button { padding: 7px 8px; font-size: 10px; }
+    .stage-actions .status { padding: 6px 8px; font-size: 10px; }
+    .scene { min-height: 290px; }
+    .scene-hud { top: 12px; left: 12px; max-width: 200px; padding: 9px 10px; font-size: 10px; }
+    #tools { top: 12px; right: 12px; max-width: calc(100% - 225px); }
+    #tools .chip { padding: 7px 8px; font-size: 10px; }
+    #player { bottom: 12px; left: 12px; width: calc(100% - 24px); }
+    .goal-pill { right: 12px; bottom: 62px; }
+    .agentbar { padding: 12px 13px 14px; }
+    .agent-flow { margin-top: 11px; }
+    .agent-card { min-width: 56px; }
+    .agent-icon { width: 31px; height: 31px; border-radius: 11px; }
+    .chooser { width: calc(100% - 24px); justify-content: space-between; gap: 8px; padding-left: 12px; font-size: 10px; }
+    .chooser button { padding: 10px; font-size: 10px; }
+    .section-head h2 { font-size: 19px; }
+    .presentation-insight { top: 10px; left: 10px; width: calc(100% - 20px); }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
+  }
 </style>
 <script type="importmap">
 { "imports": { "three": "/static/vendor/three.module.js" } }
 </script>
 </head>
 <body>
-<div class="app">
-  <aside>
-    <header>
-      <h1>Sim<span>Gate</span></h1>
-      <p>Describe a physical scenario. Agents pick the simulator, build it, check it and run it.</p>
-      <span class="mode" id="mode">connecting…</span>
-    </header>
+<div class="app" id="app">
+  <header class="top">
+    <button class="brand" id="homeBrand" type="button" aria-label="SimGate Explore">
+      <span class="brand-mark"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><circle cx="12" cy="12" r="2" fill="white"/><ellipse cx="12" cy="12" rx="10" ry="4.8" transform="rotate(-30 12 12)"/><ellipse cx="12" cy="12" rx="10" ry="4.8" transform="rotate(35 12 12)"/></svg></span>
+      simgate <small>beta</small>
+    </button>
+    <nav class="nav" aria-label="Primary navigation">
+      <button class="nav-text" id="navExplore" type="button" aria-current="page">Explore</button>
+      <button class="nav-text" id="navMyWorlds" type="button">My worlds</button>
+      <button class="nav-text" id="navLibrary" type="button">Library</button>
+      <button class="nav-text" id="navAbout" type="button">About</button>
+    </nav>
+    <span class="mode" id="mode" aria-live="polite">connecting…</span>
+    <button class="avatar" id="profileButton" type="button" aria-label="Profile">S</button>
+  </header>
+
+  <main id="home" class="home">
+    <section class="hero">
+      <div class="eyebrow"><span class="spark" aria-hidden="true">✳</span> IMAGINATION, MEET PHYSICS</div>
+      <h1>What would you like<br>to <em>simulate?</em></h1>
+      <p class="subtitle">Describe an idea. Watch it come to life. Discover what happens.</p>
+      <form class="prompt" id="homeForm">
+        <textarea id="homeInput" aria-label="Describe simulation" placeholder="A humanoid robot walking up a hill on Mars. Will it make it?" rows="2"></textarea>
+        <div class="prompt-foot">
+          <div class="prompt-tools">
+            <button class="icon-btn" id="homeAttach" type="button" title="Attach a model or terrain" aria-label="Attach a model or terrain"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="m20 11.5-8.7 8.7a5 5 0 0 1-7-7l9.2-9.2a3.5 3.5 0 0 1 5 5l-9.1 9.1a2 2 0 0 1-2.8-2.8l8.2-8.2"/></svg></button>
+            <button class="icon-btn" type="button" title="Voice input unavailable" aria-label="Voice input unavailable" disabled><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><rect x="9" y="2" width="6" height="13" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v4m-4 0h8"/></svg></button>
+          </div>
+          <button class="go" type="submit" title="Start simulation" aria-label="Start simulation"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 19V5m-6 6 6-6 6 6"/></svg></button>
+        </div>
+      </form>
+      <div class="hints" id="examples" aria-label="Example prompts"></div>
+    </section>
+    <div id="homeExplore">
+      <section class="section">
+        <div class="section-head"><div><h2>Explore a world</h2><p>Pick a place to start your next experiment.</p></div><button class="text-link" id="allWorlds" type="button">See all worlds ↗</button></div>
+        <div class="tile-grid worlds" id="homeWorlds" aria-live="polite"></div>
+      </section>
+      <section class="section robots-section">
+        <div class="section-head"><div><h2>Meet the robots</h2><p>Every explorer needs a companion.</p></div><button class="text-link" id="allRobots" type="button">See all robots ↗</button></div>
+        <div class="tile-grid robots" id="homeRobots" aria-live="polite"></div>
+      </section>
+    </div>
+    <section class="section" id="homeSavedSection" hidden>
+      <div class="section-head"><div><h2>My worlds</h2><p>Your saved experiments.</p></div><button class="text-link" id="backToExplore" type="button">Explore worlds ↗</button></div>
+      <div id="savedWorlds" class="tile-grid worlds"></div>
+      <div id="savedEmpty" class="empty-state" hidden>No saved worlds yet. Save a scene from the workbench to keep it here.</div>
+    </section>
+  </main>
+
+  <div class="work" id="workbench" hidden>
+  <aside class="side">
+    <div class="side-head">
+      <button class="back" id="backToHome" type="button">← &nbsp; Back to explore</button>
+      <h2 id="sideTitle">New simulation</h2>
+      <span class="side-sub">A new simulation · just now</span>
+    </div>
     <details id="libraryPanel">
       <summary>Library</summary>
       <div class="library-tabs" id="libraryTabs">
@@ -209,25 +497,24 @@
         <button type="button" class="chip" data-library-tab="policies">Policies</button>
         <button type="button" class="chip" data-library-tab="worlds">Worlds</button>
       </div>
-      <div id="libraryItems"></div>
-      <div class="library-actions">
-        <button type="button" class="chip primary" id="applyLibrary" disabled>Use selected setup</button>
-        <button type="button" class="chip" id="uploadRobot">Upload robot</button>
-        <button type="button" class="chip" id="uploadPolicy">Upload policy</button>
-        <button type="button" class="chip" id="uploadWorld">Upload world</button>
-      </div>
-      <div class="library-status" id="libraryStatus">Connect to load library cards.</div>
     </details>
     <div id="log">
-      <div class="msg bot">Hi! Describe a world to simulate, or try one of these:
-        <div class="quick" id="examples"></div>
-      </div>
+      <div class="msg bot">Describe a physical experiment or choose a saved setup. I’ll build the scene, check it, and show you the evidence.</div>
+      <details class="agent-steps" id="agentSteps" hidden>
+        <summary id="agentStepsSummary">Director · Builder · Checker</summary>
+        <div class="agent-step-list" id="agentStepList"></div>
+      </details>
     </div>
     <form id="form"><input id="input" autocomplete="off" placeholder="e.g. Can a small rover climb a rocky hill on Mars?"><button>Send</button></form>
   </aside>
   <dialog id="uploadDialog" aria-labelledby="uploadTitle">
       <form id="uploadForm" class="upload-form">
         <div class="dialog-head"><h2 id="uploadTitle">Upload</h2><button type="button" class="close" id="uploadClose" aria-label="Close">×</button></div>
+        <div class="upload-kind-tabs" role="group" aria-label="Upload type">
+          <button type="button" class="chip" data-upload-kind="robot" aria-pressed="true">Robot</button>
+          <button type="button" class="chip" data-upload-kind="policy" aria-pressed="false">Policy</button>
+          <button type="button" class="chip" data-upload-kind="terrain" aria-pressed="false">World</button>
+        </div>
         <div class="upload-questions" id="uploadQuestions" hidden></div>
         <div class="dropzone" id="dropzone">Drop files or one .zip here, or <label for="uploadFiles">choose files</label>
           <input type="file" id="uploadFiles" multiple hidden
@@ -255,9 +542,21 @@
         </div>
       </form>
   </dialog>
-  <main>
+  <section class="stage">
+    <div class="stage-top">
+      <div><span class="stage-title" id="sceneTitle">Your simulation</span><span class="stage-subtitle" id="sceneRobot"></span></div>
+      <div class="stage-actions">
+        <span class="status" id="stageStatus"><span class="dot"></span><span id="statusText">Scene ready</span></span>
+        <button type="button" id="saveWorld">Save world</button>
+        <button type="button" id="presentationToggle" title="Presentation mode (P)" aria-label="Toggle presentation mode">⛶</button>
+        <button type="button" id="detailsToggle" aria-pressed="false">Show details</button>
+      </div>
+    </div>
+    <div class="scene" id="sceneRegion">
     <div id="view"></div>
     <div class="empty" id="empty">The scene appears here as the agents build it.</div>
+    <div class="scene-hud" id="sceneHud" hidden><strong id="worldHeading"></strong><span id="worldFacts"></span></div>
+    <div class="presentation-insight" id="presentationInsight" hidden><strong id="presentationHeadline"></strong><p id="presentationSummary"></p></div>
     <div id="tools">
       <button class="chip" id="codeBtn" hidden>Show code</button>
       <button class="chip" id="startBtn" hidden title="Then click the terrain">Set start</button>
@@ -267,17 +566,58 @@
     <div id="robotCameras" hidden></div>
     <div id="pickHint" hidden></div>
     <pre class="card" id="code"></pre>
-    <div class="hud" id="topright">
-      <div class="card" id="agentsCard"><h3>Agents</h3><svg id="agentGraph" viewBox="0 0 360 235" aria-label="Live agent graph"></svg></div>
+    <div class="goal-pill" id="goalPill" hidden></div>
+    <aside class="detail-panel" id="topright" aria-label="Simulation details" hidden>
+      <div class="detail-head"><h2 id="panelTitle">Scene details</h2><button class="close" id="closeDetails" type="button" aria-label="Close details">×</button></div>
+      <div class="detail-tabs" role="tablist" aria-label="Simulation information">
+        <button type="button" data-details-tab="scene" role="tab" aria-selected="true">Scene</button>
+        <button type="button" data-details-tab="results" role="tab" aria-selected="false">Results</button>
+        <button type="button" data-details-tab="analysis" role="tab" aria-selected="false">Analysis</button>
+        <button type="button" data-details-tab="library" role="tab" aria-selected="false">Library</button>
+      </div>
+      <div class="detail-body">
+      <section class="panel-section" data-panel-section="scene">
+      <div class="card" id="sceneCard"><h3>Scene</h3><div class="scene-facts" id="sceneDetails"></div></div>
+      <div class="card" id="agentsCard"><h3>Agent activity</h3><svg id="agentGraph" viewBox="0 0 360 235" aria-label="Live agent graph" hidden></svg><div id="agentListPanel"></div></div>
       <div class="card" id="checksCard" hidden><h3>Physics checks</h3><div id="checks"></div></div>
-      <div class="card" id="metricsCard" hidden><h3>Results</h3><div id="badge" hidden></div><div class="kv" id="metrics"></div><div class="envelope-caption" id="visualStyleNote" hidden></div></div>
+      </section>
+      <section class="panel-section" data-panel-section="results" hidden>
+      <div class="card" id="metricsCard" hidden><h3>Results</h3><div id="badge" hidden></div><div class="kv details-only" id="metrics"></div><div class="envelope-caption" id="visualStyleNote" hidden></div></div>
       <div class="card" id="leaderboardCard" hidden><h3>Leaderboard</h3><div id="leaderboardRows"></div></div>
+      <div class="card" id="reportCard" hidden><h3>Report card</h3><div id="reportCounts"></div><div id="reportRows"></div><div id="stressExplanation"></div><div class="cost-line" id="reportCost"></div></div>
+      </section>
+      <section class="panel-section" data-panel-section="analysis" hidden>
       <div class="card" id="envelopeCard" hidden><h3>Envelope</h3><div id="envelopeBody"></div><div class="honesty" id="envelopeHonesty"></div><div class="cost-line" id="envelopeCost"></div></div>
       <div class="card" id="diagnosisCard" hidden><h3>Diagnosis</h3><div id="diagnosisRows"></div><div class="analysis-lines" id="diagnosisDecisions"></div><div class="analysis-text" id="diagnosisConclusion"></div><div class="cost-line" id="diagnosisCost"></div></div>
       <div class="card" id="redesignCard" hidden><h3>Redesign</h3><div id="redesignBody"></div>
         <div class="card-actions" id="redesignActions"><button type="button" class="chip primary" id="useDesign">Use this design</button><button type="button" class="chip" id="showRuns">Show runs</button></div><div class="cost-line" id="redesignCost"></div></div>
-      <div class="card" id="reportCard" hidden><h3>Report card</h3><div id="reportCounts"></div><div id="reportRows"></div><div id="stressExplanation"></div><div class="cost-line" id="reportCost"></div></div>
+      </section>
+      <section class="panel-section" data-panel-section="library" hidden>
+        <details id="libraryPanel">
+          <summary>Library</summary>
+          <div class="library-tabs" id="libraryTabs">
+            <button type="button" class="chip selected" data-library-tab="robots">Robots</button>
+            <button type="button" class="chip" data-library-tab="policies">Policies</button>
+            <button type="button" class="chip" data-library-tab="worlds">Worlds</button>
+          </div>
+          <div id="libraryItems"></div>
+          <div class="library-actions">
+            <button type="button" class="chip primary" id="applyLibrary" disabled>Use selected setup</button>
+            <button type="button" class="chip" id="uploadRobot">Upload robot</button>
+            <button type="button" class="chip" id="uploadPolicy">Upload policy</button>
+            <button type="button" class="chip" id="uploadWorld">Upload world</button>
+          </div>
+          <div class="library-status" id="libraryStatus">Connect to load library cards.</div>
+        </details>
+      </section>
+      </div>
+    </aside>
     </div>
+    <div class="agentbar">
+      <div class="agentbar-head"><h3>✳ &nbsp; Your simulation team</h3><small id="agentBarSummary">Click an agent to meet them</small></div>
+      <div class="agent-flow" id="agentBar" aria-label="Simulation agents"></div>
+    </div>
+    <div class="agent-detail" id="agentDetail" hidden><button class="close" id="agentDetailClose" type="button" aria-label="Close agent details">×</button><h3 id="agentName"></h3><p id="agentDesc"></p><div id="agentRecent" class="agent-recent"></div></div>
     <div class="hud" id="player" hidden>
       <div class="card">
         <button id="play" title="Play/pause">❚❚</button>
@@ -286,7 +626,9 @@
         <span id="time">0.00 s</span>
       </div>
     </div>
-  </main>
+  </section>
+  </div>
+  <div class="chooser" id="chooser" hidden><span id="chooserText">Choose a world and robot</span><button type="button" id="startExploring">Start exploring ↗</button></div>
 </div>
 
 <script type="module">
@@ -296,14 +638,17 @@ import { OrbitControls } from "/static/vendor/OrbitControls.js";
 const $ = (id) => document.getElementById(id);
 const AGENT_COLORS = { Director: "--director", Planner: "--planner", Router: "--router", Builder: "--builder", Checker: "--checker", Simulator: "--simulator", Explainer: "--explainer", "Stress planner": "--planner", "Batch runner": "--simulator" };
 const EXAMPLES = [
-  "Can a small rover climb a rocky hill on Mars?",
-  "Rover obstacle course: 10 small rocks, a step, stairs and a gap",
-  "A six-wheel rover on Mars hills with scattered boulders",
-  "A robot dog walking across Mars hills",
-  "A six-legged spider robot crossing Moon craters",
-  "A rover on a 25 degree icy slope on Earth",
-  "Rover crossing craters on the Moon",
-  "A 5-story building in an earthquake",
+  ["Robot on Mars", "Can a humanoid robot walk on Mars?"],
+  ["Test an earthquake", "How would a building behave during an earthquake?"],
+  ["Find breaking points", "Find where my robot loses balance on a steep hill."],
+  ["Surprise me", "Test a lunar rover navigating a field of craters."],
+];
+const HOME_WORLD_TEMPLATES = [
+  { key: "mars-hills", title: "Mars · Hills", description: "Red regolith · Low gravity", body: "mars", surface: "regolith", terrain: "hills", badge: "Popular" },
+  { key: "moon-craters", title: "Moon · Highlands", description: "Dusty craters · Low gravity", body: "moon", surface: "regolith", terrain: "craters", badge: "" },
+  { key: "earth-hills", title: "Earth · Alpine Trail", description: "Rocky slopes · Earth gravity", body: "earth", surface: "rock", terrain: "hills", badge: "" },
+  { key: "test-lab", title: "The Test Lab", description: "Ramps · Obstacles", body: "earth", surface: "rock", terrain: "flat", badge: "Beginner friendly",
+    obstacles: [{ kind: "rock", size: "small", count: 10 }, { kind: "step", size: "small" }, { kind: "stairs", size: "small" }, { kind: "gap", size: "small" }] },
 ];
 const batchResults = new Map();
 let batchDecodeTasks = [];
@@ -313,19 +658,91 @@ let libraryTab = "robots";
 let selectedRobotId = "";
 let selectedPolicyId = "";
 let selectedWorldId = "";
+let selectedHomeWorld = null;
+let selectedHomeRobot = null;
+let currentSpec = null;
+let currentMetrics = null;
+let activeDetailsTab = "scene";
+let presentationMode = false;
+let detailsMode = false;
+let agentActivity = new Map();
+let agentStepHistory = new Map();
+let savedWorlds = readSavedWorlds();
+let lastRequestText = "";
+let preserveLaunchMessage = false;
+let latestInsight = null;
+function readSavedWorlds() {
+  try {
+    const saved = JSON.parse(localStorage.getItem("simgate.savedWorlds") || "[]");
+    return Array.isArray(saved) ? saved : [];
+  } catch { return []; }
+}
 
 // ── Chat timeline ───────────────────────────────────────────────────────
 const log = $("log");
 function scroll() { log.scrollTop = log.scrollHeight; }
-function addMsg(text, cls = "bot") { const d = document.createElement("div"); d.className = `msg ${cls}`; d.textContent = text; log.appendChild(d); scroll(); return d; }
+function addMsg(text, cls = "bot") {
+  const d = document.createElement("div"); d.className = `msg ${cls}`;
+  if (cls === "user" || cls === "err") d.textContent = text;
+  else {
+    const from = document.createElement("div"); from.className = "from";
+    const mark = document.createElement("span"); mark.className = "tiny"; mark.textContent = "✳"; from.append(mark, document.createTextNode("SimGate"));
+    d.append(from, textEl("p", text, "message-copy"));
+  }
+  log.appendChild(d); scroll(); return d;
+}
 let lastAgentRow = {};
-const stepRows = new Map(), agentNodes = new Map(), countedSteps = new Set();
+let stepRows = new Map(), countedSteps = new Set();
+const agentNodes = new Map();
+let activeStepList = $("agentStepList"), activeStepDetails = $("agentSteps");
 const agentPositions = {
   Director: [55, 38], Builder: [175, 38], Checker: [295, 38],
   Simulator: [295, 115], Explainer: [175, 115], "Stress planner": [55, 115],
   Designer: [55, 190], "Batch runner": [175, 190],
 };
 const HIDDEN_UNTIL_USED = new Set(["Stress planner", "Designer", "Batch runner"]);
+const AGENT_ORDER = ["Director", "Builder", "Checker", "Simulator", "Hunter", "Explainer", "Designer", "Batch runner", "Stress planner"];
+const AGENT_ICONS = { Director: "✧", Builder: "▦", Checker: "◈", Simulator: "▷", Hunter: "◎", Explainer: "✺", Designer: "✦", "Batch runner": "▤", "Stress planner": "⌁" };
+const AGENT_DESCRIPTIONS = {
+  Director: "The organizer · I translate your idea into a clear plan and coordinate everyone.",
+  Builder: "The maker · I turn your description into a world you can explore.",
+  Checker: "The careful one · I check that the scene and settings make sense before the experiment.",
+  Simulator: "The experimenter · I run physics so we can see what actually happens.",
+  Hunter: "The curious detective · I search the conditions until we discover where things stop working.",
+  Explainer: "The storyteller · I turn measurements and evidence into plain-language answers.",
+  Designer: "The inventor · I test possible improvements and show you their trade-offs.",
+  "Batch runner": "Runs bounded comparisons and replays measured outcomes.",
+  "Stress planner": "Chooses compatible conditions for a stress test.",
+};
+function updateAgent(name, status, model, message) {
+  const current = agentActivity.get(name) || {};
+  agentActivity.set(name, { ...current, status: status || current.status || "ready", model: model || current.model || "rules", message: message || current.message || "Ready" });
+  renderAgentBar();
+}
+function renderAgentBar() {
+  const container = $("agentBar"); if (!container) return;
+  const names = AGENT_ORDER.filter((name) => name in Object.fromEntries(agentActivity));
+  const shown = names.length ? names : ["Director", "Builder", "Checker", "Simulator", "Hunter", "Explainer", "Designer"];
+  container.replaceChildren();
+  for (let index = 0; index < shown.length; index++) {
+    const name = shown[index], state = agentActivity.get(name) || { status: "ready", model: "rules", message: "Ready" };
+    if (index) { const connector = document.createElement("span"); connector.className = "connector"; container.appendChild(connector); }
+    const button = document.createElement("button"); button.type = "button"; button.className = `agent-card ${state.status}`; button.title = `Meet ${name}`;
+    const icon = document.createElement("span"); icon.className = "agent-icon"; icon.textContent = AGENT_ICONS[name] || "✳";
+    button.append(icon, textEl("b", name), textEl("small", state.model || "rules"));
+    button.onclick = () => showAgentDetail(name); container.appendChild(button);
+  }
+  $("agentBarSummary").textContent = names.length ? `${names.length} specialists · click to meet them` : "Click an agent to meet them";
+  const panel = $("agentListPanel"); if (panel) panel.textContent = names.length ? `${names.length} agents have contributed to this request.` : "Your simulation team is ready.";
+}
+function showAgentDetail(name) {
+  const activity = agentActivity.get(name) || {};
+  $("agentName").textContent = `${AGENT_ICONS[name] || "✳"}  ${name} · ${activity.model || "rules"}`;
+  $("agentDesc").textContent = AGENT_DESCRIPTIONS[name] || "A SimGate simulation specialist.";
+  const recent = $("agentRecent"); recent.replaceChildren();
+  for (const step of (agentStepHistory.get(name) || []).slice(-3).reverse()) recent.appendChild(textEl("p", `${step.thought}${step.result ? ` · ${step.result}` : ""}`));
+  $("agentDetail").hidden = false;
+}
 function edgePath([x1, y1], [x2, y2]) {
   if (x1 === x2) return `M${x1},${y1 + (y2 > y1 ? 17 : -17)} L${x2},${y2 + (y2 > y1 ? -17 : 17)}`;
   if (y1 === y2) return `M${x1 + (x2 > x1 ? 42 : -42)},${y1} L${x2 + (x2 > x1 ? -42 : 42)},${y2}`;
@@ -361,13 +778,30 @@ function initAgentGraph() {
   updateEdges();
 }
 initAgentGraph();
+renderAgentBar();
+function beginStepGroup() {
+  agentStepHistory = new Map(); stepRows = new Map(); countedSteps = new Set();
+  const details = document.createElement("details"); details.className = "agent-steps"; details.open = true;
+  const summary = document.createElement("summary"); summary.textContent = "Your simulation team · working";
+  const list = document.createElement("div"); list.className = "agent-step-list";
+  details.append(summary, list); log.appendChild(details);
+  activeStepDetails = details; activeStepList = list; scroll();
+}
 function renderStep(ev) {
   let row = stepRows.get(ev.id);
   if (!row) {
     row = document.createElement("details"); row.className = "step-row";
     const summary = document.createElement("summary"), detail = document.createElement("div");
-    detail.className = "step-meta"; row.append(summary, detail); log.appendChild(row); stepRows.set(ev.id, row);
+    detail.className = "step-meta"; row.append(summary, detail); activeStepList.appendChild(row); stepRows.set(ev.id, row);
   }
+  activeStepDetails.hidden = false; activeStepDetails.open = ev.status === "working";
+  const history = agentStepHistory.get(ev.agent) || [];
+  if (!history.some((step) => step.id === ev.id)) history.push({ id: ev.id, thought: ev.thought || "Working…", result: ev.result || "" });
+  else { const step = history.find((item) => item.id === ev.id); step.thought = ev.thought || step.thought; step.result = ev.result || step.result; }
+  agentStepHistory.set(ev.agent, history);
+  updateAgent(ev.agent, ev.status, ev.model, ev.result || ev.thought);
+  const groupSummary = activeStepDetails.querySelector("summary");
+  groupSummary.textContent = `${AGENT_ORDER.filter((name) => agentStepHistory.has(name)).join(" → ")} · ${countedSteps.size + (countedSteps.has(ev.id) ? 0 : 1)} steps`;
   row.className = `step-row ${ev.status || "done"}`;
   const summary = row.querySelector("summary"), detail = row.querySelector(".step-meta");
   summary.textContent = `${ev.agent}${ev.tool ? ` · ${ev.tool}` : ""}: ${ev.thought || "Working…"}`;
@@ -393,16 +827,14 @@ function renderStep(ev) {
   scroll();
 }
 function addAgent(ev) {
-  const row = document.createElement("div");
-  row.className = `agent ${ev.status}`;
-  row.style.color = `var(${AGENT_COLORS[ev.agent] || "--muted"})`;
-  row.innerHTML = `<b><i class="dot"></i>${ev.agent}</b><span></span>`;
-  row.querySelector("span").textContent = ev.message;
-  row.querySelector("span").style.color = ev.status === "warning" ? "var(--warn)" : "var(--muted)";
-  // Replace a "working" row with its result to keep the log tidy.
-  const prev = lastAgentRow[ev.agent];
-  if (prev && prev.classList.contains("working") && prev === log.lastElementChild) prev.replaceWith(row); else log.appendChild(row);
-  lastAgentRow[ev.agent] = row; scroll();
+  const mode = $("mode").textContent;
+  const model = ev.model || (mode.startsWith("Mock") ? "rules" : mode.replace(/^Model · /, ""));
+  if (ev.message) {
+    const history = agentStepHistory.get(ev.agent) || [];
+    if (history.at(-1)?.thought !== ev.message) history.push({ id: `agent-${ev.agent}-${history.length}`, thought: ev.message, result: "" });
+    agentStepHistory.set(ev.agent, history.slice(-10));
+  }
+  updateAgent(ev.agent, ev.status, model, ev.message);
 }
 // One click = one run: every Run button goes inactive once a run is requested or starts.
 function disableRunButtons() { document.querySelectorAll(".chip.run").forEach((b) => { b.disabled = true; }); }
@@ -414,12 +846,280 @@ function chips(container, items, primary) {
     container.appendChild(b);
   }
 }
-chips($("examples"), EXAMPLES);
+renderHomeExamples();
 
 // ── Socket ──────────────────────────────────────────────────────────────
 const ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws`);
-function send(text) { addMsg(text, "user"); ws.send(JSON.stringify({ text })); }
+function send(text) { showWorkbench(); lastRequestText = text; addMsg(text, "user"); beginStepGroup(); ws.send(JSON.stringify({ text })); }
+function addInsight(title, detail, panel = "results") {
+  const card = document.createElement("div"); card.className = "msg bot insight-card";
+  card.append(textEl("span", "SIMULATION INSIGHT", "tinycap"), textEl("strong", title), textEl("p", detail));
+  const actions = document.createElement("div"); actions.className = "card-actions";
+  const open = document.createElement("button"); open.type = "button"; open.className = "chip"; open.textContent = `View ${panel}`;
+  open.onclick = () => showPanel(panel === "analysis" ? "analysis" : panel);
+  actions.appendChild(open); card.appendChild(actions); log.appendChild(card); latestInsight = card;
+  if (presentationMode) setPresentation(true);
+  scroll(); return card;
+}
+function updateLatestInsight(message) {
+  if (!latestInsight || !log.contains(latestInsight)) return false;
+  const paragraph = latestInsight.querySelector("p"); if (paragraph) paragraph.textContent = message;
+  if (presentationMode) setPresentation(true);
+  return true;
+}
+function setPresentation(value = !presentationMode) {
+  presentationMode = value; document.body.classList.toggle("presentation", value);
+  $("presentationToggle").setAttribute("aria-pressed", String(value));
+  $("presentationToggle").title = value ? "Exit presentation mode (P)" : "Presentation mode (P)";
+  const preview = $("presentationInsight");
+  preview.hidden = !value || !latestInsight;
+  if (value && latestInsight) {
+    $("presentationHeadline").textContent = latestInsight.querySelector("strong")?.textContent || "Latest insight";
+    $("presentationSummary").textContent = latestInsight.querySelector("p")?.textContent || "";
+  }
+  hidePanel();
+}
+function storeSavedWorld(entry) {
+  savedWorlds = [entry, ...savedWorlds.filter((item) => item.key !== entry.key)].slice(0, 24);
+  try { localStorage.setItem("simgate.savedWorlds", JSON.stringify(savedWorlds)); }
+  catch (error) { addMsg(`Could not save this world locally: ${error.message}`, "err"); }
+}
+function saveCurrentWorld() {
+  if (!currentSpec) { addMsg("Build a scene before saving a world."); return; }
+  const entry = { key: `${Date.now()}`, title: currentSpec.title || "Saved simulation", body: currentSpec.environment?.body,
+    savedAt: new Date().toLocaleString(), spec: currentSpec };
+  storeSavedWorld(entry); addMsg(`Saved ${entry.title} to My worlds.`); renderSavedWorlds();
+}
+function showWorkbench() { $("home").hidden = true; $("workbench").hidden = false; $("chooser").hidden = true; }
+function showHome(tab = "explore") {
+  $("workbench").hidden = true; $("home").hidden = false;
+  renderChooser();
+  const myWorlds = tab === "myworlds";
+  $("homeExplore").hidden = myWorlds; $("homeSavedSection").hidden = !myWorlds;
+  $("navExplore").setAttribute("aria-current", myWorlds ? "false" : "page");
+  $("navMyWorlds").setAttribute("aria-current", myWorlds ? "page" : "false");
+  if (myWorlds) renderSavedWorlds();
+}
+function showPanel(tab = "scene") {
+  activeDetailsTab = tab; detailsMode = true; document.body.classList.add("show-details");
+  $("topright").hidden = false; $("topright").classList.add("open");
+  $("detailsToggle").setAttribute("aria-pressed", "true");
+  $("detailsToggle").textContent = "Hide details";
+  $("codeBtn").hidden = !current;
+  for (const button of document.querySelectorAll("[data-details-tab]")) {
+    const active = button.dataset.detailsTab === tab;
+    button.classList.toggle("selected", active); button.setAttribute("aria-selected", String(active));
+  }
+  for (const section of document.querySelectorAll("[data-panel-section]")) {
+    section.hidden = section.dataset.panelSection !== tab;
+  }
+  if (tab === "library") { $("libraryPanel").open = true; renderLibrary(); }
+}
+function hidePanel() {
+  detailsMode = false; document.body.classList.remove("show-details");
+  $("topright").classList.remove("open"); $("topright").hidden = true; $("detailsToggle").setAttribute("aria-pressed", "false");
+  $("detailsToggle").textContent = "Show details"; $("codeBtn").hidden = true; $("code").style.display = "none";
+}
+function setStatus(text, kind = "ready") {
+  const status = $("stageStatus"); status.className = `status ${kind}`; $("statusText").textContent = text;
+}
+function updateSceneContext(spec = currentSpec) {
+  if (!spec) return;
+  currentSpec = spec;
+  const entries = spec.robots || [];
+  const robot = entries[0]?.robot || spec.robot;
+  const card = robot?.robot_id && libraryData.robots.find((item) => item.id === robot.robot_id);
+  const builtinCard = robot && libraryData.robots.find((item) => item.id === (robot.robot_id || robot.kind));
+  const selectedRobotCard = card || builtinCard;
+  const robotName = entries.length > 1 ? entries.map((entry) => entry.label).join(" · ") : card?.name || (robot ? `${robot.wheels || robot.legs || ""} ${robot.kind}` : "Structure");
+  const cleanTitle = robotName && spec.title?.startsWith(`${robotName} · `) ? spec.title.slice(robotName.length + 3) : spec.title;
+  $("sceneTitle").textContent = cleanTitle || "Simulation scene";
+  $("sideTitle").textContent = spec.title || "Simulation";
+  $("sceneRobot").textContent = robotName && !spec.title?.toLowerCase().includes(robotName.toLowerCase()) ? `/ ${robotName}` : "";
+  const terrain = spec.terrain?.kind || "structure";
+  const gravity = spec.environment?.gravity ?? "—";
+  const surface = spec.environment?.surface || "steel frame";
+  const body = spec.environment?.body || "earth";
+  $("worldHeading").textContent = `${body.replace(/^\w/, (letter) => letter.toUpperCase())} · ${terrain}`;
+  $("worldFacts").textContent = `${gravity} m/s² gravity · ${surface}`;
+  $("sceneHud").hidden = false;
+  const worldId = spec.terrain?.kind === "real" ? `real-${spec.terrain.preset}` : `${body}-${surface}`;
+  const worldCard = libraryData.worlds.find((item) => item.id === worldId);
+  const sceneDetails = $("sceneDetails"); sceneDetails.replaceChildren();
+  sceneDetails.appendChild(textEl("strong", selectedRobotCard?.name || (robot ? robot.kind : "Structural frame")));
+  if (robot) {
+    const kind = selectedRobotCard?.kind || robot.kind;
+    const dimensions = kind === "wheeled" ? `${robot.wheels} wheels` : kind === "legged" ? `${robot.legs} legs` : "";
+    sceneDetails.appendChild(textEl("span", `${kind}${robot.mass_kg ? ` · ${robot.mass_kg} kg` : ""}${dimensions ? ` · ${dimensions}` : ""}`));
+  }
+  if (selectedRobotCard) sceneDetails.append(textEl("span", `Credit: ${selectedRobotCard.credit}`), textEl("span", `License: ${selectedRobotCard.license}`));
+  if (robot?.policy_id) sceneDetails.appendChild(textEl("span", `Policy: ${libraryData.policies.find((item) => item.id === robot.policy_id)?.name || robot.policy_id}`));
+  sceneDetails.appendChild(textEl("strong", worldCard?.name || `${body.replace(/^\w/, (letter) => letter.toUpperCase())} · ${surface}`));
+  if (worldCard) sceneDetails.append(textEl("span", `Credit: ${worldCard.credit}`), textEl("span", `License: ${worldCard.license}`));
+  else sceneDetails.appendChild(textEl("span", `Reference values · ${gravity} m/s² · friction ${spec.environment?.friction ?? "—"}`));
+  const goal = entries[0]?.goal_place || spec.mission?.goal_place || (entries[0]?.goal_xy || spec.mission?.goal_xy ? "coordinates" : "not set");
+  $("goalPill").textContent = `◎  Goal: ${goal}`; $("goalPill").hidden = false;
+}
+function metricInsight(metrics = {}) {
+  if (metrics.goal_reached === true) return [`Goal reached in ${metrics.time_to_goal_s ?? "—"} s`, `The robot covered ${metrics.distance_m ?? metrics.path_length_m ?? "—"} m with ${Math.round((metrics.slip_ratio || 0) * 100)}% slip.`];
+  if (metrics.goal_reached === false) return [`Missed by ${metrics.final_distance_m ?? "—"} m · ${metrics.outcome || "run ended"}`, `Progress ${metrics.distance_m ?? metrics.forward_progress_m ?? "—"} m · max tilt ${metrics.max_tilt_deg ?? "—"}°.`];
+  if (metrics.max_story_drift_pct !== undefined) return [`${metrics.stories || "Building"} · max drift ${metrics.max_story_drift_pct}%`, `Roof sway ${metrics.max_roof_displacement_cm ?? "—"} cm · ${metrics.damage_estimate || "analysis complete"}.`];
+  return ["Analysis complete", "Open the results panel to inspect the measured outcomes and evidence."];
+}
+function detailForReport(report) {
+  if (!report) return "Open the panel to inspect measured results.";
+  if (report.type === "diagnosis") return report.conclusion || "The diagnosis is ready for review.";
+  if (report.type === "envelope") return report.honesty || "The operating limits are ready for review.";
+  if (report.type === "redesign") return report.message || "The design search is complete.";
+  return "The report is ready for review.";
+}
+function fillHomePrompt(text) { $("homeInput").value = text; $("homeInput").focus(); }
+function renderHomeExamples() {
+  const hints = $("examples"); hints.replaceChildren();
+  for (const [label, prompt] of EXAMPLES) {
+    const button = document.createElement("button"); button.type = "button"; button.className = "chip";
+    button.textContent = label; button.title = prompt;
+    button.onclick = () => label === "Surprise me" ? fillHomePrompt(EXAMPLES[Math.floor(Math.random() * (EXAMPLES.length - 1))][1]) : fillHomePrompt(prompt);
+    hints.appendChild(button);
+  }
+}
+function homeWorldOptions() {
+  const generated = HOME_WORLD_TEMPLATES.map((template) => {
+    const world = libraryData.worlds.find((item) => item.id === `${template.body}-${template.surface}`);
+    return world ? { ...template, world, worldId: world.id } : null;
+  }).filter(Boolean);
+  const real = libraryData.worlds.filter((world) => world.terrain_kind === "real").map((world) => ({
+    key: world.id, title: world.name.replace(/ · real terrain$/i, ""), description: `Real elevation · ${world.body.replace(/^\w/, (letter) => letter.toUpperCase())} · ${world.surface}`,
+    body: world.body, surface: world.surface, terrain: "real", worldId: world.id, world,
+    badge: world.source === "upload" ? "Uploaded" : "Real NASA data",
+  }));
+  return [...real, ...generated];
+}
+function terrainIllustration(item) {
+  const palettes = {
+    mars: ["#afa2bb", "#efc3a8", "#ad746f", "#955b58"],
+    moon: ["#222b47", "#73768c", "#777a8a", "#a7a5ad"],
+    earth: ["#b1cedc", "#f4e6d2", "#738f7a", "#4f7766"],
+    lab: ["#e8e9ef", "#f6f4f7", "#c5bfd5", "#9990ad"],
+  }[item.key === "test-lab" ? "lab" : item.body] || ["#afa2bb", "#efc3a8", "#ad746f", "#955b58"];
+  const id = `terrain-${item.key.replace(/[^a-z0-9]/gi, "")}`;
+  const stars = item.body === "moon" ? `<g fill="#fff" opacity=".8"><circle cx="28" cy="27" r="1"/><circle cx="103" cy="45" r="1.2"/><circle cx="212" cy="21" r="1"/></g>` : "";
+  return `<svg viewBox="0 0 280 155" preserveAspectRatio="xMidYMid slice" aria-hidden="true"><defs><linearGradient id="${id}" x2="0" y2="1"><stop stop-color="${palettes[0]}"/><stop offset="1" stop-color="${palettes[1]}"/></linearGradient></defs><rect width="280" height="155" fill="url(#${id})"/>${stars}<circle cx="218" cy="31" r="19" fill="#fff0df" opacity=".62"/><path d="M0 98L47 81 90 97 150 57 208 102 280 75V155H0" fill="${palettes[2]}"/><path d="M0 121L73 84 125 114 215 83 280 101V155H0" fill="${palettes[3]}"/><path d="M0 142Q68 103 139 134L280 96V155H0" fill="${palettes[2]}" opacity=".82"/></svg>`;
+}
+function robotIllustration(robot) {
+  if (robot.kind === "humanoid") return `<svg viewBox="0 0 280 188" aria-hidden="true"><ellipse cx="140" cy="163" rx="49" ry="9" fill="#b6acc5" opacity=".35"/><g transform="translate(140 22)" stroke="#787a88" stroke-width="2"><rect x="-17" y="2" width="34" height="31" rx="10" fill="#e5e6eb"/><rect x="-12" y="9" width="24" height="9" rx="3" fill="#31374a" stroke="none"/><path d="M-27 40Q0 30 27 40L23 91Q0 105 -23 91Z" fill="#e9eaf0"/><path d="M-19 95L-8 96-14 133-33 133Z M10 96L20 94 35 132 20 135Z" fill="#c9cad5"/><path d="M-25 42L-39 54-51 90-40 93-16 55Z M24 43L39 52 51 90 41 94 18 57Z" fill="#c9cbd5"/><path d="M-33 132h19l2 12h-31Z M20 132l15-4 16 14-27 2Z" fill="#777985"/></g></svg>`;
+  if (robot.kind === "wheeled") return `<svg viewBox="0 0 280 188" aria-hidden="true"><ellipse cx="140" cy="154" rx="86" ry="10" fill="#c9ad9f" opacity=".3"/><g stroke="#797c83" stroke-width="4"><path d="M76 116L66 144M106 118L107 145M164 118L167 145M198 114L215 145"/></g><g fill="#4c505c"><circle cx="66" cy="145" r="15"/><circle cx="107" cy="145" r="15"/><circle cx="169" cy="145" r="15"/><circle cx="214" cy="145" r="15"/></g><path d="M74 93l103-12 44 25-26 25-124-17Z" fill="#d9dad9" stroke="#888a93" stroke-width="2"/><path d="M95 94V63l78-7v28" fill="#c6ab7a" stroke="#977f63" stroke-width="2"/><path d="M176 70V42" stroke="#575966" stroke-width="3"/><rect x="165" y="34" width="24" height="15" rx="4" fill="#373d4d"/></svg>`;
+  if (robot.kind === "legged") return `<svg viewBox="0 0 280 188" aria-hidden="true"><ellipse cx="140" cy="156" rx="68" ry="9" fill="#a9b3ba" opacity=".28"/><g stroke="#737b8b" stroke-width="8" stroke-linecap="round" fill="none"><path d="M104 92L77 143 62 150M118 100L111 141 100 151M160 97L182 141 193 151M178 93L210 143 226 151"/></g><rect x="88" y="66" width="109" height="48" rx="21" fill="#d6dade" stroke="#8e9ba7" stroke-width="2"/><rect x="191" y="56" width="35" height="32" rx="9" fill="#e8ecee" stroke="#8e9ba7" stroke-width="2"/><rect x="218" y="65" width="13" height="12" rx="3" fill="#343f4e"/></svg>`;
+  return `<svg viewBox="0 0 280 188" aria-hidden="true"><rect x="92" y="34" width="96" height="110" rx="18" fill="#ffffff8a" stroke="#bcb2ca" stroke-dasharray="6 5" stroke-width="2"/><circle cx="140" cy="79" r="21" fill="#e6dcf0"/><path d="M140 68v22M129 79h22" stroke="#8b72b8" stroke-width="3" stroke-linecap="round"/><text x="140" y="125" font-size="11" fill="#897a9c" text-anchor="middle">Upload a model</text></svg>`;
+}
+function renderWorldTile(item) {
+  const button = document.createElement("button"); button.type = "button";
+  button.className = `tile terrain-${item.body}${selectedHomeWorld?.key === item.key ? " selected" : ""}`;
+  const thumb = document.createElement("div"); thumb.className = "thumb";
+  if (item.world.preview_url) {
+    const image = document.createElement("img"); image.src = item.world.preview_url; image.alt = `${item.title} terrain preview`;
+    image.onerror = () => { image.remove(); thumb.insertAdjacentHTML("afterbegin", `<div class="thumb-motion">${terrainIllustration(item)}</div>`); };
+    thumb.appendChild(image);
+  } else {
+    const art = document.createElement("div"); art.className = "thumb-motion"; art.innerHTML = terrainIllustration(item); thumb.appendChild(art);
+  }
+  if (item.badge) { const badge = document.createElement("span"); badge.className = "tile-label"; badge.textContent = item.badge; thumb.appendChild(badge); }
+  const info = document.createElement("div"); info.className = "tile-info";
+  info.append(textEl("h3", item.title), textEl("p", item.description)); button.append(thumb, info);
+  button.onclick = () => { selectedHomeWorld = item; renderHome(); };
+  return button;
+}
+function renderHomeWorlds() {
+  const container = $("homeWorlds"); container.replaceChildren();
+  for (const item of homeWorldOptions()) container.appendChild(renderWorldTile(item));
+}
+function renderHomeRobots() {
+  const container = $("homeRobots"); container.replaceChildren();
+  const cards = libraryData.robots.flatMap((robot) => robot.id === "rover"
+    ? [{ robot, label: "4-wheel Rover", settings: { wheels: 4 } }, { robot, label: "6-wheel Rover", settings: { wheels: 6 } }]
+    : robot.id === "walker"
+      ? [{ robot, label: "4-legged Walker", settings: { legs: 4 } }, { robot, label: "6-legged Walker", settings: { legs: 6 } }]
+      : [{ robot, label: robot.name, settings: {} }]);
+  for (const { robot, label: displayName, settings } of cards) {
+    const policy = compatiblePolicies(robot)[0];
+    const label = robot.source === "upload" ? "Uploaded" : robot.id === "g1" ? "Trained policy" : "Simple gait";
+    const button = document.createElement("button"); button.type = "button";
+    button.className = `tile robot-card${selectedHomeRobot?.id === robot.id ? " selected" : ""}`;
+    const thumb = document.createElement("div"); thumb.className = "thumb";
+    const art = document.createElement("div"); art.className = "thumb-motion"; art.innerHTML = robotIllustration(robot); thumb.appendChild(art);
+    const info = document.createElement("div"); info.className = "tile-info";
+    const badge = textEl("span", label, "badge");
+    const title = textEl("h3", displayName); const detail = textEl("p", `${robot.kind} · ${robot.mass_kg} kg${policy ? ` · ${policy.name}` : ""}`);
+    info.append(badge, title, detail); button.append(thumb, info);
+    button.onclick = () => { selectedHomeRobot = { ...robot, name: displayName, settings }; selectedRobotId = robot.id; selectedPolicyId = policy?.id || ""; renderHome(); };
+    container.appendChild(button);
+  }
+  const own = document.createElement("button"); own.type = "button"; own.className = "tile robot-card";
+  const art = document.createElement("div"); art.className = "thumb"; art.innerHTML = robotIllustration({ kind: "custom" });
+  const info = document.createElement("div"); info.className = "tile-info"; info.append(textEl("span", "Upload", "badge"), textEl("h3", "Your own robot"), textEl("p", "Bring your creation"));
+  own.append(art, info); own.onclick = () => { showWorkbench(); openUpload("robot"); }; container.appendChild(own);
+}
+function renderHome() {
+  renderHomeWorlds(); renderHomeRobots(); renderChooser();
+}
+function renderChooser() {
+  const chooser = $("chooser"), hasChoice = Boolean(selectedHomeWorld || selectedHomeRobot);
+  chooser.hidden = !hasChoice;
+  if (!hasChoice) return;
+  const world = selectedHomeWorld?.title || "Choose a world";
+  const robot = selectedHomeRobot?.name || "";
+  $("chooserText").textContent = `${world}${robot ? ` + ${robot}` : ""}`;
+}
+function renderSavedWorlds() {
+  const container = $("savedWorlds"); container.replaceChildren();
+  $("savedEmpty").hidden = savedWorlds.length > 0;
+  for (const entry of savedWorlds) {
+    const card = document.createElement("button"); card.type = "button"; card.className = "tile";
+    const art = document.createElement("div"); art.className = "thumb"; art.innerHTML = terrainIllustration({ key: entry.key || "mars", body: entry.body || "mars" });
+    const info = document.createElement("div"); info.className = "tile-info"; info.append(textEl("h3", entry.title), textEl("p", entry.savedAt || "Saved world"));
+    card.append(art, info); card.onclick = () => launchSavedWorld(entry); container.appendChild(card);
+  }
+}
+function launchHomeSelection() {
+  const world = selectedHomeWorld || homeWorldOptions().find((item) => item.key === "mars-hills");
+  const robot = selectedHomeRobot || libraryData.robots.find((item) => item.id === "g1") || libraryData.robots[0];
+  if (!world || !robot) { addMsg("The Library is still loading. Try again in a moment.", "err"); return; }
+  const policy = compatiblePolicies(robot)[0];
+  if (!policy) { addMsg(`No compatible policy is available for ${robot.name}.`, "err"); return; }
+  const title = `${robot.name} · ${world.title}`;
+  showWorkbench(); lastRequestText = title; preserveLaunchMessage = true;
+  ws.send(JSON.stringify({ type: "reset" })); addMsg(title, "user");
+  ws.send(JSON.stringify({ type: "library_select", robot_id: robot.id, policy_id: policy.id, world_id: world.worldId,
+    start_scene: true, terrain_kind: world.terrain, title, obstacles: world.obstacles || [], robot_settings: robot.settings || {} }));
+}
+function launchSavedWorld(entry) {
+  const spec = entry.spec; if (!spec) return;
+  showWorkbench(); preserveLaunchMessage = true; ws.send(JSON.stringify({ type: "reset" })); addMsg(`Reopen ${entry.title}`, "user");
+  ws.send(JSON.stringify({ type: "restore_scene", scene_spec: spec }));
+}
+$("homeForm").onsubmit = (event) => { event.preventDefault(); const text = $("homeInput").value.trim(); if (text) { $("homeInput").value = ""; send(text); } };
 $("form").onsubmit = (e) => { e.preventDefault(); const t = $("input").value.trim(); if (t) { send(t); $("input").value = ""; } };
+$("homeBrand").onclick = () => showHome("explore");
+$("navExplore").onclick = () => showHome("explore");
+$("navMyWorlds").onclick = () => showHome("myworlds");
+$("navLibrary").onclick = () => { showWorkbench(); showPanel("library"); };
+$("navAbout").onclick = () => addInsight("A plain-language gateway to physical simulation.", "Describe a physical idea, inspect the scene, and explore measured results.", "scene");
+$("backToHome").onclick = () => showHome("explore");
+$("allWorlds").onclick = () => { showWorkbench(); showPanel("library"); libraryTab = "worlds"; renderLibrary(); };
+$("allRobots").onclick = () => { showWorkbench(); showPanel("library"); libraryTab = "robots"; renderLibrary(); };
+$("backToExplore").onclick = () => showHome("explore");
+$("startExploring").onclick = launchHomeSelection;
+$("saveWorld").onclick = saveCurrentWorld;
+$("presentationToggle").onclick = () => setPresentation();
+$("detailsToggle").onclick = () => detailsMode ? hidePanel() : showPanel(activeDetailsTab);
+$("closeDetails").onclick = hidePanel;
+document.querySelectorAll("[data-details-tab]").forEach((button) => { button.onclick = () => showPanel(button.dataset.detailsTab); });
+$("homeAttach").onclick = () => { showWorkbench(); openUpload("robot"); };
+$("agentDetailClose").onclick = () => { $("agentDetail").hidden = true; };
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape") { hidePanel(); $("agentDetail").hidden = true; closeUpload(); }
+  if (event.key.toLowerCase() === "p" && !event.repeat && !/^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement?.tagName || "")) setPresentation();
+});
 
 function compatiblePolicies(robot) {
   return libraryData.policies.filter((policy) => policy.robot_id === robot.id ||
@@ -532,6 +1232,9 @@ const UPLOAD_TAB = { robot: "Robots", policy: "Policies", terrain: "Worlds" };
 const FORM_FIELDS = { robot_id: "uploadRobotId", body: "uploadBody", surface: "uploadSurface", size_m: "uploadSize", height_range_m: "uploadHeight" };
 function openUpload(kind) {
   uploadKind = kind; uploadFiles = [];
+  document.querySelectorAll("[data-upload-kind]").forEach((button) => {
+    button.setAttribute("aria-pressed", String(button.dataset.uploadKind === kind));
+  });
   libraryTab = { robot: "robots", policy: "policies", terrain: "worlds" }[kind];
   $("libraryPanel").open = true; renderLibrary();
   $("uploadTitle").textContent = `Upload ${UPLOAD_NOUN[kind]}`; showFormQuestions([]);
@@ -581,6 +1284,7 @@ function addFiles(list) { uploadFiles.push(...list); renderUploadFiles(); }
 $("uploadRobot").onclick = () => openUpload("robot");
 $("uploadPolicy").onclick = () => openUpload("policy");
 $("uploadWorld").onclick = () => openUpload("terrain");
+document.querySelectorAll("[data-upload-kind]").forEach((button) => { button.onclick = () => openUpload(button.dataset.uploadKind); });
 $("uploadCancel").onclick = closeUpload;
 $("uploadClose").onclick = closeUpload;
 $("uploadDialog").onclose = () => { uploadFiles = []; };
@@ -671,7 +1375,12 @@ function showUploadResult(step, kind, status, body) {
   }
   if (terrain || state?.status === "listed") {
     const name = terrain ? terrain.label : state.robot_card?.name || state.policy_card?.name || upload.name;
-    addMsg(`${name} is in the Library: use it from the ${UPLOAD_TAB[kind]} tab.`);
+    const message = addMsg(`${name} is in the Library.`), actions = document.createElement("div"); actions.className = "card-actions";
+    const use = document.createElement("button"); use.type = "button"; use.className = "chip primary"; use.textContent = "Use it";
+    use.onclick = () => {
+      closeUpload(); showWorkbench(); libraryTab = { robot: "robots", policy: "policies", terrain: "worlds" }[kind]; showPanel("library"); renderLibrary();
+    };
+    actions.appendChild(use); message.appendChild(actions);
   } else if (!questions.length) {
     const reasons = [...(state?.errors || []), ...checks.filter((check) => !check.passed && !check.advisory).map((check) => `${check.name} (${check.detail})`)];
     addMsg(`Not ready: ${reasons.join("; ")}`);
@@ -712,19 +1421,23 @@ ws.onmessage = (m) => {
   switch (ev.type) {
     case "hello":
       $("mode").textContent = ev.mock_mode ? "Mock mode · no model configured" : `Model · ${ev.model}`;
-      // Installed real-terrain presets become one-tap examples.
-      chips($("examples"), (ev.terrains || []).map((t) => `A robot dog walking on real terrain: ${t.label}`));
       libraryData = ev.library || libraryData;
       selectedRobotId = libraryData.robots[0]?.id || "";
       selectedPolicyId = selectedRobotId ? compatiblePolicies(libraryData.robots[0])[0]?.id || "" : "";
       selectedWorldId = libraryData.worlds.find((world) => world.id === "earth-rock")?.id || libraryData.worlds[0]?.id || "";
-      renderLibrary();
+      renderLibrary(); renderHome(); renderHomeExamples();
       break;
     case "agent": addAgent(ev); break;
     case "step": renderStep(ev); break;
-    case "scene": loadScene(ev.scene); $("code").textContent = ev.code; $("codeBtn").hidden = false;
-      $("startBtn").hidden = $("goalBtn").hidden = ev.scene.kind !== "mujoco"; break;
-    case "checks": renderChecks(ev.checks); break;
+    case "spec": currentSpec = ev.spec; updateSceneContext(ev.spec); break;
+    case "scene": showWorkbench(); currentMetrics = null; latestInsight = null; loadScene(ev.scene); updateSceneContext(); $("code").textContent = ev.code; $("codeBtn").hidden = !detailsMode;
+      $("startBtn").hidden = $("goalBtn").hidden = ev.scene.kind !== "mujoco"; setStatus("Scene ready"); break;
+    case "checks":
+      renderChecks(ev.checks);
+      if ((ev.checks || []).some((check) => !check.passed && !check.advisory)) setStatus("Checks failed", "failed");
+      else setStatus("Scene ready");
+      if (detailsMode) showPanel("scene");
+      break;
     case "question": {
       const d = addMsg(ev.message); const q = document.createElement("div"); q.className = "quick";
       if (ev.chips) { chips(q, ev.chips, null); d.appendChild(q); break; }   // the next step after an analysis
@@ -732,25 +1445,41 @@ ws.onmessage = (m) => {
         : ev.message.startsWith("This scene still fails") ? "Run anyway" : "Run";
       chips(q, ev.stress_test_available ? [label, "Stress test", "Find where it breaks"] : [label], label); d.appendChild(q); break;
     }
-    case "run_start": batchIsActive = false; $("reportCard").hidden = true; $("leaderboardCard").hidden = true; disableRunButtons(); startRun(); break;
+    case "run_start": batchIsActive = false; $("reportCard").hidden = true; $("leaderboardCard").hidden = true; disableRunButtons(); setStatus("Running", "running"); startRun(); break;
     case "frames": for (const f of ev.frames) { frames.push(f); addTrailPoint(f); } $("scrub").max = frames.length - 1; break;
-    case "metrics": renderMetrics(ev.metrics); streaming = false; break;
-    case "diagnosis": renderDiagnosis(ev.report); break;
-    case "envelope": renderEnvelope(ev.report); break;
-    case "redesign": renderRedesign(ev.report); break;
+    case "metrics": {
+      currentMetrics = ev.metrics; renderMetrics(ev.metrics); streaming = false; setStatus("Run complete");
+      const [headline, detail] = metricInsight(ev.metrics); addInsight(headline, detail, "results");
+      if (detailsMode) showPanel("results"); break;
+    }
+    case "diagnosis": renderDiagnosis(ev.report); addInsight("Diagnosis complete", detailForReport(ev.report), "analysis"); break;
+    case "envelope": {
+      renderEnvelope(ev.report);
+      const insight = addInsight("Operating limits found", detailForReport(ev.report), "analysis");
+      const retry = document.createElement("button"); retry.type = "button"; retry.className = "chip"; retry.textContent = "Re-check the limits";
+      retry.onclick = () => send("Find where it breaks again"); insight.querySelector(".card-actions")?.appendChild(retry); break;
+    }
+    case "redesign": renderRedesign(ev.report); addInsight("Design search complete", detailForReport(ev.report), "analysis"); break;
     case "batch_start":
       batchIsActive = true; batchResults.clear(); batchDecodeTasks = []; clearGhosts();
       frames = []; idx = 0; streaming = false; $("player").hidden = true;
       $("reportCard").hidden = true; $("metricsCard").hidden = true;
+      setStatus(lastRequestText.toLowerCase().includes("break") || lastRequestText.toLowerCase().includes("limit") ? `Finding limits · 0/${ev.total}` : `Stress test · 0/${ev.total}`, "finding");
       if (current?.kind === "mujoco") { resetTrail(); applyFrame({ t: 0, poses: current.poses }); }
       break;
     case "batch_result": receiveBatchResult(ev.result); break;
+    case "batch_done": setStatus(`Analysis complete · ${ev.passed}/${ev.total} pass`, ev.passed === ev.total ? "ready" : "finding"); break;
     case "report":
       renderReport(ev);
       Promise.all([...batchDecodeTasks]).then(() => setupGhostView(ev));
+      addInsight("Batch results ready", `${ev.passed} of ${ev.total} runs passed.`, "results");
       break;
     case "explanation": {
-      const d = addMsg(ev.message);
+      const parts = ev.message.match(/[^.!?]+[.!?]?/g) || [ev.message];
+      const preRun = !currentMetrics && /running it now/i.test(ev.message);
+      const d = preRun ? addMsg(ev.message)
+        : updateLatestInsight(ev.message) ? latestInsight
+          : addInsight(parts[0].trim() || "Simulation insight", parts.slice(1).join("").trim() || ev.message, "results");
       if (batchIsActive) $("stressExplanation").textContent = ev.message;
       if (ev.chips) {   // after a failed run, offer to find out why or to make it pass (naming the robot in a race)
         const q = document.createElement("div"); q.className = "quick";
@@ -758,7 +1487,7 @@ ws.onmessage = (m) => {
       }
       break;
     }
-    case "error": addMsg(ev.message, "err"); break;
+    case "error": addMsg(ev.message, "err"); setStatus("Something needs attention", "failed"); break;
     case "cost": {   // the request's total: on the card it produced, and under the last reply
       if (costLine) { costLine.textContent = ev.cost.text; costLine = null; }
       const last = [...log.querySelectorAll(".msg.bot")].pop();
@@ -766,13 +1495,18 @@ ws.onmessage = (m) => {
       break;
     }
     case "reset":
-      log.replaceChildren(); stepRows.clear(); countedSteps.clear(); agentNodes.clear(); initAgentGraph();
+      if (!preserveLaunchMessage) log.replaceChildren();
+      else { for (const group of log.querySelectorAll(".agent-steps")) group.remove(); beginStepGroup(); }
+      preserveLaunchMessage = false;
+      stepRows.clear(); countedSteps.clear(); agentNodes.clear(); initAgentGraph();
+      agentActivity = new Map(); agentStepHistory = new Map(); renderAgentBar(); currentSpec = null; currentMetrics = null;
       current = null; frames = []; $("empty").hidden = false; $("checksCard").hidden = true; $("metricsCard").hidden = true;
       $("diagnosisCard").hidden = true; $("redesignCard").hidden = true; $("envelopeCard").hidden = true;
       break;
     case "library_selected":
       $("libraryStatus").textContent = `Selected ${ev.robot} · ${ev.policy} · ${ev.world}.`;
       addMsg(`Library setup selected: ${ev.robot}, ${ev.policy}, ${ev.world}.`);
+      showPanel("library");
       break;
   }
 };

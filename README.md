@@ -830,6 +830,30 @@ retain their source and credit in preset metadata. The public Jezero DTM checked
 true-color ortho, so it uses the procedural terrain material. HiRISE elevation and ortho data are credited to
 NASA/JPL/University of Arizona (CC0 1.0); three.js is vendored under MIT (see `static/vendor/three-LICENSE`).
 
+## UI screenshots
+
+Captured from the served browser UI at 1440×900 and 390×844 in local mock-planner mode. The runs and analysis
+reports use the real local simulation pipeline; only open-ended planning is mocked.
+
+| View | Desktop | Mobile |
+| --- | --- | --- |
+| Explore | [1440×900](docs/screenshots/home-1440.png) | [390×844](docs/screenshots/home-390.png) |
+| World and robot selection | [1440×900](docs/screenshots/home-chooser-1440.png) | [390×844](docs/screenshots/home-chooser-390.png) |
+| G1 Workbench | [1440×900](docs/screenshots/workbench-g1-mars-1440.png) | [390×844](docs/screenshots/workbench-g1-mars-390.png) |
+| G1 run results | [1440×900](docs/screenshots/g1-run-1440.png) | [390×844](docs/screenshots/g1-run-390.png) |
+| Agent detail | [1440×900](docs/screenshots/agent-detail-1440.png) | [390×844](docs/screenshots/agent-detail-390.png) |
+| Scene analysis panel | [1440×900](docs/screenshots/details-on-1440.png) | [390×844](docs/screenshots/details-on-390.png) |
+| Presentation mode | [1440×900](docs/screenshots/presentation-1440.png) | [390×844](docs/screenshots/presentation-390.png) |
+| Operating Envelope | [1440×900](docs/screenshots/envelope-1440.png) | [390×844](docs/screenshots/envelope-390.png) |
+| Failure diagnosis | [1440×900](docs/screenshots/diagnosis-1440.png) | [390×844](docs/screenshots/diagnosis-390.png) |
+| Multi-rover leaderboard | [1440×900](docs/screenshots/leaderboard-1440.png) | [390×844](docs/screenshots/leaderboard-390.png) |
+| World upload | [1440×900](docs/screenshots/upload-world-1440.png) | [390×844](docs/screenshots/upload-world-390.png) |
+
+The refreshed interface keeps the prompt-first Explore flow and adds direct starts from Library cards, saved-world
+reopening, a chat-and-stage Workbench, expandable Scene/Results/Analysis/Library details, agent activity, and
+presentation mode. Uploads and simulation controls continue to use the existing server endpoints and WebSocket
+events.
+
 ## Known limits
 
 - Robots steer straight at the goal and go over obstacles; there's no route planning around them yet.

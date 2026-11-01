@@ -7,7 +7,7 @@ import json
 from pathlib import Path
 
 from fastapi import Body, FastAPI, File, Form, UploadFile, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from simgate import config
@@ -17,7 +17,7 @@ from simgate.library.inspector import answer_robot, inspect_robot
 from simgate.library.terrain_upload import NeedsAnswers, prepare_terrain
 from simgate.library.uploads import MAX_UPLOAD_BYTES, discard_upload, get_upload, list_uploads, upload_status
 from simgate.orchestrator import Session
-from simgate.terrain_data import list_presets
+from simgate.terrain_data import list_presets, load_ortho_image
 
 STATIC = Path(__file__).parent / "static"
 app = FastAPI(title="SimGate")
@@ -32,10 +32,25 @@ def index():
 def library_view() -> dict:
     """Every Library card, plus each upload's state (listed, needs answers, not ready with reasons)."""
     library = LibraryRegistry()
+    worlds = []
+    for card in library.worlds():
+        world = card.model_dump(mode="json")
+        if card.terrain_preset and load_ortho_image(card.terrain_preset) is not None:
+            world["preview_url"] = f"/terrain-preview/{card.terrain_preset}"
+        worlds.append(world)
     return {"robots": [card.model_dump(mode="json") for card in library.robots()],
             "policies": [card.model_dump(mode="json") for card in library.policies()],
-            "worlds": [card.model_dump(mode="json") for card in library.worlds()],
+            "worlds": worlds,
             "uploads": [upload_status(record) for record in list_uploads()]}
+
+
+@app.get("/terrain-preview/{name}")
+def terrain_preview(name: str):
+    image = load_ortho_image(name)
+    if image is None:
+        return JSONResponse({"ok": False, "error": "No RGB terrain preview is available."}, status_code=404)
+    data, _ = image
+    return Response(data, media_type="image/png", headers={"Cache-Control": "public, max-age=3600"})
 
 
 @app.get("/library")
@@ -149,11 +164,14 @@ async def ws(socket: WebSocket):
                 await session.set_point(msg["type"][4:], float(msg["x"]), float(msg["y"]))
             elif msg.get("type") == "show_design":
                 await session.show_design()
+            elif msg.get("type") == "restore_scene":
+                await session.restore_scene(msg.get("scene_spec") or {})
             elif msg.get("type") == "library_select":
                 await session.select_library(msg["robot_id"], msg["policy_id"], msg["world_id"],
                                              start_scene=bool(msg.get("start_scene")),
                                              terrain_kind=msg.get("terrain_kind", "hills"),
-                                             title=msg.get("title", ""), obstacles=msg.get("obstacles"))
+                                             title=msg.get("title", ""), obstacles=msg.get("obstacles"),
+                                             scene_spec=msg.get("scene_spec"), robot_settings=msg.get("robot_settings"))
             elif text := (msg.get("text") or "").strip():
                 await session.handle(text)
     except WebSocketDisconnect:
