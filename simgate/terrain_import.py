@@ -8,7 +8,10 @@ from __future__ import annotations
 
 import io
 import json
+import math
+import re
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import numpy as np
 
@@ -120,7 +123,8 @@ def geotiff_heights(source, size_m: float, pick: str = "relief", center: tuple[f
             row, col, raw, ok = pick_window(ds, win_px, pick, center)
         x0, y0 = ds.transform * (col, row)
         details = {"crs": ds.crs.to_string() if ds.crs else None, "source_shape": [ds.height, ds.width],
-                   "window_top_left_px": [int(row), int(col)], "window_origin_projected_m": [round(x0, 2), round(y0, 2)]}
+                   "window_top_left_px": [int(row), int(col)], "window_size_px": int(win_px),
+                   "window_origin_projected_m": [round(x0, 2), round(y0, 2)]}
 
     valid_frac = float(ok.mean())
     if valid_frac < 0.98:
@@ -132,6 +136,116 @@ def geotiff_heights(source, size_m: float, pick: str = "relief", center: tuple[f
     base = float(raw.min())
     details["base_elevation_m"] = round(base, 2)
     return np.flipud(raw - base), mpp, details     # GeoTIFF row 0 is NORTH; SimGate row 0 is SOUTH
+
+
+def matching_hirise_ortho_sources(source) -> list[str]:
+    """Likely RGB ortho products beside a controlled HiRISE DTM, tried in full-resolution color-first order."""
+    text = str(source)
+    parsed = urlsplit(text)
+    path = Path(parsed.path if parsed.scheme else text)
+    observations = re.findall(r"(?:ESP|PSP)_\d{6}_\d{4}", path.parent.name)
+    if not observations:
+        observations = re.findall(r"(?:ESP|PSP)_\d{6}_\d{4}", path.stem)
+    if not observations:
+        return []
+    products = ("IRB_A_01_ORTHO", "IRB_C_01_ORTHO", "RGB_A_01_ORTHO", "RGB_C_01_ORTHO")
+    candidates = [path.parent / f"{observation}_{product}.tif" for observation in observations for product in products]
+    if parsed.scheme:
+        return [parsed._replace(path=candidate.as_posix()).geturl() for candidate in candidates]
+    return [str(candidate) for candidate in candidates]
+
+
+def geotiff_rgb_crop(dtm_source, image_source, row: int, col: int, win_px: int,
+                     source_shape: tuple[int, int] | list[int] | None = None,
+                     max_pixels: int = 1024) -> np.ndarray | None:
+    """Return an RGB ortho crop aligned to a DTM window, north-up; non-RGB or nonmatching images are ignored.
+
+    Projected ortho GeoTIFFs are cropped by map bounds. A georeference-free RGB image is accepted only when its
+    dimensions exactly match the full DTM grid, in which case the same pixel window is used.
+    """
+    import rasterio
+    from rasterio.enums import ColorInterp, Resampling
+    from rasterio.transform import from_bounds
+    from rasterio.warp import reproject, transform_bounds
+    from rasterio.windows import Window, bounds as window_bounds
+
+    try:
+        with rasterio.open(dtm_source) as dtm, rasterio.open(image_source) as image:
+            rgb_bands = [
+                index + 1 for wanted in (ColorInterp.red, ColorInterp.green, ColorInterp.blue)
+                if (index := next((i for i, interpretation in enumerate(image.colorinterp)
+                                   if interpretation == wanted), None)) is not None
+            ]
+            if len(rgb_bands) != 3 and image.count >= 3:
+                rgb_bands = [1, 2, 3]
+            if len(rgb_bands) != 3:
+                return None
+
+            if dtm.crs is not None and image.crs is not None:
+                left, bottom, right, top = window_bounds(Window(col, row, win_px, win_px), dtm.transform)
+                if dtm.crs != image.crs:
+                    left, bottom, right, top = transform_bounds(dtm.crs, image.crs, left, bottom, right, top,
+                                                                 densify_pts=21)
+                mpp_x = math.hypot(image.transform.a, image.transform.d)
+                mpp_y = math.hypot(image.transform.b, image.transform.e)
+                width = max(1, round((right - left) / mpp_x))
+                height = max(1, round((top - bottom) / mpp_y))
+                scale = min(1.0, max_pixels / max(width, height))
+                width, height = max(1, round(width * scale)), max(1, round(height * scale))
+                dst_transform = from_bounds(left, bottom, right, top, width, height)
+                rgb = np.zeros((height, width, 3), dtype=np.float32)
+                for channel, band in enumerate(rgb_bands):
+                    reproject(source=rasterio.band(image, band), destination=rgb[:, :, channel],
+                              src_transform=image.transform, src_crs=image.crs,
+                              dst_transform=dst_transform, dst_crs=image.crs,
+                              resampling=Resampling.bilinear)
+            elif source_shape is not None and (image.height, image.width) == tuple(source_shape):
+                raw = image.read(rgb_bands, window=Window(col, row, win_px, win_px),
+                                 out_shape=(3, min(win_px, max_pixels), min(win_px, max_pixels)),
+                                 resampling=Resampling.bilinear)
+                rgb = np.moveaxis(raw, 0, -1).astype(np.float32)
+            else:
+                return None
+
+            converted = np.zeros_like(rgb, dtype=np.uint8)
+            for channel in range(3):
+                values = rgb[:, :, channel]
+                if image.dtypes[rgb_bands[channel] - 1] == "uint8":
+                    converted[:, :, channel] = np.clip(values, 0, 255).astype(np.uint8)
+                    continue
+                low, high = np.percentile(values, (1, 99))
+                if high > low:
+                    converted[:, :, channel] = np.clip((values - low) * (255.0 / (high - low)), 0, 255).astype(np.uint8)
+            return converted
+    except (OSError, ValueError, rasterio.errors.RasterioError):
+        return None
+
+
+def matching_hirise_ortho_sources(source) -> list[str]:
+    """Likely same-folder RGB/IRB HiRISE ortho GeoTIFFs for a controlled DTM product."""
+    text = str(source)
+    parsed = urlsplit(text)
+    source_path = Path(parsed.path if parsed.scheme else text)
+    observations = []
+    for part in (source_path.parent.name, source_path.stem):
+        observations.extend(re.findall(r"(?:ESP|PSP)_\d{6}_\d{4}", part))
+    observations = list(dict.fromkeys(observations))
+    products = ("IRB_A_01_ORTHO", "IRB_C_01_ORTHO", "RGB_A_01_ORTHO", "RGB_C_01_ORTHO")
+    candidates = [source_path.parent / f"{observation}_{product}.tif"
+                  for observation in observations for product in products]
+    if parsed.scheme:
+        return [parsed._replace(path=candidate.as_posix()).geturl() for candidate in candidates]
+    return [str(candidate) for candidate in candidates]
+
+
+def write_ortho_image(out_dir: Path, name: str, rgb: np.ndarray) -> str:
+    """Save a rendered-only RGB crop next to a terrain preset and return its relative filename."""
+    from PIL import Image
+
+    filename = f"{name}_ortho.png"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    Image.fromarray(np.asarray(rgb, dtype=np.uint8), mode="RGB").save(out_dir / filename, optimize=True)
+    return filename
 
 
 def heightmap_heights(image: bytes, size_m: float, height_range_m: float) -> tuple[np.ndarray, float]:

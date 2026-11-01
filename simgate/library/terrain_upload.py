@@ -5,7 +5,8 @@ surface are the user's; anything missing is asked for instead of guessed."""
 from pathlib import Path, PurePosixPath
 
 from .. import presets
-from ..terrain_import import TerrainError, geotiff_heights, heightmap_heights, inspect, write_preset
+from ..terrain_import import (TerrainError, geotiff_heights, geotiff_rgb_crop, heightmap_heights, inspect,
+                              write_ortho_image, write_preset)
 from .uploads import UploadError, UploadRecord
 
 GEOTIFF, IMAGE = (".tif", ".tiff"), (".png", ".jpg")
@@ -59,6 +60,16 @@ def prepare_terrain(record: UploadRecord, body: str | None, surface: str | None,
             **{key: value for key, value in report.items() if key != "warnings"},
             **details, "source": f"upload: {source}", "credit": record.credit, "license": record.license,
             "uploaded": True, "inspection": {"by": "Inspector", "warnings": report["warnings"]}}
+    if not is_image:
+        for ortho in _ortho_candidates(record, source):
+            rgb = geotiff_rgb_crop(str(folder / source), str(folder / ortho),
+                                   *details["window_top_left_px"], details["window_size_px"], details["source_shape"])
+            if rgb is None:
+                continue
+            meta["ortho_file"] = write_ortho_image(folder, "preset", rgb)
+            meta["ortho_source"] = f"upload: {ortho}"
+            meta["ortho_credit"] = record.credit
+            break
     return write_preset(folder, "preset", heights, meta)
 
 
@@ -68,6 +79,16 @@ def _main_file(record: UploadRecord) -> str:
         if found:
             return found[0]
     raise UploadError("A terrain upload needs a GeoTIFF (.tif) elevation model or a PNG/JPG heightmap.")
+
+
+def _ortho_candidates(record: UploadRecord, source: str) -> list[str]:
+    """Only choose an explicitly named companion or an unambiguous single image in the upload."""
+    paths = [path for path in record.files if path != source and PurePosixPath(path).suffix.lower() in (".tif", ".tiff", ".png", ".jpg")]
+    stem = PurePosixPath(source).stem.lower()
+    exact = [path for path in paths if PurePosixPath(path).stem.lower() in
+             {f"{stem}_ortho", f"{stem}_rgb", "ortho", "rgb"}]
+    named = [path for path in paths if any(word in PurePosixPath(path).stem.lower() for word in ("ortho", "rgb", "color"))]
+    return list(dict.fromkeys(exact + named + (paths if len(paths) == 1 else [])))
 
 
 def _within(value: float | None, bounds: tuple[float, float]) -> bool:

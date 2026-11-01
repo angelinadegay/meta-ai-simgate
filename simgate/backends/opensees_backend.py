@@ -116,6 +116,11 @@ class OpenSeesSimulator(Simulator):
             "kind": "frame",
             "nodes": {str(k): v for k, v in nodes.items()},
             "members": [[i, j, "column"] for i, j in columns] + [[i, j, "beam"] for i, j in beams],
+                "structure": {"stories": spec.structure.stories, "bays": spec.structure.bays,
+                              "story_height_m": spec.structure.story_height_m,
+                              "bay_width_m": spec.structure.bay_width_m,
+                              "visual_style": spec.structure.visual_style,
+                              "body": spec.environment.body},
         }
         return BuildResult(code=code or opensees_script(spec), language=self.language, scene=scene)
 

@@ -61,6 +61,7 @@ class Director:
                                      f"\"{follow}\" in then; it runs once the scene is built.")
                 if plan.workflow in ("stress_test", "diagnose", "redesign", "find_failures") and not _has_robot_scene(world_state):
                     raise ValueError(f"workflow {plan.workflow!r} requires an existing robot scene.")
+                _apply_structure_visual_style(plan, text, world_state)
                 if plan.workflow == "edit":
                     _check_edit(plan, text, world_state)
                 self.guard_notes = _apply_text_guards(plan, text)
@@ -300,6 +301,9 @@ Workflows:
   default) or "thorough"; knobs only when the user names conditions: slope_deg, friction, gravity, push_n, payload,
   obstacle_scale, roughness, speed.
 - Existing structural scenes use domain "structure" with structure and load fields.
+- Building visuals are presentation only: set structure.visual_style to "office" for "glass tower"/"office tower",
+  "apartments" for "apartment block", "brick" for "brick low-rise", or "habitat" for a dome/habitat or a Mars/Moon
+  building. Never change loads, sections, stories or physical properties to match a visual style.
 
 Guidance:
 - Use only robot, policy, and terrain-preset IDs listed below. Built-in kinds are rover and walker.
@@ -353,6 +357,34 @@ Available world preset IDs:
 
 Plan JSON schema:
 {schema}"""
+
+
+def _apply_structure_visual_style(plan: Plan, text: str,
+                                  world_state: World | SceneSpec | dict[str, Any] | None) -> None:
+    """Apply explicit building appearance words to visual metadata only; never alter analysis inputs."""
+    source = text.lower()
+    style = None
+    if any(word in source for word in ("glass tower", "glass office", "office tower", "skyscraper")):
+        style = "office"
+    elif any(word in source for word in ("apartment", "concrete block", "concrete apartment")):
+        style = "apartments"
+    elif any(word in source for word in ("brick", "low-rise", "low rise")):
+        style = "brick"
+    elif any(word in source for word in ("habitat", "dome", "mars base", "lunar base")) or any(
+            world in source for world in ("mars", "moon", "lunar")):
+        style = "habitat"
+    if style is None or plan.domain != "structure" or plan.workflow not in ("build", "edit"):
+        return
+
+    from .spec import Structure
+
+    if plan.workflow == "edit":
+        current = _current_spec(world_state)
+        base = plan.changes.structure or (current.structure if current is not None else None) or Structure()
+        plan.changes.structure = base.model_copy(update={"visual_style": style})
+    else:
+        plan.structure = plan.structure or Structure()
+        plan.structure.visual_style = style
 
 
 def _plan_world_state(world_state: World | SceneSpec | dict[str, Any] | None) -> str:

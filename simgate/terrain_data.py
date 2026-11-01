@@ -58,6 +58,26 @@ def load_preset(name: str) -> tuple[np.ndarray, dict]:
     return heights, json.loads(meta_path.read_text())
 
 
+def load_ortho_image(name: str) -> tuple[bytes, dict] | None:
+    """The optional RGB terrain image for the viewer; paths are constrained to the preset folder."""
+    meta_path, _ = _preset_files(name)
+    if not meta_path.is_file():
+        return None
+    meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    filename = meta.get("ortho_file")
+    if not filename:
+        return None
+    folder = meta_path.parent.resolve()
+    image_path = (folder / filename).resolve()
+    try:
+        image_path.relative_to(folder)
+    except ValueError:
+        return None
+    if not image_path.is_file():
+        return None
+    return image_path.read_bytes(), meta
+
+
 def resizable(meta: dict) -> bool:
     """An uploaded heightmap image: its width and height range were the uploader's choice, so a scene may change
     them. Real elevation data (HiRISE, GeoTIFF) keeps the scale it was measured at."""

@@ -28,7 +28,8 @@ from pathlib import Path
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from simgate.terrain_import import TerrainError, geotiff_heights, inspect, write_preset  # noqa: E402
+from simgate.terrain_import import (TerrainError, geotiff_heights, geotiff_rgb_crop, inspect,
+                                    matching_hirise_ortho_sources, write_ortho_image, write_preset)  # noqa: E402
 
 OUT_DIR = Path(__file__).resolve().parent.parent / "simgate" / "terrains"
 
@@ -36,6 +37,7 @@ OUT_DIR = Path(__file__).resolve().parent.parent / "simgate" / "terrains"
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--input", required=True, help="HiRISE DTM GeoTIFF: local path or https URL")
+    p.add_argument("--ortho", help="matching RGB ortho GeoTIFF: local path or URL (auto-detected when omitted)")
     p.add_argument("--name", required=True, help="preset name, e.g. jezero")
     p.add_argument("--label", help='display name, e.g. "Jezero Crater, Mars"')
     p.add_argument("--size-m", type=float, default=40.0, help="side of the square crop in metres (default 40)")
@@ -76,6 +78,20 @@ def main() -> None:
         "crs": details["crs"],
         "credit": a.credit,
     }
+    ortho_sources = [a.ortho] if a.ortho else matching_hirise_ortho_sources(a.input)
+    for ortho_source in ortho_sources:
+        rgb = geotiff_rgb_crop(a.input, ortho_source, *details["window_top_left_px"],
+                               details["window_size_px"], details["source_shape"])
+        if rgb is None:
+            continue
+        meta["ortho_file"] = write_ortho_image(a.out_dir, a.name, rgb)
+        meta["ortho_source"] = str(ortho_source)
+        meta["ortho_credit"] = "NASA/JPL/University of Arizona HiRISE RGB orthorectified image; CC0 1.0"
+        meta["credit"] = f"{a.credit}; RGB orthoimage {ortho_source} (CC0 1.0)"
+        break
+    else:
+        if a.ortho:
+            print("The supplied orthoimage was not matching RGB data; using procedural terrain visuals.", file=sys.stderr)
     write_preset(a.out_dir, a.name, heights, meta)
     try:                                             # 16-bit preview image (north up), for galleries and docs
         from PIL import Image

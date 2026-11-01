@@ -116,6 +116,7 @@ class Structure(BaseModel):
     bay_width_m: float = 5.0
     section: Literal["light", "medium", "heavy"] = "medium"
     floor_mass_t: float = 20.0          # tonnes per floor
+    visual_style: Literal["office", "apartments", "brick", "habitat"] | None = None  # viewer only; not structural input
 
 
 class Load(BaseModel):

@@ -1,5 +1,6 @@
 """MuJoCo backend: robots on generated terrain."""
 import hashlib
+import base64
 import json
 import math
 import xml.etree.ElementTree as ET
@@ -16,7 +17,7 @@ from ..library import LibraryRegistry
 from ..policy_runtime import PolicyRunner
 from ..simple_control import SimpleController
 from ..spec import Mission, SceneSpec
-from ..terrain_data import load_preset, resample, scene_heights
+from ..terrain_data import load_ortho_image, load_preset, resample, scene_heights
 from . import obstacles as course
 from .base import BuildResult, Check, Simulator
 
@@ -1053,6 +1054,7 @@ class MuJoCoSimulator(Simulator):
             item = {
                 "id": g,
                 "name": mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_GEOM, g) or "",
+                "body": mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_BODY, int(model.geom_bodyid[g])) or "",
                 "type": mujoco.mjtGeom(gtype).name.replace("mjGEOM_", "").lower(),
                 "size": model.geom_size[g].tolist(),
                 "rgba": model.geom_rgba[g].tolist(),
@@ -1074,9 +1076,21 @@ class MuJoCoSimulator(Simulator):
         scene = {
             "backend": self.name,
             "kind": "mujoco",
+            "world": {"body": spec.environment.body, "surface": spec.environment.surface,
+                      "terrain_kind": spec.terrain.kind,
+                      "terrain_preset": spec.terrain.preset, "seed": spec.terrain.seed},
             "geoms": geoms,
             "poses": self._poses(model, data),
         }
+        if spec.terrain.kind == "real" and spec.terrain.preset:
+            if (ortho := load_ortho_image(spec.terrain.preset)) is not None:
+                image, metadata = ortho
+                scene["terrain_ortho"] = {
+                    "data": base64.b64encode(image).decode("ascii"),
+                    "mime": "image/png",
+                    "credit": metadata.get("ortho_credit", metadata.get("credit", "")),
+                    "source": metadata.get("ortho_source", ""),
+                }
         mesh_ids = sorted(
             {
                 int(model.geom_dataid[g])

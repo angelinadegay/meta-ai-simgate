@@ -257,6 +257,17 @@ def _mock_plan(text: str, current: SceneSpec | None = None) -> SceneSpec:
         from .spec import Load, Structure
         spec.structure = spec.structure or Structure()
         spec.load = spec.load or Load()
+        if any(word in t for word in ("glass tower", "glass office", "office tower", "skyscraper")):
+            spec.structure.visual_style = "office"
+        elif any(word in t for word in ("apartment", "concrete block", "concrete apartment")):
+            spec.structure.visual_style = "apartments"
+        elif any(word in t for word in ("brick", "low-rise", "low rise")):
+            spec.structure.visual_style = "brick"
+        elif any(word in t for word in ("habitat", "dome", "mars base", "lunar base")) or any(
+                world in t for world in ("mars", "moon", "lunar")):
+            spec.structure.visual_style = "habitat"
+        elif spec.structure.visual_style is None:
+            spec.structure.visual_style = "office"
         if m := re.search(r"(\d+)[\s-]*(?:story|storey|floor)", t):
             spec.structure.stories = int(m.group(1))
         if "taller" in t:
