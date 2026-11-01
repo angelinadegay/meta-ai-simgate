@@ -6,6 +6,7 @@ heights around -2,550 m, and a "no data" border of -3.4e38. The terrain itself
 (rolling plain, a crater, a ridge) is invented. Never present it as real Mars.
 """
 import sys
+from pathlib import Path
 
 import numpy as np
 import rasterio
@@ -33,7 +34,14 @@ def main(path: str) -> None:
     with rasterio.open(path, "w", driver="GTiff", height=h, width=w, count=1, dtype="float32",
                        crs=MARS_EQC, transform=from_origin(4586874.8, 1099451.6, mpp, mpp), nodata=NODATA) as ds:
         ds.write(z.astype(np.float32), 1)
-    print(f"Wrote fake DTM {path} ({h}x{w} px)")
+    rows, cols = np.indices((h, w))
+    ortho = np.stack((cols % 256, rows % 256, (rows + cols) % 256)).astype(np.uint8)
+    ortho_path = str(Path(path).with_name(f"{Path(path).stem}_ortho.tif"))
+    with rasterio.open(ortho_path, "w", driver="GTiff", height=h, width=w, count=3, dtype="uint8",
+                       crs=MARS_EQC, transform=from_origin(4586874.8, 1099451.6, mpp, mpp),
+                       photometric="RGB") as ds:
+        ds.write(ortho)
+    print(f"Wrote fake DTM {path} and matching RGB ortho {ortho_path} ({h}x{w} px)")
 
 
 if __name__ == "__main__":

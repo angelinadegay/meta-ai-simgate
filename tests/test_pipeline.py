@@ -1195,6 +1195,64 @@ def test_building_textbook_and_resonance():
     assert sim_b.summary()["max_story_drift_pct"] > sim_a.summary()["max_story_drift_pct"]
 
 
+def test_building_visual_words_set_only_the_visual_style():
+    cases = [
+        ("a 5-story glass tower in an earthquake", "office"),
+        ("a 5-story apartment block in an earthquake", "apartments"),
+        ("a 5-story brick low-rise in an earthquake", "brick"),
+        ("a 5-story Mars habitat dome in an earthquake", "habitat"),
+        ("a 5-story building on the Moon during an earthquake", "habitat"),
+    ]
+    for prompt, expected_style in cases:
+        spec = agents.plan(prompt)
+        assert spec.domain == "structure" and spec.structure.visual_style == expected_style, (prompt, spec)
+        assert spec.structure.stories == 5
+
+
+def test_visual_only_scene_data_leaves_simulation_models_and_results_unchanged():
+    from simgate.backends.mujoco_backend import MuJoCoSimulator
+    from simgate.spec import Load
+
+    scenes = [
+        SceneSpec(domain="robot_terrain", terrain=Terrain(kind="flat", roughness=0), robot=Robot(kind="rover"),
+                  obstacles=[Obstacle(kind="rock", size="small", count=3), Obstacle(kind="step", size="small")],
+                  duration_s=20).fill_defaults(),
+        SceneSpec(domain="robot_terrain", environment=Environment(body="mars", surface="regolith"),
+                  terrain=Terrain(kind="hills", seed=4),
+                  robot=Robot(kind="library", robot_id="g1", policy_id="g1_walking"),
+                  mission=Mission(goal_place="highest"), duration_s=50).fill_defaults(),
+        SceneSpec(domain="robot_terrain", terrain=Terrain(kind="flat", roughness=0), duration_s=22,
+                  robots=[RobotEntry(id=f"r{i}", label=f"Rover {i}", robot=Robot(), goal_place="east")
+                          for i in range(1, 4)]).fill_defaults(),
+    ]
+
+    def run_mujoco(spec, view):
+        sim = MuJoCoSimulator()
+        build = sim.build(spec, view=view)
+        for _ in sim.run(spec, build, record=False):
+            pass
+        return build.code, sim.summary()
+
+    for spec in scenes:
+        rendered_code, rendered_summary = run_mujoco(spec, True)
+        headless_code, headless_summary = run_mujoco(spec, False)
+        assert rendered_code == headless_code
+        assert rendered_summary == headless_summary
+
+    structure = Structure(stories=4, bays=2, section="medium")
+    plain = SceneSpec(domain="structure", structure=structure.model_copy(deep=True), load=Load(duration_s=2)).fill_defaults()
+    styled = SceneSpec(domain="structure", structure=structure.model_copy(update={"visual_style": "habitat"}),
+                       load=Load(duration_s=2)).fill_defaults()
+    plain_sim, styled_sim = OpenSeesSimulator(), OpenSeesSimulator()
+    plain_build, styled_build = plain_sim.build(plain), styled_sim.build(styled)
+    assert plain_build.code == styled_build.code
+    for _ in plain_sim.run(plain, plain_build, record=False):
+        pass
+    for _ in styled_sim.run(styled, styled_build, record=False):
+        pass
+    assert plain_sim.summary() == styled_sim.summary()
+
+
 def test_real_terrain_pipeline(tmp_dir=None):
     """Fake HiRISE-style GeoTIFF -> converter -> preset -> simulation, with orientation preserved."""
     import json
@@ -1214,11 +1272,21 @@ def test_real_terrain_pipeline(tmp_dir=None):
     with tempfile.TemporaryDirectory() as tmp:
         tif, out = Path(tmp) / "fake.tif", Path(tmp) / "terrains"
         subprocess.run([sys.executable, str(root / "scripts/make_test_dtm.py"), str(tif)], check=True, capture_output=True)
+        ortho = tif.with_name(f"{tif.stem}_ortho.tif")
         subprocess.run([sys.executable, str(root / "scripts/hirise_to_simgate.py"), "--input", str(tif), "--name", "t",
-                        "--label", "Test terrain", "--credit", "Synthetic test data", "--out-dir", str(out)],
+                        "--ortho", str(ortho), "--label", "Test terrain", "--credit", "Synthetic test data", "--out-dir", str(out)],
                        check=True, capture_output=True)
         meta = json.loads((out / "t.json").read_text())
         assert meta["body"] == "mars" and meta["typical_slope_deg"] <= 22 and 35 < meta["size_m"] < 45, meta
+        from PIL import Image
+
+        image = Image.open(out / meta["ortho_file"]).convert("RGB")
+        row, col = meta["window_top_left_px"]
+        assert image.getpixel((0, 0)) == (col % 256, row % 256, (row + col) % 256)
+        assert image.getpixel((image.width - 1, image.height - 1)) == (
+            (col + image.width - 1) % 256, (row + image.height - 1) % 256,
+            (row + col + image.width + image.height - 2) % 256,
+        )
 
         old_dir = terrain_data.TERRAIN_DIR
         terrain_data.TERRAIN_DIR = out
@@ -1951,6 +2019,20 @@ def test_browser_handles_the_analysis_events():
                    'if (ev.chips)'):
         assert needed in page, needed
     assert 'msg.get("type") == "show_design"' in (root / "server.py").read_text(encoding="utf-8")
+
+
+def test_visual_rock_and_facade_helpers_use_stable_render_inputs():
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parent.parent
+    page = (root / "static" / "vendor" / "index.html").read_text(encoding="utf-8")
+    assert "function rockGeometry(radius, seed)" in page
+    assert "rand = randomSeed(seed)" in page
+    assert 'rockGeometry(a, stringSeed(`${visual.seed}:${g.name}`))' in page
+    assert "function placeFrame(disp, ground = 0)" in page
+    assert "skin.tags.map(pos)" in page
+    assert "skin.mesh.geometry.attributes.position.array.set(positions)" in page
+    assert "disp[upperLeft]?.[0]" in page and "disp[upperRight]?.[0]" in page
 
 
 def test_full_session_why_then_make_it_pass():
@@ -4137,15 +4219,23 @@ def test_uploaded_geotiff_and_png_terrains_become_presets():
         assert "mars" in asked.json()["questions"][0]["choices"]
         assert not list((Path(tmp) / "uploads" / "terrain").iterdir()), "an unanswered upload isn't kept"
 
+        ortho = tif.with_name(f"{tif.stem}_ortho.tif")
         geotiff = client.post("/upload", data={**meta, "name": "Fake crater", "body": "mars", "surface": "regolith"},
-                              files=[("files", ("dtm.tif", tif.read_bytes()))])
+                      files=[("files", ("dtm.tif", tif.read_bytes())),
+                         ("files", ("dtm_ortho.tif", ortho.read_bytes()))])
         assert geotiff.status_code == 200, geotiff.text
         terrain = geotiff.json()["terrain"]
         assert terrain["typical_slope_deg"] <= 22 and 35 < terrain["size_m"] < 45 and terrain["relief_m"] > 1
         assert terrain["credit"] == "Synthetic test data" and terrain["license"] == "CC0-1.0"
+        assert terrain["ortho_file"] == "preset_ortho.png" and terrain["ortho_credit"] == "Synthetic test data"
         assert terrain["inspection"]["by"] == "Inspector" and "max_slope_deg" in terrain
         spec = _uploaded_terrain_is_usable(terrain["name"])
         assert spec.environment.body == "mars" and spec.terrain.size_m == terrain["size_m"]
+        from simgate.backends.mujoco_backend import MuJoCoSimulator
+
+        scene = MuJoCoSimulator().build(spec).scene
+        assert scene["terrain_ortho"]["credit"] == "Synthetic test data"
+        assert scene["terrain_ortho"]["data"]
 
         ramp = np.tile(np.linspace(1, 0, 32)[:, None], (1, 32))   # white at the image's top
         image = {**meta, "name": "Ramp field", "body": "moon", "surface": "regolith"}
