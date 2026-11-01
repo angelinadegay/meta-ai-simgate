@@ -24,6 +24,22 @@ app = FastAPI(title="SimGate")
 app.mount("/static", StaticFiles(directory=STATIC), name="static")
 
 
+class _WebSocketEmitter:
+    def __init__(self, socket: WebSocket):
+        self.socket = socket
+        self.disconnected = False
+
+    async def __call__(self, event: dict) -> None:
+        if self.disconnected:
+            raise WebSocketDisconnect(code=1006)
+        payload = json.dumps(event)
+        try:
+            await self.socket.send_text(payload)
+        except Exception as error:
+            self.disconnected = True
+            raise WebSocketDisconnect(code=1006) from error
+
+
 @app.get("/")
 def index():
     return FileResponse(STATIC / "vendor" / "index.html")
@@ -146,10 +162,7 @@ def _number(text: str) -> float | None:
 @app.websocket("/ws")
 async def ws(socket: WebSocket):
     await socket.accept()
-
-    async def emit(event: dict) -> None:
-        await socket.send_text(json.dumps(event))
-
+    emit = _WebSocketEmitter(socket)
     session = Session(emit)
     terrains = [{"name": n, "label": m["label"], "body": m.get("body")} for n, m in list_presets().items()]
     await emit({"type": "hello", "mock_mode": config.MOCK_MODE, "model": None if config.MOCK_MODE else config.PLANNER_MODEL,

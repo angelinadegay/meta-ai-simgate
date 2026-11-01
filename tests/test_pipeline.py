@@ -2021,6 +2021,71 @@ def test_browser_handles_the_analysis_events():
     assert 'msg.get("type") == "show_design"' in (root / "server.py").read_text(encoding="utf-8")
 
 
+def test_websocket_emitter_stops_after_a_send_disconnect():
+    import asyncio
+
+    from fastapi import WebSocketDisconnect
+    from server import _WebSocketEmitter
+
+    class ClosedSocket:
+        attempts = 0
+
+        async def send_text(self, _payload):
+            self.attempts += 1
+            raise RuntimeError("client disconnected")
+
+    socket = ClosedSocket()
+    emit = _WebSocketEmitter(socket)
+
+    async def verify_disconnect():
+        for event in ({"type": "step"}, {"type": "error"}):
+            try:
+                await emit(event)
+            except WebSocketDisconnect as error:
+                assert error.code == 1006
+            else:
+                raise AssertionError("A closed socket must stop the session")
+
+    asyncio.run(verify_disconnect())
+    assert socket.attempts == 1
+
+
+def test_browser_guards_actions_and_offers_reconnect_after_socket_close():
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parent.parent
+    page = (root / "static" / "vendor" / "index.html").read_text(encoding="utf-8")
+    assert 'id="reconnect"' in page
+    assert "ws.readyState !== WebSocket.OPEN" in page
+    assert "ws.onclose = connectionLost" in page
+    assert 'sendEvent({ type: `set_${pickMode}`' in page
+    assert 'ws.send(JSON.stringify({ type:' not in page
+
+
+def test_browser_groups_result_metrics_and_shows_live_progress():
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parent.parent
+    page = (root / "static" / "vendor" / "index.html").read_text(encoding="utf-8")
+    for needed in ('["Outcome", ["goal_reached"', '["Movement", ["distance_m"',
+                   '["Stability", ["max_tilt_deg"', '["Terrain", ["local_slope_deg"',
+                   '["Conditions", ["gravity"', 'className = "request-progress working"',
+                   'setRequestProgress("Simulation running…")',
+                   'setRequestProgress("Results summarized. Complete.", "done")',
+                   'setRequestProgress(AGENT_PROGRESS[ev.agent]'):
+        assert needed in page, needed
+
+
+def test_browser_quality_stays_manual_without_fps_downgrade():
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parent.parent
+    page = (root / "static" / "vendor" / "index.html").read_text(encoding="utf-8")
+    assert '$("qualityToggle").onclick = () => setQuality(!qualityHigh);' in page
+    assert "lowFpsSeconds" not in page
+    assert "setQuality(false, true)" not in page
+
+
 def test_home_chooser_visibility_tracks_active_view():
     from pathlib import Path
 
@@ -2040,6 +2105,8 @@ def test_workbench_uses_desktop_grid_columns():
     workbench_style = page.split(".work {", 1)[1].split("}", 1)[0]
     assert "display: grid;" in workbench_style
     assert "grid-template-columns: 320px minmax(0, 1fr);" in workbench_style
+    transition = page.split("function showWorkbench()", 1)[1].split("function showHome", 1)[0]
+    assert "resize();" in transition
 
 
 def test_browser_renders_every_server_event_type():

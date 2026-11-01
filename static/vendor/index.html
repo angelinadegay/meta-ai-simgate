@@ -113,6 +113,12 @@
   .check small { display: block; color: var(--muted); }
   .kv { display: grid; grid-template-columns: 1fr auto; gap: 2px 10px; }
   .kv span:nth-child(odd) { color: var(--muted); }
+  .metric-section { grid-column: 1 / -1; margin-top: 7px; }
+  .metric-section:first-child { margin-top: 0; }
+  .metric-section h4 { margin: 0 0 3px; color: var(--muted); font-size: 10px; font-weight: 700; text-transform: uppercase; }
+  .metric-values { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 3px 10px; align-items: baseline; }
+  .metric-values span:nth-child(odd) { color: var(--muted); }
+  .metric-values span:nth-child(even) { text-align: right; font-variant-numeric: tabular-nums; }
   #reportRows { display: flex; flex-direction: column; gap: 4px; max-height: 34vh; overflow-y: auto; }
   #leaderboardRows { display: flex; flex-direction: column; gap: 4px; max-height: 24vh; overflow-y: auto; }
   #topright { max-height: calc(100% - 100px); overflow-y: auto; }
@@ -205,6 +211,8 @@
   .nav button:hover, .nav button[aria-current="page"] { color: var(--violet); }
   .avatar { width: 32px; height: 32px; display: grid; place-items: center; border-radius: 50%; background: #e9e3f9; color: #6b57b6; font-weight: 700; }
   .mode { margin: 0; padding: 7px 10px; border: 1px solid #dceee2; border-radius: 99px; background: var(--ok-bg); color: var(--ok); font-size: 11px; white-space: nowrap; }
+  .reconnect { cursor: pointer; }
+  .reconnect:hover { border-color: var(--bad); }
   .home { height: calc(100dvh - 72px); max-width: 1240px; margin: 0 auto; padding: 66px 30px 60px; overflow: auto; }
   .hero { text-align: center; }
   .eyebrow { display: flex; align-items: center; justify-content: center; gap: 8px; color: #8972cc; font-size: 10px; font-weight: 700; letter-spacing: 2px; text-transform: uppercase; }
@@ -277,6 +285,11 @@
   .agent-steps { border: 1px solid #ece8f4; border-radius: 11px; background: #fff; overflow: hidden; }
   .agent-steps summary { padding: 10px 12px; color: #5e586f; font-size: 11px; font-weight: 650; cursor: pointer; }
   .agent-step-list { display: grid; gap: 6px; padding: 0 10px 10px; }
+  .request-progress { display: flex; align-items: center; gap: 8px; padding: 3px 2px; color: #6d6879; font-size: 12px; }
+  .progress-dot { width: 8px; height: 8px; flex: none; border-radius: 50%; background: var(--violet); }
+  .request-progress.working .progress-dot { animation: pulse 1s infinite; }
+  .request-progress.done .progress-dot { background: var(--ok); }
+  .request-progress.error .progress-dot { background: var(--bad); }
   .step-row { padding: 8px 9px; border: 1px solid #efedf2; border-radius: 8px; background: #fbfafc; font-size: 11px; }
   .step-row summary { padding: 0; }
   .step-row.working { border-color: #b7a8e8; }
@@ -446,6 +459,7 @@
       <button class="nav-text" id="navAbout" type="button">About</button>
     </nav>
     <span class="mode" id="mode" aria-live="polite">connecting…</span>
+    <button class="mode reconnect" id="reconnect" type="button" aria-label="Reload to reconnect" title="Start a fresh session" hidden>Reconnect</button>
     <button class="avatar" id="profileButton" type="button" aria-label="Profile">S</button>
   </header>
 
@@ -695,6 +709,7 @@ let lastAgentRow = {};
 let stepRows = new Map(), countedSteps = new Set();
 const agentNodes = new Map();
 let activeStepList = $("agentStepList"), activeStepDetails = $("agentSteps");
+let activeRequestProgress = null;
 const agentPositions = {
   Director: [55, 38], Builder: [175, 38], Checker: [295, 38],
   Simulator: [295, 115], Explainer: [175, 115], "Stress planner": [55, 115],
@@ -781,13 +796,31 @@ initAgentGraph();
 renderAgentBar();
 function beginStepGroup() {
   agentStepHistory = new Map(); stepRows = new Map(); countedSteps = new Set();
+  const progress = document.createElement("div"); progress.className = "request-progress working";
+  progress.setAttribute("role", "status"); progress.setAttribute("aria-live", "polite");
+  const dot = document.createElement("span"); dot.className = "progress-dot";
+  const label = document.createElement("span"); label.className = "progress-label"; label.textContent = "Starting your request…";
+  progress.append(dot, label); log.appendChild(progress); activeRequestProgress = progress;
   const details = document.createElement("details"); details.className = "agent-steps"; details.open = true;
   const summary = document.createElement("summary"); summary.textContent = "Your simulation team · working";
   const list = document.createElement("div"); list.className = "agent-step-list";
   details.append(summary, list); log.appendChild(details);
   activeStepDetails = details; activeStepList = list; scroll();
 }
+function setRequestProgress(text, state = "working") {
+  if (!activeRequestProgress || !log.contains(activeRequestProgress)) return;
+  activeRequestProgress.className = `request-progress ${state}`;
+  activeRequestProgress.querySelector(".progress-label").textContent = text;
+}
+const AGENT_PROGRESS = {
+  Director: "Planning your request…", Builder: "Building the scene…", Checker: "Checking the physics…",
+  Simulator: "Running the simulation…", "Batch runner": "Testing scene conditions…",
+  "Stress planner": "Planning condition tests…", Finder: "Searching for failure limits…",
+  Hunter: "Checking candidate failures…", Explainer: "Summarizing measured results…",
+  Designer: "Searching design options…",
+};
 function renderStep(ev) {
+  if (ev.status === "working") setRequestProgress(AGENT_PROGRESS[ev.agent] || `${ev.agent} is working…`);
   let row = stepRows.get(ev.id);
   if (!row) {
     row = document.createElement("details"); row.className = "step-row";
@@ -827,6 +860,7 @@ function renderStep(ev) {
   scroll();
 }
 function addAgent(ev) {
+  if (ev.status === "working") setRequestProgress(AGENT_PROGRESS[ev.agent] || `${ev.agent} is working…`);
   const mode = $("mode").textContent;
   const model = ev.model || (mode.startsWith("Mock") ? "rules" : mode.replace(/^Model · /, ""));
   if (ev.message) {
@@ -850,7 +884,27 @@ renderHomeExamples();
 
 // ── Socket ──────────────────────────────────────────────────────────────
 const ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws`);
-function send(text) { showWorkbench(); lastRequestText = text; addMsg(text, "user"); beginStepGroup(); ws.send(JSON.stringify({ text })); }
+let connectionNoticeShown = false;
+function connectionLost() {
+  $("mode").textContent = "Disconnected";
+  $("reconnect").hidden = false;
+  disableRunButtons();
+  document.querySelectorAll("#form input, #form button, #homeInput, #homeForm button").forEach((control) => { control.disabled = true; });
+  if (!connectionNoticeShown) {
+    addMsg("Connection to SimGate was lost. Reconnect to start a fresh session; the previous session cannot be resumed.", "err");
+    connectionNoticeShown = true;
+  }
+}
+function sendEvent(event) {
+  if (ws.readyState !== WebSocket.OPEN) { connectionLost(); return false; }
+  try { ws.send(JSON.stringify(event)); return true; }
+  catch { connectionLost(); return false; }
+}
+function send(text) {
+  if (!sendEvent({ text })) { showWorkbench(); return; }
+  showWorkbench(); lastRequestText = text; addMsg(text, "user"); beginStepGroup();
+}
+$("reconnect").onclick = () => location.reload();
 function addInsight(title, detail, panel = "results") {
   const card = document.createElement("div"); card.className = "msg bot insight-card";
   card.append(textEl("span", "SIMULATION INSIGHT", "tinycap"), textEl("strong", title), textEl("p", detail));
@@ -890,7 +944,7 @@ function saveCurrentWorld() {
     savedAt: new Date().toLocaleString(), spec: currentSpec };
   storeSavedWorld(entry); addMsg(`Saved ${entry.title} to My worlds.`); renderSavedWorlds();
 }
-function showWorkbench() { $("home").hidden = true; $("workbench").hidden = false; $("chooser").hidden = true; }
+function showWorkbench() { $("home").hidden = true; $("workbench").hidden = false; $("chooser").hidden = true; resize(); }
 function showHome(tab = "explore") {
   $("workbench").hidden = true; $("home").hidden = false;
   renderChooser();
@@ -1088,14 +1142,16 @@ function launchHomeSelection() {
   if (!policy) { addMsg(`No compatible policy is available for ${robot.name}.`, "err"); return; }
   const title = `${robot.name} · ${world.title}`;
   showWorkbench(); lastRequestText = title; preserveLaunchMessage = true;
-  ws.send(JSON.stringify({ type: "reset" })); addMsg(title, "user");
-  ws.send(JSON.stringify({ type: "library_select", robot_id: robot.id, policy_id: policy.id, world_id: world.worldId,
-    start_scene: true, terrain_kind: world.terrain, title, obstacles: world.obstacles || [], robot_settings: robot.settings || {} }));
+  if (!sendEvent({ type: "reset" })) return;
+  addMsg(title, "user");
+  sendEvent({ type: "library_select", robot_id: robot.id, policy_id: policy.id, world_id: world.worldId,
+    start_scene: true, terrain_kind: world.terrain, title, obstacles: world.obstacles || [], robot_settings: robot.settings || {} });
 }
 function launchSavedWorld(entry) {
   const spec = entry.spec; if (!spec) return;
-  showWorkbench(); preserveLaunchMessage = true; ws.send(JSON.stringify({ type: "reset" })); addMsg(`Reopen ${entry.title}`, "user");
-  ws.send(JSON.stringify({ type: "restore_scene", scene_spec: spec }));
+  if (!sendEvent({ type: "reset" })) return;
+  showWorkbench(); preserveLaunchMessage = true; addMsg(`Reopen ${entry.title}`, "user");
+  sendEvent({ type: "restore_scene", scene_spec: spec });
 }
 $("homeForm").onsubmit = (event) => { event.preventDefault(); const text = $("homeInput").value.trim(); if (text) { $("homeInput").value = ""; send(text); } };
 $("form").onsubmit = (e) => { e.preventDefault(); const t = $("input").value.trim(); if (t) { send(t); $("input").value = ""; } };
@@ -1165,7 +1221,7 @@ function pendingCard(upload) {
 }
 function useSetup(robotId, policyId, worldId) {
   selectedRobotId = robotId; selectedPolicyId = policyId; selectedWorldId = worldId || selectedWorldId; renderLibrary();
-  ws.send(JSON.stringify({ type: "library_select", robot_id: selectedRobotId, policy_id: selectedPolicyId, world_id: selectedWorldId }));
+  sendEvent({ type: "library_select", robot_id: selectedRobotId, policy_id: selectedPolicyId, world_id: selectedWorldId });
 }
 function renderLibrary() {
   const container = $("libraryItems"); container.replaceChildren();
@@ -1217,9 +1273,9 @@ document.querySelectorAll("[data-library-tab]").forEach((button) => {
   button.onclick = () => { libraryTab = button.dataset.libraryTab; renderLibrary(); };
 });
 $("applyLibrary").onclick = () => {
-  if (!$("applyLibrary").disabled) ws.send(JSON.stringify({
+  if (!$("applyLibrary").disabled) sendEvent({
     type: "library_select", robot_id: selectedRobotId, policy_id: selectedPolicyId, world_id: selectedWorldId
-  }));
+  });
 };
 function isUploaded(policy) {
   return (libraryData.uploads || []).some((upload) => upload.id === policy.id && upload.status === "listed");
@@ -1430,37 +1486,41 @@ ws.onmessage = (m) => {
     case "agent": addAgent(ev); break;
     case "step": renderStep(ev); break;
     case "spec": currentSpec = ev.spec; updateSceneContext(ev.spec); break;
-    case "scene": showWorkbench(); currentMetrics = null; latestInsight = null; loadScene(ev.scene); updateSceneContext(); $("code").textContent = ev.code; $("codeBtn").hidden = !detailsMode;
+    case "scene": setRequestProgress("Scene built; checking the physics…"); showWorkbench(); currentMetrics = null; latestInsight = null; loadScene(ev.scene); updateSceneContext(); $("code").textContent = ev.code; $("codeBtn").hidden = !detailsMode;
       $("startBtn").hidden = $("goalBtn").hidden = ev.scene.kind !== "mujoco"; setStatus("Scene ready"); break;
     case "checks":
       renderChecks(ev.checks);
-      if ((ev.checks || []).some((check) => !check.passed && !check.advisory)) setStatus("Checks failed", "failed");
-      else setStatus("Scene ready");
+      if ((ev.checks || []).some((check) => !check.passed && !check.advisory)) { setStatus("Checks failed", "failed"); setRequestProgress("Physics checks need attention.", "error"); }
+      else { setStatus("Scene ready"); setRequestProgress("Scene checks passed; ready for your next step.", "done"); }
       if (detailsMode) showPanel("scene");
       break;
     case "question": {
+      setRequestProgress("Scene ready; waiting for your next step.", "done");
       const d = addMsg(ev.message); const q = document.createElement("div"); q.className = "quick";
       if (ev.chips) { chips(q, ev.chips, null); d.appendChild(q); break; }   // the next step after an analysis
       const label = ev.message.startsWith("This scene already ran") ? "Run again"
         : ev.message.startsWith("This scene still fails") ? "Run anyway" : "Run";
       chips(q, ev.stress_test_available ? [label, "Stress test", "Find where it breaks"] : [label], label); d.appendChild(q); break;
     }
-    case "run_start": batchIsActive = false; $("reportCard").hidden = true; $("leaderboardCard").hidden = true; disableRunButtons(); setStatus("Running", "running"); startRun(); break;
+    case "run_start": setRequestProgress("Simulation running…"); batchIsActive = false; $("reportCard").hidden = true; $("leaderboardCard").hidden = true; disableRunButtons(); setStatus("Running", "running"); startRun(); break;
     case "frames": for (const f of ev.frames) { frames.push(f); addTrailPoint(f); } $("scrub").max = frames.length - 1; break;
     case "metrics": {
+      setRequestProgress("Simulation complete. Results are ready.", "done");
       currentMetrics = ev.metrics; renderMetrics(ev.metrics); streaming = false; setStatus("Run complete");
       const [headline, detail] = metricInsight(ev.metrics); addInsight(headline, detail, "results");
       if (detailsMode) showPanel("results"); break;
     }
-    case "diagnosis": renderDiagnosis(ev.report); addInsight("Diagnosis complete", detailForReport(ev.report), "analysis"); break;
+    case "diagnosis": setRequestProgress("Diagnosis complete. Findings are ready.", "done"); renderDiagnosis(ev.report); addInsight("Diagnosis complete", detailForReport(ev.report), "analysis"); break;
     case "envelope": {
+      setRequestProgress("Operating limits found. Analysis is complete.", "done");
       renderEnvelope(ev.report);
       const insight = addInsight("Operating limits found", detailForReport(ev.report), "analysis");
       const retry = document.createElement("button"); retry.type = "button"; retry.className = "chip"; retry.textContent = "Re-check the limits";
       retry.onclick = () => send("Find where it breaks again"); insight.querySelector(".card-actions")?.appendChild(retry); break;
     }
-    case "redesign": renderRedesign(ev.report); addInsight("Design search complete", detailForReport(ev.report), "analysis"); break;
+    case "redesign": setRequestProgress("Design search complete. Results are ready.", "done"); renderRedesign(ev.report); addInsight("Design search complete", detailForReport(ev.report), "analysis"); break;
     case "batch_start":
+      setRequestProgress("Testing scene conditions…");
       batchIsActive = true; batchResults.clear(); batchDecodeTasks = []; clearGhosts();
       frames = []; idx = 0; streaming = false; $("player").hidden = true;
       $("reportCard").hidden = true; $("metricsCard").hidden = true;
@@ -1468,7 +1528,7 @@ ws.onmessage = (m) => {
       if (current?.kind === "mujoco") { resetTrail(); applyFrame({ t: 0, poses: current.poses }); }
       break;
     case "batch_result": receiveBatchResult(ev.result); break;
-    case "batch_done": setStatus(`Analysis complete · ${ev.passed}/${ev.total} pass`, ev.passed === ev.total ? "ready" : "finding"); break;
+    case "batch_done": setRequestProgress(`Condition tests complete · ${ev.passed}/${ev.total} passed.`, "done"); setStatus(`Analysis complete · ${ev.passed}/${ev.total} pass`, ev.passed === ev.total ? "ready" : "finding"); break;
     case "report":
       renderReport(ev);
       Promise.all([...batchDecodeTasks]).then(() => setupGhostView(ev));
@@ -1477,6 +1537,7 @@ ws.onmessage = (m) => {
     case "explanation": {
       const parts = ev.message.match(/[^.!?]+[.!?]?/g) || [ev.message];
       const preRun = !currentMetrics && /running it now/i.test(ev.message);
+      if (!preRun) setRequestProgress("Results summarized. Complete.", "done");
       const d = preRun ? addMsg(ev.message)
         : updateLatestInsight(ev.message) ? latestInsight
           : addInsight(parts[0].trim() || "Simulation insight", parts.slice(1).join("").trim() || ev.message, "results");
@@ -1487,7 +1548,7 @@ ws.onmessage = (m) => {
       }
       break;
     }
-    case "error": addMsg(ev.message, "err"); setStatus("Something needs attention", "failed"); break;
+    case "error": setRequestProgress("Request stopped. See the error below.", "error"); addMsg(ev.message, "err"); setStatus("Something needs attention", "failed"); break;
     case "cost": {   // the request's total: on the card it produced, and under the last reply
       if (costLine) { costLine.textContent = ev.cost.text; costLine = null; }
       const last = [...log.querySelectorAll(".msg.bot")].pop();
@@ -1510,7 +1571,7 @@ ws.onmessage = (m) => {
       break;
   }
 };
-ws.onclose = () => { $("mode").textContent = "Disconnected · reload the page"; };
+ws.onclose = connectionLost;
 
 // ── Prove why / Make it pass ──
 const VERDICTS = { confirmed: "✓ confirmed", partly: "~ partly", "ruled out": "✕ ruled out", "not tested": "– not tested",
@@ -1655,7 +1716,7 @@ function renderRedesign(r) {
   showCost("redesignCost", r.cost);
 }
 $("useDesign").onclick = () => send($("useDesign").textContent.toLowerCase());
-$("showRuns").onclick = () => { addMsg("Show runs", "user"); ws.send(JSON.stringify({ type: "show_design" })); };
+$("showRuns").onclick = () => { if (sendEvent({ type: "show_design" })) addMsg("Show runs", "user"); };
 
 function renderChecks(checks) {
   $("checksCard").hidden = false;
@@ -1774,13 +1835,37 @@ function renderMetrics(m) {
       if (m.stopped_by && m.stopped_by.name === ob.name) { mesh.material.emissive = new THREE.Color(0xf87171); mesh.material.emissiveIntensity = 0.6; }
     }
   }
-  for (const [k, label] of Object.entries(LABELS)) if (k in m && m[k] !== null && m[k] !== undefined && !(k === "left_terrain" && !m[k]) && !(k === "forward_progress_m" && "goal_reached" in m)) {
-    const a = document.createElement("span");
-    a.textContent = k === "local_slope_deg" ? (m.flipped ? "Slope where it fell (°)" : "Slope at the end (°)") : label;
-    const b = document.createElement("span");
-    b.textContent = typeof m[k] === "boolean" ? (m[k] ? "yes" : "no") : PERCENT.has(k) ? `${Math.round(m[k] * 100)}%`
-      : k === "obstacles_cleared" ? `${m[k]} of ${m.obstacles_total}` : m[k];
-    $("metrics").append(a, b);
+  const groups = [
+    ["Outcome", ["goal_reached", "time_to_goal_s", "final_distance_m", "closest_distance_m", "obstacles_cleared", "left_terrain"]],
+    ["Movement", ["distance_m", "forward_progress_m", "path_length_m", "path_efficiency", "climbed_m"]],
+    ["Stability", ["max_tilt_deg", "flipped", "fall_direction", "slip_ratio", "slip_ratio_last_1s_before_fall"]],
+    ["Terrain", ["local_slope_deg", "slope_along_heading_deg", "cross_slope_deg", "max_slope_on_path_deg"]],
+    ["Conditions", ["gravity", "friction"]],
+    ["Structure", ["period_s", "code_period_estimate_s", "building_freq_hz", "shaking_freq_hz", "pga_g", "max_roof_displacement_cm", "max_story_drift_pct", "damage_estimate"]],
+  ];
+  const included = new Set();
+  const appendMetric = (container, key) => {
+    if (!(key in m) || m[key] === null || m[key] === undefined || (key === "left_terrain" && !m[key])
+        || (key === "forward_progress_m" && "goal_reached" in m)) return false;
+    const name = document.createElement("span");
+    name.textContent = key === "local_slope_deg" ? (m.flipped ? "Slope where it fell (°)" : "Slope at the end (°)") : LABELS[key];
+    const value = document.createElement("span");
+    value.textContent = typeof m[key] === "boolean" ? (m[key] ? "yes" : "no") : PERCENT.has(key) ? `${Math.round(m[key] * 100)}%`
+      : key === "obstacles_cleared" ? `${m[key]} of ${m.obstacles_total ?? "—"}` : m[key];
+    container.append(name, value); included.add(key); return true;
+  };
+  for (const [title, keys] of groups) {
+    const values = document.createElement("div"); values.className = "metric-values";
+    for (const key of keys) appendMetric(values, key);
+    if (!values.childElementCount) continue;
+    const section = document.createElement("section"); section.className = "metric-section";
+    section.append(textEl("h4", title), values); $("metrics").appendChild(section);
+  }
+  const otherValues = document.createElement("div"); otherValues.className = "metric-values";
+  for (const key of Object.keys(LABELS)) if (!included.has(key)) appendMetric(otherValues, key);
+  if (otherValues.childElementCount) {
+    const section = document.createElement("section"); section.className = "metric-section";
+    section.append(textEl("h4", "Other results"), otherValues); $("metrics").appendChild(section);
   }
 }
 function renderLeaderboard(rows) {
@@ -1863,9 +1948,9 @@ function setWorld(world = {}) {
   scene.fog = profile.fog ? new THREE.Fog(profile.fog[0], profile.fog[1], profile.fog[2]) : null;
   stars.visible = Boolean(profile.stars);
 }
-let qualityHigh = true, lowFpsSeconds = 0, fpsElapsed = 0, fpsFrames = 0, autoQualityDrop = false;
-function setQuality(high, automatic = false) {
-  qualityHigh = high; autoQualityDrop = !high && automatic;
+let qualityHigh = true;
+function setQuality(high) {
+  qualityHigh = high;
   renderer.shadowMap.enabled = high;
   renderer.setPixelRatio(Math.min(devicePixelRatio, high ? 1.5 : 1));
   scene.traverse((object) => {
@@ -1881,7 +1966,7 @@ function setQuality(high, automatic = false) {
       if ("needsUpdate" in item) item.needsUpdate = true;
     }
   });
-  $("qualityToggle").textContent = `Quality: ${high ? "High" : "Low"}${autoQualityDrop ? " · auto" : ""}`;
+  $("qualityToggle").textContent = `Quality: ${high ? "High" : "Low"}`;
   $("qualityToggle").setAttribute("aria-pressed", String(high));
 }
 $("qualityToggle").onclick = () => setQuality(!qualityHigh);
@@ -2117,8 +2202,8 @@ renderer.domElement.addEventListener("pointerup", (e) => {
   const hit = ray.intersectObject(terrainMesh)[0]; if (!hit) return;
   const p = world.worldToLocal(hit.point.clone());
   const x = Math.round(p.x * 10) / 10, y = Math.round(p.y * 10) / 10;
+  if (!sendEvent({ type: `set_${pickMode}`, x, y })) return;
   addMsg(`Set ${pickMode} at (${x}, ${y})`, "user");
-  ws.send(JSON.stringify({ type: `set_${pickMode}`, x, y }));
   setPick(pickMode);   // one click, then back to orbiting
 });
 
@@ -2440,7 +2525,7 @@ function loadScene(s) {
   } else if (s.kind === "frame") {
     buildFrame(s);
   }
-  if (!qualityHigh) setQuality(false, autoQualityDrop);
+  if (!qualityHigh) setQuality(false);
 }
 
 // Building: two parallel frames with floor slabs, members colored by drift.
@@ -2649,13 +2734,6 @@ function tick() {
       }
       attr.needsUpdate = true; cloth.geometry.computeVertexNormals();
     }
-  }
-  fpsElapsed += dt; fpsFrames++;
-  if (fpsElapsed >= 2.0) {
-    const fps = fpsFrames / fpsElapsed;
-    lowFpsSeconds = fps < 25 ? lowFpsSeconds + fpsElapsed : 0;
-    if (qualityHigh && lowFpsSeconds >= 3.0) setQuality(false, true);
-    fpsElapsed = 0; fpsFrames = 0;
   }
   if (playing && batchPlayback && batchTimeline.length) {
     acc += dt;
