@@ -157,7 +157,7 @@ class Director:
         world, message = await workflows.execute(plan, current, self, state)
         world.spec.assumptions.extend(self.guard_notes)
         if self.used_rule_planner:
-            message = f"I used the simple planner for this one. {message}"
+            message = f"I couldn't use the first plan, so I took another route. {message}"
         await self._finish_root(message)
         return world, message
 

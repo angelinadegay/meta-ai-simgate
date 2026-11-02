@@ -181,8 +181,17 @@ def test_director_planning_uses_one_call_retries_validation_and_falls_back():
         assert fallback.workflow == "race" and fallback.robots[0].count == 3
         assert director.used_rule_planner
 
-        world, message = asyncio.run(Director().execute_plan("race three rovers to the far side"))
-        assert message.startswith("I used the simple planner for this one.")
+        director = Director()
+        emitted_steps = []
+
+        async def capture_step(**payload):
+            emitted_steps.append(payload)
+
+        director._emit_step = capture_step
+        world, message = asyncio.run(director.execute_plan("race three rovers to the far side"))
+        assert message.startswith("I couldn't use the first plan, so I took another route.")
+        assert "simple planner" not in message
+        assert any("used the rules planner" in step["result"] for step in emitted_steps)
         assert world.spec.title == "Three 4-wheel rovers on hills terrain, Earth"
     finally:
         config.MOCK_MODE = original_mock
@@ -2195,7 +2204,12 @@ def test_browser_groups_result_metrics_and_shows_live_progress():
                    '["Conditions", ["gravity"', 'className = "request-progress working"',
                    'setRequestProgress("Simulation running…")',
                    'setRequestProgress("Results summarized. Complete.", "done")',
-                   'setRequestProgress(AGENT_PROGRESS[ev.agent]'):
+                   'setRequestProgress(AGENT_PROGRESS[ev.agent]',
+                   'const stateLabel = state.status === "working" ? "Working…"',
+                   'setStatus("Needs attention", "failed")',
+                   'const groupKey = JSON.stringify([ev.agent, ev.tool || "", ev.thought || "Working…"]);',
+                   'entries.length > 1 ? `Occurrence ${index + 1}` : ""',
+                   'setStatus("Results ready")'):
         assert needed in page, needed
 
 

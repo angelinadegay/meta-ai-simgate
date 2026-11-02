@@ -706,7 +706,7 @@ function addMsg(text, cls = "bot") {
   log.appendChild(d); scroll(); return d;
 }
 let lastAgentRow = {};
-let stepRows = new Map(), countedSteps = new Set();
+let stepRows = new Map(), stepGroups = new Map(), countedSteps = new Set();
 const agentNodes = new Map();
 let activeStepList = $("agentStepList"), activeStepDetails = $("agentSteps");
 let activeRequestProgress = null;
@@ -744,7 +744,9 @@ function renderAgentBar() {
     if (index) { const connector = document.createElement("span"); connector.className = "connector"; container.appendChild(connector); }
     const button = document.createElement("button"); button.type = "button"; button.className = `agent-card ${state.status}`; button.title = `Meet ${name}`;
     const icon = document.createElement("span"); icon.className = "agent-icon"; icon.textContent = AGENT_ICONS[name] || "✳";
-    button.append(icon, textEl("b", name), textEl("small", state.model || "rules"));
+    const stateLabel = state.status === "working" ? "Working…" : state.status === "done" ? "Done"
+      : state.status === "warning" ? "Review" : state.status === "error" ? "Attention" : "Ready";
+    button.append(icon, textEl("b", name), textEl("small", stateLabel));
     button.onclick = () => showAgentDetail(name); container.appendChild(button);
   }
   $("agentBarSummary").textContent = names.length ? `${names.length} specialists · click to meet them` : "Click an agent to meet them";
@@ -795,7 +797,7 @@ function initAgentGraph() {
 initAgentGraph();
 renderAgentBar();
 function beginStepGroup() {
-  agentStepHistory = new Map(); stepRows = new Map(); countedSteps = new Set();
+  agentStepHistory = new Map(); stepRows = new Map(); stepGroups = new Map(); countedSteps = new Set();
   const progress = document.createElement("div"); progress.className = "request-progress working";
   progress.setAttribute("role", "status"); progress.setAttribute("aria-live", "polite");
   const dot = document.createElement("span"); dot.className = "progress-dot";
@@ -823,10 +825,16 @@ function renderStep(ev) {
   if (ev.status === "working") setRequestProgress(AGENT_PROGRESS[ev.agent] || `${ev.agent} is working…`);
   let row = stepRows.get(ev.id);
   if (!row) {
-    row = document.createElement("details"); row.className = "step-row";
-    const summary = document.createElement("summary"), detail = document.createElement("div");
-    detail.className = "step-meta"; row.append(summary, detail); activeStepList.appendChild(row); stepRows.set(ev.id, row);
+    const groupKey = JSON.stringify([ev.agent, ev.tool || "", ev.thought || "Working…"]);
+    row = stepGroups.get(groupKey);
+    if (!row) {
+      row = document.createElement("details"); row.className = "step-row"; row.stepEntries = new Map();
+      const summary = document.createElement("summary"), detail = document.createElement("div");
+      detail.className = "step-meta"; row.append(summary, detail); activeStepList.appendChild(row); stepGroups.set(groupKey, row);
+    }
+    stepRows.set(ev.id, row);
   }
+  row.stepEntries.set(ev.id, ev);
   activeStepDetails.hidden = false; activeStepDetails.open = ev.status === "working";
   const history = agentStepHistory.get(ev.agent) || [];
   if (!history.some((step) => step.id === ev.id)) history.push({ id: ev.id, thought: ev.thought || "Working…", result: ev.result || "" });
@@ -837,13 +845,16 @@ function renderStep(ev) {
   groupSummary.textContent = `${AGENT_ORDER.filter((name) => agentStepHistory.has(name)).join(" → ")} · ${countedSteps.size + (countedSteps.has(ev.id) ? 0 : 1)} steps`;
   row.className = `step-row ${ev.status || "done"}`;
   const summary = row.querySelector("summary"), detail = row.querySelector(".step-meta");
-  summary.textContent = `${ev.agent}${ev.tool ? ` · ${ev.tool}` : ""}: ${ev.thought || "Working…"}`;
-  detail.textContent = [
-    ev.args && Object.keys(ev.args).length ? `Args: ${JSON.stringify(ev.args)}` : "",
-    ev.result ? `Result: ${ev.result}` : "",
-    ev.model ? `Model: ${ev.model}` : "",
-    ev.ms ? `${ev.ms} ms` : "",
-  ].filter(Boolean).join("\n");
+  const entries = [...row.stepEntries.values()];
+  summary.textContent = `${ev.agent}${ev.tool ? ` · ${ev.tool}` : ""}: ${ev.thought || "Working…"}`
+    + (entries.length > 1 ? ` · repeated ${entries.length} times` : "");
+  detail.textContent = entries.map((entry, index) => [
+    entries.length > 1 ? `Occurrence ${index + 1}` : "",
+    entry.args && Object.keys(entry.args).length ? `Args: ${JSON.stringify(entry.args)}` : "",
+    entry.result ? `Result: ${entry.result}` : "",
+    entry.model ? `Model: ${entry.model}` : "",
+    entry.ms ? `${entry.ms} ms` : "",
+  ].filter(Boolean).join("\n")).join("\n\n");
   const node = agentNodes.get(ev.agent);
   if (node) {
     if (node.group.style.display === "none") { node.group.style.display = ""; updateEdges(); }
@@ -1508,7 +1519,13 @@ ws.onmessage = (m) => {
       $("startBtn").hidden = $("goalBtn").hidden = ev.scene.kind !== "mujoco"; setStatus("Scene ready"); break;
     case "checks":
       renderChecks(ev.checks);
-      if ((ev.checks || []).some((check) => !check.passed && !check.advisory)) { setStatus("Checks failed", "failed"); setRequestProgress("Physics checks need attention.", "error"); }
+      const failedChecks = (ev.checks || []).filter((check) => !check.passed && !check.advisory);
+      if (failedChecks.length) {
+        const first = failedChecks[0];
+        const summary = failedChecks.length === 1 ? `${first.name}: ${first.detail}`
+          : `${failedChecks.length} physics checks need attention. ${first.name}: ${first.detail}`;
+        setStatus("Needs attention", "failed"); setRequestProgress(summary, "error");
+      }
       else { setStatus("Scene ready"); setRequestProgress("Scene checks passed; ready for your next step.", "done"); }
       if (detailsMode) showPanel("scene");
       break;
@@ -1527,7 +1544,7 @@ ws.onmessage = (m) => {
     case "frames": for (const f of ev.frames) { frames.push(f); addTrailPoint(f); } $("scrub").max = frames.length - 1; break;
     case "metrics": {
       setRequestProgress("Simulation complete. Results are ready.", "done");
-      currentMetrics = ev.metrics; renderMetrics(ev.metrics); streaming = false; setStatus("Run complete");
+      currentMetrics = ev.metrics; renderMetrics(ev.metrics); streaming = false; setStatus("Results ready");
       const [headline, detail] = metricInsight(ev.metrics); addInsight(headline, detail, "results");
       if (detailsMode) showPanel("results"); break;
     }
@@ -1581,7 +1598,7 @@ ws.onmessage = (m) => {
       if (!preserveLaunchMessage) log.replaceChildren();
       else { for (const group of log.querySelectorAll(".agent-steps")) group.remove(); beginStepGroup(); }
       preserveLaunchMessage = false;
-      stepRows.clear(); countedSteps.clear(); agentNodes.clear(); initAgentGraph();
+      stepRows.clear(); stepGroups.clear(); countedSteps.clear(); agentNodes.clear(); initAgentGraph();
       agentActivity = new Map(); agentStepHistory = new Map(); renderAgentBar(); currentSpec = null; currentMetrics = null;
       current = null; frames = []; $("empty").hidden = false; $("checksCard").hidden = true; $("metricsCard").hidden = true;
       $("diagnosisCard").hidden = true; $("redesignCard").hidden = true; $("envelopeCard").hidden = true;
