@@ -67,6 +67,51 @@ def test_earth_terrain_option_uses_generated_hills():
     assert any(event["type"] == "scene" for event in events)
 
 
+def test_earth_terrain_option_uses_installed_real_earth_preset(monkeypatch):
+    import numpy as np
+
+    from simgate import terrain_data
+    from simgate.orchestrator import Session
+
+    preset_meta = {
+        "gale": {"label": "Gale Crater", "body": "mars", "surface": "rock",
+                 "size_m": 100.0, "relief_m": 10.0, "typical_slope_deg": 5.0, "credit": "Test data"},
+        "earth-test": {"label": "Earth Test Site", "body": "earth", "surface": "rock",
+                        "size_m": 100.0, "relief_m": 10.0, "typical_slope_deg": 5.0, "credit": "Test data"},
+    }
+    monkeypatch.setattr(terrain_data, "list_presets", lambda: {
+        "earth-test": {**preset_meta["earth-test"], "uploaded": False},
+    })
+    monkeypatch.setattr(terrain_data, "load_preset", lambda name: (np.zeros((2, 2)), preset_meta[name]))
+
+    async def verify():
+        events = []
+
+        async def emit(event):
+            events.append(event)
+
+        session = Session(emit)
+        session.spec = gale_scene()
+        built = []
+
+        async def capture_build(spec):
+            session.spec = spec
+            built.append(spec)
+
+        session.build_and_check = capture_build
+        await session.handle("Change terrain to Earth")
+        await session.handle("Earth terrain instead")
+        return session, built, events
+
+    session, built, events = asyncio.run(verify())
+
+    assert len(built) == 1
+    assert session.spec.environment.body == "earth"
+    assert session.spec.terrain.kind == "real" and session.spec.terrain.preset == "earth-test"
+    assert any("installed Earth terrain Earth Test Site" in assumption for assumption in session.spec.assumptions)
+    assert not any(event["type"] == "error" for event in events)
+
+
 def test_keep_mars_option_leaves_real_site_unchanged():
     session, events = run_flow("Keep Mars")
 
