@@ -1732,9 +1732,52 @@ class MuJoCoSimulator(Simulator):
             ", ".join(obstacle_clearance) if obstacle_clearance else "No start or goal intersects a placed obstacle.",
         ))
         ground = ground_geoms(model)
-        for _ in range(int(1.0 / model.opt.timestep)):
-            self._multi_control(model, data, states, data.time - 0.5)
+        policy_states = [state for state in entries if state["policy"] is not None]
+        for state in policy_states:
+            policy = state["policy"]
+            policy.set_command({name: 0.0 for name in policy.card.command.names})
+
+        def hold_all_still(policy_time: float | None = None) -> None:
+            data.ctrl[:] = 0.0
+            for state in policy_states:
+                if policy_time is None:
+                    state["policy"].hold_default()
+                else:
+                    state["policy"].step(policy_time)
+
+        for _ in range(int(0.5 / model.opt.timestep)):
+            hold_all_still()
             mujoco.mj_step(model, data)
+
+        start_heights = {state["entry"].id: float(data.xpos[state["root"]][2]) for state in entries}
+        peak_tilts = {state["entry"].id: 0.0 for state in entries}
+        late_contacts = {state["entry"].id: 0 for state in entries}
+        n_steps = int(1.0 / model.opt.timestep)
+        contact_window = n_steps - int(0.3 / model.opt.timestep)
+        for step in range(n_steps):
+            hold_all_still(step * model.opt.timestep)
+            mujoco.mj_step(model, data)
+            for state in entries:
+                root = state["root"]
+                robot_id = state["entry"].id
+                up_z = data.xmat[root].reshape(3, 3)[2, 2]
+                peak_tilts[robot_id] = max(
+                    peak_tilts[robot_id], math.degrees(math.acos(np.clip(up_z, -1.0, 1.0)))
+                )
+                if step >= contact_window:
+                    count = sum(
+                        1
+                        for contact_index in range(data.ncon)
+                        if (
+                            int(data.contact[contact_index].geom1) in ground
+                            and int(model.body_rootid[int(model.geom_bodyid[int(data.contact[contact_index].geom2)])]) == root
+                        ) or (
+                            int(data.contact[contact_index].geom2) in ground
+                            and int(model.body_rootid[int(model.geom_bodyid[int(data.contact[contact_index].geom1)])]) == root
+                        )
+                    )
+                    late_contacts[robot_id] = max(late_contacts[robot_id], count)
+
         finite = bool(np.all(np.isfinite(data.qpos))) and instability_count(data) == 0
         checks.append(Check(
             "Simulation is stable",
@@ -1743,15 +1786,29 @@ class MuJoCoSimulator(Simulator):
         ))
         contact_results = []
         for state in entries:
+            entry = state["entry"]
+            robot = state["robot"]
+            robot_id = entry.id
             root = state["root"]
-            contacted = any(
-                int(data.contact[i].geom1) in ground or int(data.contact[i].geom2) in ground
-                for i in range(data.ncon)
-                if int(model.body_rootid[int(model.geom_bodyid[int(data.contact[i].geom1)])]) == root
-                or int(model.body_rootid[int(model.geom_bodyid[int(data.contact[i].geom2)])]) == root
-            )
-            tilt = math.degrees(math.acos(np.clip(data.xmat[root].reshape(3, 3)[2, 2], -1.0, 1.0)))
-            contact_results.append((state["entry"].label, contacted, tilt))
+            contacted = late_contacts[robot_id] > 0
+            tilt = peak_tilts[robot_id]
+            height_delta = abs(float(data.xpos[root][2]) - start_heights[robot_id])
+            contact_results.append((entry.label, contacted, tilt))
+            if robot.kind == "library":
+                robot_card = LibraryRegistry().robot(robot.robot_id)
+                stands = (
+                    finite
+                    and contacted
+                    and tilt < FALL_TILT_DEG
+                    and height_delta <= 0.1 * robot_card.standing_height_m
+                )
+                checks.append(Check(
+                    f"{entry.label} stands for 1 s at zero command",
+                    stands,
+                    f"Peak tilt {tilt:.1f}°, root height change {height_delta:.3f} m "
+                    f"(limit {0.1 * robot_card.standing_height_m:.3f} m), "
+                    f"up to {late_contacts[robot_id]} ground contacts.",
+                ))
         checks.append(Check(
             "Robots rest on terrain",
             all(contacted and tilt < FALL_TILT_DEG for _, contacted, tilt in contact_results),
