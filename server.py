@@ -45,6 +45,14 @@ def index():
     return FileResponse(STATIC / "vendor" / "index.html")
 
 
+@app.get("/assets/nasa/insight_lander.glb")
+def insight_visual():
+    model = Path(__file__).parent / "assets" / "nasa" / "insight_lander.glb"
+    if not model.is_file():
+        return JSONResponse({"detail": "Local NASA model is not installed."}, status_code=404)
+    return FileResponse(model, media_type="model/gltf-binary")
+
+
 def library_view() -> dict:
     """Every Library card, plus each upload's state (listed, needs answers, not ready with reasons)."""
     library = LibraryRegistry()

@@ -441,6 +441,13 @@
   @media (prefers-reduced-motion: reduce) {
     *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
   }
+  #structureCards article { padding: 12px 0; border-bottom: 1px solid var(--border, #dedde3); }
+  #structureCards h4 { margin: 0 0 6px; font-size: 13px; }
+  #structureCards p { margin: 5px 0; font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
+  #structureCards .structure-honesty { color: #64676c; font-size: 11px; }
+  #structureCards a { color: #28725c; }
+  .member-legend { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; font-size: 11px; padding: 8px 0; }
+  .member-swatch { display: inline-block; width: 10px; height: 10px; border-radius: 2px; }
 </style>
 <script type="importmap">
 { "imports": { "three": "/static/vendor/three.module.js" } }
@@ -593,6 +600,10 @@
       <div class="detail-body">
       <section class="panel-section" data-panel-section="scene">
       <div class="card" id="sceneCard"><h3>Scene</h3><div class="scene-facts" id="sceneDetails"></div></div>
+      <section id="structuresPanel" hidden aria-label="Structures"><h3>Structures</h3>
+        <div class="member-legend"><span>Member utilisation</span><span class="member-swatch" style="background:#269866"></span><span>0%</span><span class="member-swatch" style="background:#e4aa37"></span><span>75%</span><span class="member-swatch" style="background:#d44439"></span><span>100%+</span><span class="member-swatch" style="background:#8c999e"></span><span>Not reported</span></div>
+        <div id="structureCards"></div>
+      </section>
       <div class="card" id="agentsCard"><h3>Agent activity</h3><svg id="agentGraph" viewBox="0 0 360 235" aria-label="Live agent graph" hidden></svg><div id="agentListPanel"></div></div>
       <div class="card" id="checksCard" hidden><h3>Physics checks</h3><div id="checks"></div></div>
       </section>
@@ -649,6 +660,8 @@
 <script type="module">
 import * as THREE from "three";
 import { OrbitControls } from "/static/vendor/OrbitControls.js";
+import { buildStructureVisuals, setStructureDetails } from "/static/vendor/structures.js";
+import { buildTerrainHorizon } from "/static/vendor/terrain-horizon.js";
 
 const $ = (id) => document.getElementById(id);
 const AGENT_COLORS = { Director: "--director", Planner: "--planner", Router: "--router", Builder: "--builder", Checker: "--checker", Simulator: "--simulator", Explainer: "--explainer", "Stress planner": "--planner", "Batch runner": "--simulator" };
@@ -916,7 +929,9 @@ function appendActionChips(parent, actions) {
   if (actionsSlot) actionsSlot.appendChild(row); else parent.appendChild(row);
 }
 function sendWorkflowAction(workflow, robotId, label) {
-  if (sendEvent({ type: "workflow_action", workflow, robot_id: robotId })) addMsg(label, "user");
+  if (!sendEvent({ type: "workflow_action", workflow, robot_id: robotId })) { showWorkbench(); return false; }
+  showWorkbench(); lastRequestText = label; addMsg(label, "user"); beginStepGroup();
+  return true;
 }
 renderHomeExamples();
 
@@ -994,6 +1009,7 @@ function showHome(tab = "explore") {
 }
 function showPanel(tab = "scene") {
   activeDetailsTab = tab; detailsMode = true; document.body.classList.add("show-details");
+  if (structureVisualRoot) setStructureDetails(structureVisualRoot, true);
   $("topright").hidden = false; $("topright").classList.add("open");
   if (activeStepDetails && log.contains(activeStepDetails)) {
     activeStepDetails.hidden = false; activeStepDetails.open = true;
@@ -1013,6 +1029,7 @@ function showPanel(tab = "scene") {
 }
 function hidePanel() {
   detailsMode = false; document.body.classList.remove("show-details");
+  if (structureVisualRoot) setStructureDetails(structureVisualRoot, false);
   $("topright").classList.remove("open"); $("topright").hidden = true; $("detailsToggle").setAttribute("aria-pressed", "false");
   $("detailsToggle").textContent = "Show details"; $("codeBtn").hidden = true; $("code").style.display = "none";
 }
@@ -1965,7 +1982,7 @@ renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 $("view").appendChild(renderer.domElement);
 const scene = new THREE.Scene();
 scene.background = new THREE.Color("#f4f3fa");
-const camera = new THREE.PerspectiveCamera(50, 1, 0.05, 500);
+const camera = new THREE.PerspectiveCamera(50, 1, 0.05, 5000);
 camera.position.set(-14, 8, 10);
 const controls = new OrbitControls(camera, renderer.domElement);
 controls.enableDamping = true;
@@ -2042,6 +2059,7 @@ addEventListener("resize", resize); resize();
 
 let current = null, frames = [], playing = true, streaming = false, idx = 0, acc = 0, followCam = true;
 const meshes = [];
+let structureVisualRoot = null, structureSceneToken = 0;
 let batchPlayback = false, batchTimeline = [], batchGhostRuns = [], activeBatchRunId = null, ghostGroup = null;
 let hiddenBaseGeomIds = [];
 let cameraRobotId = null;
@@ -2272,6 +2290,8 @@ renderer.domElement.addEventListener("pointerup", (e) => {
 });
 
 function clearWorld() {
+  structureSceneToken++; structureVisualRoot = null;
+  $("structureCards").replaceChildren(); $("structuresPanel").hidden = true;
   clearGhosts(); world.remove(trail, trailRibbon.mesh, followRing, ...flagCloths);
   while (world.children.length) {
     const child = world.children.pop();
@@ -2548,6 +2568,50 @@ function addGoalFlags(sceneData) {
   });
 }
 
+function renderStructureCards(structures) {
+  $("structureCards").replaceChildren(); $("structuresPanel").hidden = !structures.length;
+  structures.forEach((record, index) => {
+    const article = document.createElement("article"); article.dataset.structureIndex = index;
+    const heading = document.createElement("h4"); heading.textContent = `${record.kind[0].toUpperCase() + record.kind.slice(1)} ${index + 1}`;
+    const focus = document.createElement("button"); focus.type = "button"; focus.className = "chip";
+    focus.textContent = "View"; focus.title = `Focus on ${record.kind}`; focus.style.float = "right";
+    focus.dataset.focusStructure = index; focus.onclick = () => focusStructureVisuals(index); heading.appendChild(focus);
+    article.appendChild(heading);
+    const dimensions = record.dimensions;
+    const size = document.createElement("p");
+    size.textContent = record.kind === "habitat" ? `${dimensions.module_length_m} m long x ${dimensions.module_diameter_m} m diameter`
+      : record.kind === "lander" ? `${dimensions.footprint_m} m deployed span · ${dimensions.height_m} m scene height`
+      : `${dimensions.span_m} m span x ${dimensions.deck_width_m} m deck`;
+    article.appendChild(size);
+    if (record.structural_check) {
+      const report = record.structural_check;
+      const result = document.createElement("p"); result.textContent = report.summary; article.appendChild(result);
+      const honesty = document.createElement("p"); honesty.className = "structure-honesty";
+      honesty.textContent = report.honesty;
+      if (record.kind === "bridge") honesty.textContent += ". Colours show reported governing members only.";
+      if (record.kind === "lander") honesty.textContent += ". Member colours: normal-gravity case.";
+      article.appendChild(honesty);
+    }
+    const credit = document.createElement("a"); credit.id = `structureCredit${index}`; credit.hidden = true;
+    credit.href = "https://science.nasa.gov/3d-resources/"; credit.target = "_blank"; credit.rel = "noopener noreferrer";
+    article.appendChild(credit); $("structureCards").appendChild(article);
+  });
+}
+
+function focusStructureVisuals(index = null) {
+  if (!structureVisualRoot?.children.length) return;
+  world.updateMatrixWorld(true);
+  const bounds = new THREE.Box3();
+  const groups = index === null ? structureVisualRoot.children : [structureVisualRoot.children[index]];
+  for (const group of groups) if (group) bounds.expandByObject(group.userData.skin);
+  if (bounds.isEmpty()) return;
+  const centre = bounds.getCenter(new THREE.Vector3()), size = bounds.getSize(new THREE.Vector3());
+  const vertical = camera.fov * Math.PI / 180, horizontal = 2 * Math.atan(Math.tan(vertical / 2) * camera.aspect);
+  const distance = Math.max(2, size.length() / 2 / Math.sin(Math.min(vertical, horizontal) / 2) * 1.12);
+  controls.target.copy(centre); camera.position.copy(centre).add(new THREE.Vector3(0.8, 0.62, 1).normalize().multiplyScalar(distance));
+  followCam = false; controls.update();
+}
+
 function loadScene(s) {
   batchIsActive = false; batchResults.clear(); $("reportCard").hidden = true;
   $("leaderboardCard").hidden = true;
@@ -2561,9 +2625,28 @@ function loadScene(s) {
     for (const g of s.geoms) {
       const m = g.type === "hfield" ? hfieldMesh(g.hfield, g.rgba, visual.surface, visual.seed, s.terrain_ortho)
         : geomMesh(g, s.mesh_assets, meshGeometries, visual);
-      if (g.type === "hfield") terrainMesh = m;
+      if (g.type === "hfield") {
+        terrainMesh = m;
+        m.add(buildTerrainHorizon(g.hfield, m));
+      }
+      if (m && /^struct\d+_(habitat|lander|bridge)_/.test(g.name || "")) m.visible = false;
       meshes[g.id] = m; if (m) world.add(m);
     }
+    renderStructureCards(s.structures || []);
+    const token = structureSceneToken;
+    const visuals = buildStructureVisuals(s, { terrainHeight: terrainHeightAt,
+      isCurrent: () => token === structureSceneToken,
+      onCredit: (index, credit) => {
+        if (token !== structureSceneToken) return;
+        const label = $(`structureCredit${index}`); if (label) { label.textContent = credit; label.hidden = false; }
+      } });
+    structureVisualRoot = visuals.root; world.add(structureVisualRoot);
+    setStructureDetails(structureVisualRoot, detailsMode);
+    visuals.ready.then(() => {
+      if (token !== structureSceneToken) return;
+      setStructureDetails(structureVisualRoot, detailsMode);
+      if (!qualityHigh) setQuality(false);
+    });
     world.add(trail, trailRibbon.mesh); addStartPads(s); addFollowRing(); addGoalFlags(s);
     robotTrails.clear(); robotLabels.clear();
     const robotEntries = Object.entries(s.robots || {});
@@ -2586,6 +2669,7 @@ function loadScene(s) {
     const target = meshes[cameraGeom()];
     const start = target ? target.getWorldPosition(new THREE.Vector3()) : new THREE.Vector3();
     controls.target.copy(start); camera.position.set(start.x - 3.2, start.y + 2.2, start.z + 2.6);
+    if (s.structures?.length) focusStructureVisuals();
   } else if (s.kind === "frame") {
     buildFrame(s);
   }
