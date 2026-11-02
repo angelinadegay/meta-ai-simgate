@@ -109,6 +109,16 @@ class Obstacle(BaseModel):
     height_m: Optional[float] = Field(None, gt=0.0, le=2.0)   # exact height (gap: depth stays fixed, this is its width)
 
 
+StructurePlacement = Literal["near_start", "near_goal", "over_gap"] | Place
+
+
+class TerrainStructure(BaseModel):
+    kind: Literal["habitat", "bridge", "lander"]
+    size: Literal["small", "medium", "large"] = "medium"
+    material: str = Field("unspecified", min_length=1, max_length=80)
+    placement: StructurePlacement
+
+
 class Structure(BaseModel):
     stories: int = Field(2, ge=1, le=20)
     bays: int = Field(1, ge=1, le=6)
@@ -140,6 +150,7 @@ class SceneSpec(BaseModel):
     mission: Optional[Mission] = None   # start and goal for a robot (optional)
     robots: list[RobotEntry] = Field(default_factory=list, max_length=6)
     obstacles: list[Obstacle] = []      # an obstacle course (robot scenes only)
+    structures: list[TerrainStructure] = []  # descriptive terrain placements; not part of simulation physics
     structure: Optional[Structure] = None
     load: Optional[Load] = None
     disturbance: Optional[Disturbance] = None

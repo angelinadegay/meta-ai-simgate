@@ -915,6 +915,14 @@ class CourseTracker:
             h = math.radians(ms.get("heading_deg", 0.0))
             d = np.array([math.cos(h), math.sin(h)])
         self.dir = d / (np.linalg.norm(d) or 1.0)
+        self.bridge_far_edges = {}
+        for structure in scene.get("structures") or []:
+            gap = structure.get("gap") or {}
+            if structure.get("kind") == "bridge" and gap.get("center") and structure.get("dimensions", {}).get("span_m"):
+                center = np.asarray(gap["center"], dtype=float)
+                self.bridge_far_edges[tuple(gap["center"])] = (
+                    float((center - self.origin) @ self.dir) + float(structure["dimensions"]["span_m"]) / 2
+                )
         self.robot = {g for g in range(model.ngeom) if int(model.body_rootid[int(model.geom_bodyid[g])]) == rover}
         self.owner = {}
         for i, p in enumerate(self.placed):
@@ -949,6 +957,8 @@ class CourseTracker:
             lateral = abs(float((np.array(p["xy"]) - self.origin) @ np.array([-self.dir[1], self.dir[0]])))
             on_path = lateral < course.COURSE_WIDTH / 2 + 0.5
             far_edge = p["along"] + p["length"] / 2
+            if p["kind"] == "gap":
+                far_edge = max(far_edge, self.bridge_far_edges.get(tuple(p["xy"]), far_edge))
             cleared = (self.max_s > far_edge + 0.3) if on_path else None
             rows.append({"name": p["name"], "kind": p["kind"], "size": p["size"], "height_m": p["height_m"],
                          **({"width_m": p["width_m"]} if p["kind"] == "gap" else {}),
@@ -1010,6 +1020,8 @@ class MuJoCoSimulator(Simulator):
         self.mission: dict = {}
         self.missions: dict[str, dict] = {}
         self.robot_entries: dict[str, dict] = {}
+        self.structure_placements: list[dict] = []
+        self.structure_notes: list[str] = []
 
     def _multi_template(self, spec: SceneSpec) -> tuple[str, np.ndarray, float]:
         terrain = spec.terrain
@@ -1083,7 +1095,13 @@ class MuJoCoSimulator(Simulator):
             self.missions[entry.id] = resolve_mission(robot_spec, H)
 
         self.mission = self.missions[spec.robots[0].id]
+        from ..structures import place_structures
+
+        self.structure_placements, self.structure_notes = place_structures(spec, H)
         obstacle_xml, self.course, self.course_notes = "", [], []
+        from ..structures import structure_geoms
+
+        structure_xml = structure_geoms(self.structure_placements)
         if spec.obstacles:
             mission = self.mission
             goal = mission["goal"]
@@ -1161,6 +1179,7 @@ class MuJoCoSimulator(Simulator):
     <light pos="0 0 20" dir="0 0 -1"/>
     <geom name="ground" type="hfield" hfield="terrain" rgba="{' '.join(f'{c:.2f}' for c in terrain_rgb(spec))} 1"/>
 {marker_xml}
+{structure_xml}
 {obstacle_xml}
 {''.join(robot_xml)}
   </worldbody>
@@ -1190,7 +1209,13 @@ class MuJoCoSimulator(Simulator):
         if mission["start"] != default_start(t.size_m):        # smooth the landing spot where the robot really starts
             H, zmax = make_heights(spec, mission["start"])
         self.mission = mission
+        from ..structures import place_structures
+
+        self.structure_placements, self.structure_notes = place_structures(spec, H)
         self.course, self.course_notes, obstacle_xml = [], [], ""
+        from ..structures import structure_geoms
+
+        structure_xml = structure_geoms(self.structure_placements)
         if spec.obstacles:
             goal = mission["goal"]
             if goal is None:     # no goal (e.g. one was removed): run the course straight ahead
@@ -1241,7 +1266,7 @@ class MuJoCoSimulator(Simulator):
   <worldbody>
     <light pos="0 0 20" dir="0 0 -1"/>
     <geom name="ground" type="hfield" hfield="terrain" rgba="{' '.join(f'{c:.2f}' for c in terrain_rgb(spec))} 1"/>
-{markers}{obstacle_xml}{robot}
+{markers}{structure_xml}{obstacle_xml}{robot}
   </worldbody>
   <actuator>
 {actuators}
@@ -1268,6 +1293,8 @@ class MuJoCoSimulator(Simulator):
         scene["terrain_size_m"] = spec.terrain.size_m
         scene["course"] = [vars(p) for p in self.course]
         scene["course_notes"] = self.course_notes
+        scene["structures"] = self.structure_placements
+        scene["structure_notes"] = self.structure_notes
         if len(spec.robots) > 1:
             for robot_id, info in self.robot_entries.items():
                 root_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, info["root_body_name"])
