@@ -63,3 +63,26 @@ def test_horizon_joins_edge_and_preserves_physics_data(browser_page):
     assert result["inside"] == 0 and result["unchanged"] and result["visualOnly"]
     assert result["vertices"] == 264
     assert result["extent"] > 2000
+
+
+def test_true_visual_sizes_are_measured_from_geometry(browser_page):
+        result = browser_page.evaluate("""async () => {
+            const {buildStructureVisuals,measureStructureVisuals}=await import('/static/vendor/structures.js');
+            const records=[
+                {kind:'habitat',dimensions:{module_length_m:6,module_diameter_m:4,airlock_rise_m:1,ramp:{run_m:4.7,width_m:1.5}}},
+                {kind:'bridge',dimensions:{span_m:3.4,deck_width_m:1.2}},
+                {kind:'lander',dimensions:{footprint_m:6,height_m:2.25,deck_span_m:1.5,deck_height_m:1,body_height_m:.35,leg_footprint_m:2.5,legs:3,visual_model:'nasa_insight'}}
+            ].map(record=>({...record,position:{x:0,y:0,z:0},orientation:{yaw_deg:0}}));
+            const scene={world:{body:'mars'},structures:records};const before=JSON.stringify(scene);
+            const visual=buildStructureVisuals(scene,{terrainHeight:()=>0});await visual.ready;
+            return {measurements:measureStructureVisuals(visual.root),unchanged:before===JSON.stringify(scene),
+                credit:visual.root.children[2].userData.credit||null};
+        }""")
+        habitat, bridge, lander = result["measurements"]
+        assert habitat["body_size_m"] == pytest.approx([6, 4, 4], abs=1e-5)
+        assert bridge["body_size_m"] == pytest.approx([3.4, 1.2, 0.19], abs=1e-5)
+        assert max(lander["world_size_m"][:2]) == pytest.approx(6, abs=0.1)
+        assert result["unchanged"]
+        artifacts = Path(__file__).parent / "screenshots"
+        artifacts.mkdir(exist_ok=True)
+        (artifacts / "measured-structure-sizes.json").write_text(json.dumps(result, indent=2))

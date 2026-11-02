@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import math
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -106,7 +107,7 @@ def _bridge_bearing_slopes(slope: np.ndarray, size_m: float, center, yaw: float,
     return np.asarray(values, dtype=float)
 
 
-def _dimensions(request: TerrainStructure, widest_robot: float) -> dict[str, Any]:
+def _dimensions(request: TerrainStructure, widest_robot: float, body: str = "earth") -> dict[str, Any]:
     scale = SIZE_SCALE[request.size]
     if request.kind == "habitat":
         length, diameter = 6.0 * scale, 4.0 * scale
@@ -114,12 +115,20 @@ def _dimensions(request: TerrainStructure, widest_robot: float) -> dict[str, Any
         run = rise / math.tan(math.radians(HABITAT_RAMP_LIMIT_DEG))
         ramp_width = HABITAT_RAMP_WIDTH_M * scale
         return {"record": {"module_length_m": round(length, 2), "module_diameter_m": round(diameter, 2),
-                           "module_height_m": round(3.0 * scale, 2),
+                           "module_height_m": round(diameter, 2),
                            "airlock_rise_m": round(rise, 2),
                            "ramp": {"run_m": round(run, 2), "width_m": round(ramp_width, 2),
                                     "slope_deg": HABITAT_RAMP_LIMIT_DEG}},
                 "length": length + run, "width": max(diameter, ramp_width), "offset": run / 2}
     if request.kind == "lander":
+        insight = body == "mars" and (Path(__file__).resolve().parents[1] / "assets/nasa/insight_lander.glb").is_file()
+        if insight:
+            footprint = 6.0 * scale
+            return {"record": {"height_m": round(2.25 * scale, 2), "footprint_m": round(footprint, 2),
+                               "deck_span_m": round(1.5 * scale, 2), "deck_height_m": round(1.0 * scale, 2),
+                               "body_height_m": round(0.35 * scale, 2), "leg_footprint_m": round(2.5 * scale, 2),
+                               "legs": 3, "visual_model": "nasa_insight"},
+                    "length": footprint, "width": footprint, "offset": 0.0}
         footprint = 4.5 * scale
         return {"record": {"height_m": round(4.0 * scale, 2), "footprint_m": round(footprint, 2), "legs": 4},
                 "length": footprint, "width": footprint, "offset": 0.0}
@@ -279,7 +288,7 @@ def place_structures(spec: SceneSpec, heights: np.ndarray) -> tuple[list[dict], 
         if target is None:
             notes.append(f"{request.kind.title()} not placed: {extra}.")
             continue
-        dimensions = _dimensions(request, widest_robot)
+        dimensions = _dimensions(request, widest_robot, spec.environment.body)
         length, width, offset = dimensions["length"], dimensions["width"], dimensions["offset"]
         bridge_gap = extra if request.placement == "over_gap" else None
         if bridge_gap:
@@ -480,14 +489,17 @@ def structure_geoms(placements: list[dict]) -> str:
         elif kind == "lander":
             footprint = float(dimensions["footprint_m"])
             leg_count = int(dimensions["legs"])
-            body_length, body_width, body_height = footprint * 0.48, footprint * 0.48, 1.5
-            body_bottom = base_z + float(dimensions["height_m"]) - body_height
+            body_length = body_width = float(dimensions.get("deck_span_m", footprint * 0.48))
+            body_height = float(dimensions.get("body_height_m", 1.5))
+            body_bottom = (base_z + float(dimensions["deck_height_m"]) - body_height / 2
+                           if "deck_height_m" in dimensions else base_z + float(dimensions["height_m"]) - body_height)
             box(f"{prefix}_body", (body_length / 2, body_width / 2, body_height / 2),
                 (x, y, body_bottom + body_height / 2), yaw)
-            inner, outer = footprint * 0.28, footprint / 2 - 0.2
+            inner = body_length * 0.45
+            outer = float(dimensions.get("leg_footprint_m", footprint)) / 2 - 0.2
             pad_half, pad_height = 0.28, 0.12
             for leg in range(leg_count):
-                angle = yaw_rad + math.radians(45 + 90 * leg)
+                angle = yaw_rad + math.radians(45 + 360 * leg / leg_count)
                 inner_xy = (x + inner * math.cos(angle), y + inner * math.sin(angle))
                 pad_xy = (x + outer * math.cos(angle), y + outer * math.sin(angle))
                 pad_ground = base_z
@@ -498,7 +510,16 @@ def structure_geoms(placements: list[dict]) -> str:
                            f'{leg_bottom[0]:.4f} {leg_bottom[1]:.4f} {leg_bottom[2]:.4f}" '
                            'size="0.12" contype="1" conaffinity="1" rgba="0.48 0.49 0.50 1"/>')
                 box(f"{prefix}_pad{leg}", (pad_half, pad_half, pad_height / 2),
-                    (pad_xy[0], pad_xy[1], pad_height / 2), yaw)
+                    (pad_xy[0], pad_xy[1], base_z + pad_height / 2), yaw)
+            if dimensions.get("visual_model") == "nasa_insight":
+                radius = (footprint - body_length) / 4
+                for side in (-1, 1):
+                    across = side * (body_length / 2 + radius)
+                    panel_center = (x + cosine * across, y + sine * across,
+                                    base_z + dimensions["deck_height_m"])
+                    xml.append(f'    <geom name="{prefix}_solar_{side}" type="cylinder" '
+                               f'size="{radius:.4f} 0.025" pos="{panel_center[0]:.4f} {panel_center[1]:.4f} {panel_center[2]:.4f}" '
+                               'contype="1" conaffinity="1" rgba="0.16 0.22 0.28 1"/>')
 
         elif kind == "bridge":
             gap = record["gap"]

@@ -660,7 +660,7 @@
 <script type="module">
 import * as THREE from "three";
 import { OrbitControls } from "/static/vendor/OrbitControls.js";
-import { buildStructureVisuals, setStructureDetails } from "/static/vendor/structures.js";
+import { buildStructureVisuals, setStructureDetails, measureStructureVisuals } from "/static/vendor/structures.js";
 import { buildTerrainHorizon } from "/static/vendor/terrain-horizon.js";
 
 const $ = (id) => document.getElementById(id);
@@ -2583,6 +2583,8 @@ function renderStructureCards(structures) {
       : record.kind === "lander" ? `${dimensions.footprint_m} m deployed span · ${dimensions.height_m} m scene height`
       : `${dimensions.span_m} m span x ${dimensions.deck_width_m} m deck`;
     article.appendChild(size);
+    const measured = document.createElement("p"); measured.id = `structureMeasured${index}`;
+    measured.className = "structure-honesty"; article.appendChild(measured);
     if (record.structural_check) {
       const report = record.structural_check;
       const result = document.createElement("p"); result.textContent = report.summary; article.appendChild(result);
@@ -2645,6 +2647,11 @@ function loadScene(s) {
     visuals.ready.then(() => {
       if (token !== structureSceneToken) return;
       setStructureDetails(structureVisualRoot, detailsMode);
+      measureStructureVisuals(structureVisualRoot).forEach((measurement, index) => {
+        const label = $(`structureMeasured${index}`);
+        const size = measurement.body_size_m || measurement.world_size_m;
+        if (label) label.textContent = `Measured ${measurement.body_size_m ? "body" : "skin"} bounds: ${size.map(value => value.toFixed(2)).join(" x ")} m`;
+      });
       if (!qualityHigh) setQuality(false);
     });
     world.add(trail, trailRibbon.mesh); addStartPads(s); addFollowRing(); addGoalFlags(s);

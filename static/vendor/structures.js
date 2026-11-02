@@ -58,7 +58,7 @@ function habitatSkin(record, group) {
   const shell = metal(0xd8dedb, 0.65, 0.18), dark = metal(0x33474a), alloy = metal(0xa6b8bc);
   const window = metal(0x234f60, 0.12, 0.65), segments = Math.max(3, Math.round(length / 1.2));
   for (let index = 0; index < segments; index++) {
-    const segment = addMesh(group, new THREE.CylinderGeometry(radius, radius, length / segments - 0.035, 40),
+    const segment = addMesh(group, new THREE.CylinderGeometry(radius, radius, length / segments, 40),
       shell, [-length / 2 + (index + 0.5) * length / segments, 0, radius], "habitat_segment");
     segment.rotation.z = Math.PI / 2;
   }
@@ -105,14 +105,18 @@ function habitatSkin(record, group) {
 
 function landerSkin(record, group) {
   const { footprint_m: width, height_m: height } = record.dimensions;
-  const bottom = height - 1.5, alloy = metal(0xb9c4c6), dark = metal(0x303b40), gold = foilMaterial();
-  box(group, [width * 0.48, width * 0.48, 1.5], dark, [0, 0, bottom + 0.75], "lander_body");
+  const deck = record.dimensions.deck_span_m || width * 0.48;
+  const bodyHeight = record.dimensions.body_height_m || 1.5;
+  const bottom = record.dimensions.deck_height_m ? record.dimensions.deck_height_m - bodyHeight / 2 : height - bodyHeight;
+  const alloy = metal(0xb9c4c6), dark = metal(0x303b40), gold = foilMaterial();
+  box(group, [deck, deck, bodyHeight], dark, [0, 0, bottom + bodyHeight / 2], "lander_body");
   for (const side of [-1, 1]) {
-    box(group, [width * 0.44, 0.035, 1.25], gold, [0, side * width * 0.243, bottom + 0.75], "gold_foil_panel");
-    box(group, [0.035, width * 0.44, 1.25], gold, [side * width * 0.243, 0, bottom + 0.75], "gold_foil_panel");
+    box(group, [deck * 0.94, 0.035, bodyHeight * 0.83], gold, [0, side * deck * 0.505, bottom + bodyHeight / 2], "gold_foil_panel");
+    box(group, [0.035, deck * 0.94, bodyHeight * 0.83], gold, [side * deck * 0.505, 0, bottom + bodyHeight / 2], "gold_foil_panel");
   }
   for (let index = 0; index < record.dimensions.legs; index++) {
-    const angle = Math.PI / 4 + index * Math.PI / 2, inner = width * 0.28, outer = width / 2 - 0.2;
+    const angle = Math.PI / 4 + index * Math.PI * 2 / record.dimensions.legs;
+    const inner = deck * 0.45, outer = (record.dimensions.leg_footprint_m || width) / 2 - 0.2;
     const foot = [outer * Math.cos(angle), outer * Math.sin(angle), 0.12];
     const top = [inner * Math.cos(angle), inner * Math.sin(angle), bottom];
     tube(group, top, foot, 0.09, alloy, "lander_leg");
@@ -124,6 +128,12 @@ function landerSkin(record, group) {
     new THREE.MeshStandardMaterial({ color: 0x4c5558, metalness: 0.7, roughness: 0.58, side: THREE.DoubleSide }),
     [0, 0, bottom - height * 0.12], "engine_bell"); bell.rotation.x = Math.PI / 2;
   tube(group, [0, 0, height], [0, 0, height + 0.3], 0.025, alloy, "antenna_mast");
+  if (record.dimensions.visual_model === "nasa_insight") for (const sign of [-1, 1]) {
+    const radius = (width - deck) / 4;
+    const panel = addMesh(group, new THREE.CylinderGeometry(radius, radius, 0.05, 48), metal(0x294351, 0.6, 0.3),
+      [sign * (deck / 2 + radius), 0, record.dimensions.deck_height_m], "lander_solar_panel");
+    panel.rotation.x = Math.PI / 2;
+  }
 }
 
 function bridgeNodes(panels, span, depth) {
@@ -144,8 +154,9 @@ function bridgeSkin(record, group) {
   const geometry = bridgeNodes(panels, span, depth);
   const plates = Math.max(4, Math.ceil(span / 0.5));
   for (let index = 0; index < plates; index++) {
-    box(group, [span / plates - 0.018, width, 0.19], deck,
-      [-span / 2 + (index + 0.5) * span / plates, 0, 0.1], "bridge_deck_plate");
+    const start = -span / 2 + index * span / plates + (index ? 0.009 : 0);
+    const end = -span / 2 + (index + 1) * span / plates - (index < plates - 1 ? 0.009 : 0);
+    box(group, [end - start, width, 0.19], deck, [(start + end) / 2, 0, 0.1], "bridge_deck_plate");
   }
   for (const side of [-1, 1]) {
     const across = side * (width / 2 - 0.06);
@@ -321,9 +332,27 @@ export function buildStructureVisuals(sceneData, { terrainHeight, isCurrent = ()
     } else return;
     const overlay = analysisOverlay(record, group);
     group.userData = { structure: record.kind, skin, overlay }; root.add(group);
-    if (record.kind === "lander" && sceneData.world?.body === "mars") {
+    if (record.kind === "lander" && sceneData.world?.body === "mars" && record.dimensions.visual_model === "nasa_insight") {
       ready.push(insightSkin(record, sceneData, skin, group, terrainHeight, isCurrent, (credit) => onCredit(index, credit)));
     }
   });
   return { root, ready: Promise.all(ready) };
+}
+
+export function measureStructureVisuals(root) {
+  root.updateMatrixWorld(true);
+  return root.children.map((group) => {
+    const skin = group.userData.skin;
+    const bounds = new THREE.Box3().setFromObject(skin);
+    const moduleBounds = new THREE.Box3();
+    skin.traverse((object) => {
+      if (object.name === "habitat_segment" || object.name === "lander_body" || object.name === "bridge_deck_plate") {
+        moduleBounds.expandByObject(object);
+      }
+    });
+    const size = bounds.getSize(new THREE.Vector3()).toArray();
+    return { kind: group.userData.structure, skin: skin.name, world_size_m: size,
+      body_size_m: moduleBounds.isEmpty() ? null : moduleBounds.getSize(new THREE.Vector3()).toArray(),
+      deployed_span_m: skin.userData.deployedSpanM || null };
+  });
 }

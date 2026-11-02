@@ -464,3 +464,26 @@ def test_larger_real_structure_patch_uses_source_metres_and_keeps_preset(monkeyp
         assert any("not stretched or flattened" in note for note in spec.assumptions)
     finally:
         terrain_data.load_structure_patch.cache_clear()
+
+
+def test_physics_dimensions_match_habitat_and_local_insight_profile():
+    import mujoco
+    from pathlib import Path
+    from simgate.backends.mujoco_backend import MuJoCoSimulator
+
+    spec = flat_scene(structures=[TerrainStructure(kind="habitat", placement="near_goal"),
+                                  TerrainStructure(kind="lander", placement="near_start")])
+    spec.environment.body, spec.environment.gravity = "mars", None
+    spec.fill_defaults()
+    build = MuJoCoSimulator().build(spec)
+    model = mujoco.MjModel.from_xml_string(build.code)
+    body = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, "struct0_habitat_body")
+    assert model.geom_size[body][:2] == pytest.approx([2, 3])
+    if (Path(__file__).resolve().parents[1] / "assets/nasa/insight_lander.glb").is_file():
+        lander = build.scene["structures"][1]
+        assert lander["dimensions"]["footprint_m"] == 6
+        assert lander["dimensions"]["deck_height_m"] == 1
+        deck = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, "struct1_lander_body")
+        assert model.geom_size[deck][:2] == pytest.approx([0.75, 0.75])
+        panel = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, "struct1_lander_solar_1")
+        assert model.geom_pos[panel][0] - lander["position"]["x"] + model.geom_size[panel][0] == pytest.approx(3)
