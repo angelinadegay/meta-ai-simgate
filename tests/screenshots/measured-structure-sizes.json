@@ -1,0 +1,47 @@
+{
+  "measurements": [
+    {
+      "kind": "habitat",
+      "skin": "procedural_skin",
+      "world_size_m": [
+        10.760000000521542,
+        4.1099999994039536,
+        4.105999946594238
+      ],
+      "body_size_m": [
+        6.0000000476837165,
+        4,
+        4
+      ],
+      "deployed_span_m": null
+    },
+    {
+      "kind": "bridge",
+      "skin": "procedural_skin",
+      "world_size_m": [
+        3.4587999843557675,
+        1.2000000476837158,
+        0.6800000005960465
+      ],
+      "body_size_m": [
+        3.3999999975136346,
+        1.2000000476837158,
+        0.1899999976158142
+      ],
+      "deployed_span_m": null
+    },
+    {
+      "kind": "lander",
+      "skin": "nasa_insight_skin",
+      "world_size_m": [
+        6,
+        4.332620405205029,
+        2.2275315329929093
+      ],
+      "body_size_m": null,
+      "deployed_span_m": 6
+    }
+  ],
+  "unchanged": true,
+  "credit": "NASA"
+}

@@ -52,10 +52,30 @@ function foilMaterial() {
     color: 0xffffff, metalness: 0.75, roughness: 0.4 });
 }
 
+function habitatShellMaterial() {
+  const canvas = document.createElement("canvas"); canvas.width = canvas.height = 256;
+  const context = canvas.getContext("2d"); context.fillStyle = "#f1f3ed"; context.fillRect(0, 0, 256, 256);
+  for (let x = 0; x < 256; x++) {
+    const lowerHalf = Math.max(0, -Math.cos(x / 256 * Math.PI * 2));
+    context.globalAlpha = lowerHalf * (0.28 + 0.07 * Math.sin(x * 0.37));
+    context.fillStyle = "#aa957b"; context.fillRect(x, 0, 1, 256);
+  }
+  for (let index = 0; index < 120; index++) {
+    const x = (index * 73) % 256, y = (index * 131) % 256;
+    context.globalAlpha = 0.07; context.strokeStyle = "#64716c"; context.lineWidth = 0.5;
+    context.beginPath(); context.moveTo(x, y); context.lineTo(x + 2 + index % 7, y + index % 3); context.stroke();
+  }
+  context.globalAlpha = 1;
+  const texture = new THREE.CanvasTexture(canvas); texture.colorSpace = THREE.SRGBColorSpace;
+  const material = metal(0xd8dedb, 0.72, 0.15); material.map = texture;
+  material.bumpMap = texture; material.bumpScale = 0.003;
+  return material;
+}
+
 function habitatSkin(record, group) {
   const dimensions = record.dimensions, length = dimensions.module_length_m;
   const radius = dimensions.module_diameter_m / 2, rise = dimensions.airlock_rise_m;
-  const shell = metal(0xd8dedb, 0.65, 0.18), dark = metal(0x33474a), alloy = metal(0xa6b8bc);
+  const shell = habitatShellMaterial(), dark = metal(0x33474a), alloy = metal(0xa6b8bc);
   const window = metal(0x234f60, 0.12, 0.65), segments = Math.max(3, Math.round(length / 1.2));
   for (let index = 0; index < segments; index++) {
     const segment = addMesh(group, new THREE.CylinderGeometry(radius, radius, length / segments, 40),
@@ -88,18 +108,37 @@ function habitatSkin(record, group) {
     tube(group, [length / 2 + run * fraction, -width / 2, rise * (1 - fraction) + 0.06],
       [length / 2 + run * fraction, width / 2, rise * (1 - fraction) + 0.06], 0.012, dark, "ramp_tread");
   }
+  for (const sign of [-1, 1]) {
+    const across = sign * (width / 2 - 0.06);
+    tube(group, [length / 2, across, rise + 0.8], [length / 2 + run, across, 0.8],
+      0.035, alloy, "ramp_side_rail");
+    for (let index = 0; index <= 4; index++) {
+      const fraction = index / 4, x = length / 2 + run * fraction, z = rise * (1 - fraction);
+      tube(group, [x, across, z + 0.04], [x, across, z + 0.8], 0.025, alloy, "ramp_rail_post");
+    }
+  }
   const shielding = record.structural_check?.shielding_thickness_m || 0;
   if (shielding > 0) {
-    const geometry = new THREE.SphereGeometry(1, 40, 20, 0, Math.PI * 2, 0, Math.PI / 2);
-    geometry.rotateX(Math.PI / 2);
-    const mound = addMesh(group, geometry, metal(0xa58c75, 1, 0), [-length * 0.12, 0, radius * 0.45], "regolith_shielding");
-    mound.scale.set(length * 0.48, radius + shielding, radius * 1.65 + shielding);
-    const positions = geometry.attributes.position;
-    for (let index = 0; index < positions.count; index++) {
-      const factor = 1 + 0.025 * Math.sin(index * 17.13);
-      positions.setXYZ(index, positions.getX(index) * factor, positions.getY(index) * factor, positions.getZ(index) * factor);
+    const positions = [], indices = [], colours = [], alongSteps = 24, acrossSteps = 24;
+    for (let along = 0; along <= alongSteps; along++) for (let across = 0; across <= acrossSteps; across++) {
+      const fraction = along / alongSteps, angle = Math.PI * (0.18 + 0.64 * across / acrossSteps);
+      const taper = Math.sin(Math.PI * fraction) ** 0.35;
+      const grain = 0.025 * Math.sin(along * 17.13 + across * 5.23);
+      const outerRadius = radius + shielding * taper + grain;
+      positions.push(-length / 2 + 0.2 + fraction * (length - 1), outerRadius * Math.cos(angle),
+        radius + outerRadius * Math.sin(angle));
+      const tint = 0.82 + 0.12 * Math.sin(along * 3.2 + across * 9.1);
+      colours.push(tint, tint, tint);
+      if (along < alongSteps && across < acrossSteps) {
+        const corner = along * (acrossSteps + 1) + across;
+        indices.push(corner, corner + 1, corner + acrossSteps + 1,
+          corner + 1, corner + acrossSteps + 2, corner + acrossSteps + 1);
+      }
     }
-    geometry.computeVertexNormals();
+    const geometry = new THREE.BufferGeometry(); geometry.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+    geometry.setAttribute("color", new THREE.Float32BufferAttribute(colours, 3)); geometry.setIndex(indices); geometry.computeVertexNormals();
+    const material = metal(0xa58c75, 1, 0); material.vertexColors = true; material.side = THREE.DoubleSide;
+    addMesh(group, geometry, material, [0, 0, 0], "regolith_shielding");
   }
 }
 

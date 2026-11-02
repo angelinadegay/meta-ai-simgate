@@ -155,6 +155,121 @@ steps in the event tree.
 - Natural period, resonance with the shaking, roof sway, story drift and a damage estimate based on drift.
 - The 3D viewer exaggerates the sway so it's visible and colors the columns by drift.
 
+#### Standalone truss statics
+
+`simgate.structural.truss` provides a linear-elastic 2D Warren truss solver used by terrain bridge screening,
+also available independently. Specify span/depth in metres, a panel count, and chord/web sections from its small
+nominal SHS steel catalogue. Bottom nodes are numbered `1..panels+1`; upper nodes follow left to right at
+half-panel offsets. Loads are `(Fx, Fy)` in newtons, with positive y upward. Gravity acts downward and
+defaults to 9.81 m/s²; use zero to omit self-weight.
+
+```python
+from simgate.structural.truss import solve_truss
+
+result = solve_truss(span_m=6, depth_m=2, panels=3,
+                     point_loads={6: (0, -10_000)}, gravity_m_s2=3.71)
+print(result.member_forces_n, result.member_stresses_pa)
+print(result.max_deflection_m)
+```
+
+Results also include geometry, nodal loads/displacements, support reactions and total steel mass. Axial
+force/stress is positive in tension. This pin-jointed model excludes yielding, buckling, bending and
+connection effects. OpenSees state is process-global: run models sequentially or in separate processes.
+
+#### Bridge screening
+
+Each placed terrain bridge gets a `structural_check` report and a pass/fail checker result. A separate steel
+Warren truss uses the bridge span, depth span/8 and approximately 1.5 m panels. The heaviest compiled robot's
+full weight is stepped across every lower-chord panel point, including supports, with truss self-weight in
+the world's gravity. Small/medium/large bridges use SHS40x40x3 / SHS60x60x4 / SHS80x80x4 respectively.
+
+The report envelopes S235 member stress against yield/1.5, compression against pin-ended Euler buckling
+(`K=1`), and downward nodal sag against span/360. It records utilisation percent, the governing member
+(or deflected joint for sag), and robot position. `simgate.structural.bridge.check_bridge` also exposes this
+calculation independently, with an explicit section choice for sizing comparisons.
+
+The honesty line states the actual member count and that the visual model is not analysed. This is a
+screening idealisation, not certification: one truss carries the full robot load; SHS properties ignore corner
+radii; member buckling assumes restraint at every panel point in both planes. Deck mass, dynamics, impact,
+fatigue, connections and the lateral bracing system are not analysed. Structural failures block validation;
+the visual MuJoCo bridge remains rigid and does not simulate structural failure.
+
+#### Habitat and lander screening
+
+Placed habitats and landers also include `structural_check` metadata, calculated with OpenSees aluminium
+frames. The standalone functions are `check_habitat` and `check_lander` in `simgate.structural.frames`.
+Reports give pass/fail, utilisation, governing member/joint, loads, forces and displacements, plus an honesty
+line stating that the visual model is not analysed. Nominal 6061-T6 SHS uses E=69 GPa, density 2700 kg/m³
+and assumed yield 240 MPa with allowable stress yield/1.5; stresses combine axial load and end bending.
+
+A habitat uses one fixed-base portal rib as an arch approximation, SHS150x150x8, and tributary strips no
+longer than 1.5 m. The module's 2 t of equipment and 0.5 m of roof shielding at 1600 kg/m³ are shared by
+tributary length, with frame self-weight in local gravity. Shielding covers projected roof area; equipment
+is conservatively assigned to the roof rib. Deflection is limited to diameter/360. Shield thickness and
+equipment mass are explicit standalone function inputs. Pressure-shell behaviour, skin mass, joints,
+buckling, lateral stability and foundations are not checked.
+
+A lander uses two opposite SHS100x100x6 legs with pinned feet and a rigidly connected body beam. This pair
+carries half an explicitly assumed 2 t body mass, plus its own frame weight. Checks cover combined leg
+stress and Euler buckling with K=1 and leg-length restraint in both planes. The normal local-gravity case
+is separate from a clearly labelled **landing what-if: 3 × local gravity (static equivalent)**. This is a
+total 3× multiplier, not 3 Earth g, not an additional 3 g, and not a touchdown simulation. Body strength,
+propellant, impact dynamics, joints, terrain compliance and the lateral bracing system are not analysed.
+
+Normal habitat/lander structural failures block validation. The separate landing what-if is advisory and
+does not block a normal-gravity run; its pass/fail remains visible. The lander's overall metadata envelopes
+both cases. These are screening idealisations, not design certification; MuJoCo structures remain rigid.
+
+#### Structure visuals
+
+The browser replaces structure display meshes with procedural segmented habitats, airlocks, ramps, windows,
+shielding mounds, foil-clad landers and plated truss bridges. Dimensions and transforms come from scene
+records; these skins never alter collision geometry, masses, analysis inputs or simulation summaries.
+Structure cards have a View control. Show details reveals separate analysed frames coloured from green
+through amber to red using reported member utilisation. Unreported members remain neutral: bridge reports
+currently supply governing members only. Lander colours use the normal-gravity case, not the landing what-if.
+
+If `assets/nasa/insight_lander.glb` exists locally, Mars landers use that NASA InSight deployed model instead.
+The GLB stays uncommitted under `assets/nasa/`; the app serves only that optional file and credits **NASA** on
+the corresponding structure card after a successful load. Moon landers and failed/missing GLB loads retain
+the procedural model without NASA credit. The Three.js r160 GLTF loader is vendored for offline use.
+
+InSight is scaled uniformly so its deployed span matches the scene's lander footprint. Its source deck-to-
+solar-panel proportions are preserved (approximately 1.5 m deck versus 6 m deployed span at reference size),
+rather than stretching it to the generic collision body's height. Three footpad vertex clusters determine
+terrain contact and orientation; remote deployed instruments do not determine the lander's elevation. The
+visual and collision shapes intentionally remain different; no NASA mesh enters MuJoCo or OpenSees.
+
+#### Mars base layout and verification
+
+Every rotated structure footprint has a 1 m setback from the physics-terrain edge. Compact generated bases
+expand to fit; real bases select a larger measured source-GeoTIFF patch without stretching or flattening
+the elevations, and record the patch change in scene assumptions. The Jezero preset identity is retained.
+The horizon is a separate lower-detail browser mesh, matching edge heights and slopes, reusing the terrain
+material and fading into haze. It does not enlarge the physics area or change `left_terrain` handling.
+
+Medium habitat bodies are 6 m long and 4 m in diameter. When the local NASA InSight asset is present, Mars
+lander scene data specifies a 6 m deployed span, 1.5 m deck width and 1 m deck elevation; the physical deck,
+legs and simplified solar-panel colliders use those same dimensions. The NASA GLB is uniformly scaled,
+not stretched to the generic lander height. Other worlds retain the procedural lander profile. Bridge spans
+come from measured trench openings and bearings, with room for the robot's outside wheel envelope and rails.
+Structure cards display measured visual bounds; the browser test writes `tests/screenshots/measured-structure-sizes.json`.
+
+The exact prompt "Build a Mars base on Jezero: a habitat, a lander, and a bridge over a trench. Can the rover
+drive from the lander to the habitat?" selects real Jezero, all three structures, a lander-relative start and
+the airlock at the top of the ramp. The label is "Goal: habitat airlock". Trench and bridge share the resolved
+route and final terrain datum. The initial three-quarter camera frames structures, start and goal; run start
+eases into follow mode, and orbit interaction cancels automatic following.
+
+Habitats include segmented shells, rib rings, windows, a framed airlock, ramp rails/posts and a roof-following
+regolith mound when shielded. Dust and wear are generated in the browser material only.
+
+Install optional browser-test tools with `pip install -r requirements-dev.txt`. Run
+`python -m pytest tests/test_mars_base_browser.py tests/test_structure_visuals.py tests/test_terrain_structures.py -q`.
+The headless Edge tests produce desktop/mobile captures in `tests/screenshots/mars-base/`, check canvas pixels,
+orbit interaction and framing, and save a verification report. The real Jezero crop check needs its local
+preset and access to the recorded source GeoTIFF. NASA credit appears only after a successful local GLB load.
+
 ### 4. Real terrain from NASA Mars data
 
 - `scripts/hirise_to_simgate.py` converts NASA HiRISE elevation models into SimGate terrain. These are about
