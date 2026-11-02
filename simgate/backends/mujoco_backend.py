@@ -92,6 +92,233 @@ def make_heights(spec: SceneSpec, start_xy: tuple[float, float] | None = None) -
     return H, zmax
 
 
+def find_flattest_start(
+    H: np.ndarray,
+    size_m: float,
+    requested: tuple[float, float],
+    search_radius_m: float,
+    footprint_radius_m: float,
+    avoid: list[tuple[tuple[float, float], float]] | None = None,
+) -> tuple[tuple[float, float], float, float]:
+    """Find the safest flat footprint on this heightfield within a bounded distance.
+
+    The maximum slope under the footprint is minimized first, followed by mean footprint slope and distance from
+    the requested start. Returns the chosen point and the before/after maximum footprint slopes in degrees.
+    """
+    cell = size_m / (GRID - 1)
+    dy, dx = np.gradient(H, cell, cell)
+    slope = np.degrees(np.arctan(np.hypot(dx, dy)))
+    half = size_m / 2
+    safe_edge = half * EDGE_MARGIN
+    requested_col = int(round((requested[0] + half) / cell))
+    requested_row = int(round((requested[1] + half) / cell))
+    footprint_cells = max(0, int(math.ceil(footprint_radius_m / cell)))
+    offsets = [(row, col) for row in range(-footprint_cells, footprint_cells + 1)
+               for col in range(-footprint_cells, footprint_cells + 1)
+               if (row * cell) ** 2 + (col * cell) ** 2 <= footprint_radius_m ** 2 + 1e-9]
+    if not offsets:
+        offsets = [(0, 0)]
+
+    def score(row: int, col: int) -> tuple[float, float] | None:
+        rows = [row + dr for dr, _ in offsets]
+        cols = [col + dc for _, dc in offsets]
+        if min(rows) < 0 or max(rows) >= GRID or min(cols) < 0 or max(cols) >= GRID:
+            return None
+        x, y = -half + col * cell, -half + row * cell
+        if abs(x) + footprint_radius_m > safe_edge or abs(y) + footprint_radius_m > safe_edge:
+            return None
+        if any(math.hypot(x - other[0], y - other[1]) < footprint_radius_m + other_radius + 0.1
+               for other, other_radius in (avoid or [])):
+            return None
+        values = slope[rows, cols]
+        return float(values.max()), float(values.mean())
+
+    before = score(requested_row, requested_col)
+    if before is None:
+        before = (float("inf"), float("inf"))
+    span = int(math.ceil(search_radius_m / cell))
+    row_start, row_end = max(0, requested_row - span), min(GRID, requested_row + span + 1)
+    col_start, col_end = max(0, requested_col - span), min(GRID, requested_col + span + 1)
+    best: tuple[tuple[float, float, float], tuple[float, float], tuple[int, int]] | None = None
+    for row in range(row_start, row_end):
+        for col in range(col_start, col_end):
+            x, y = -half + col * cell, -half + row * cell
+            distance = math.hypot(x - requested[0], y - requested[1])
+            if distance > search_radius_m + 1e-9:
+                continue
+            candidate_score = score(row, col)
+            if candidate_score is None:
+                continue
+            ranked = (candidate_score[0], candidate_score[1], distance)
+            if best is None or ranked < best[0]:
+                best = (ranked, candidate_score, (row, col))
+    if best is None:
+        return requested, before[0], before[0]
+    _, after, (row, col) = best
+    chosen = (-half + col * cell, -half + row * cell)
+    distance = math.hypot(chosen[0] - requested[0], chosen[1] - requested[1])
+    if distance < cell / 2 or after[0] >= before[0] - 0.1:
+        return requested, before[0], before[0]
+    return (round(chosen[0], 2), round(chosen[1], 2)), round(before[0], 1), round(after[0], 1)
+
+
+def auto_flatter_start(spec: SceneSpec, robot, requested: tuple[float, float], H: np.ndarray,
+                       search_radius_m: float = 5.0,
+                       avoid: list[tuple[tuple[float, float], float]] | None = None
+                       ) -> tuple[tuple[float, float], str | None]:
+    """Move a legged or library robot's implicit/place start to flatter terrain when a better spot is nearby."""
+    terrain = spec.terrain
+    rough = bool(terrain and (terrain.kind == "real" or
+                              (terrain.kind in {"hills", "rocky", "craters", "slope"} and terrain.roughness > 0)))
+    if spec.domain != "robot_terrain" or robot.kind not in {"walker", "library"} or not rough:
+        return requested, None
+    chosen, before, after = find_flattest_start(H, terrain.size_m, requested, search_radius_m,
+                                                 footprint_radius(robot), avoid)
+    if chosen == requested:
+        return requested, None
+    distance = math.dist(requested, chosen)
+    note = (f"Moved the start {distance:.1f} m to flatter ground: {after:g}° instead of {before:g}° "
+            "across the robot's footprint.")
+    if note not in spec.assumptions:
+        spec.assumptions.append(note)
+    return chosen, note
+
+
+def _refresh_default_time_limit(spec: SceneSpec) -> None:
+    if spec.time_limit_given:
+        return
+    from ..timing import time_limit
+
+    if (resolved := time_limit(spec)) is None:
+        return
+    spec.duration_s, note = resolved
+    spec.assumptions = [assumption for assumption in spec.assumptions
+                        if not (assumption.startswith("Gave ") and "to reach the goal:" in assumption)]
+    if note not in spec.assumptions:
+        spec.assumptions.append(note)
+
+
+def move_start_to_flatter(spec: SceneSpec, search_radius_m: float = 15.0) -> str | None:
+    """Move a single legged/library robot's start within ``search_radius_m`` and record why."""
+    if spec.domain != "robot_terrain" or len(spec.robots) != 1:
+        return None
+    entry = spec.robots[0]
+    terrain = spec.terrain
+    rough = bool(terrain and (terrain.kind == "real" or
+                              (terrain.kind in {"hills", "rocky", "craters", "slope"} and terrain.roughness > 0)))
+    if entry.robot.kind not in {"walker", "library"} or not rough:
+        return None
+    original_heights, _ = make_heights(spec)
+    requested = resolve_mission(spec, original_heights)["start"]
+    heights, _ = make_heights(spec, requested)
+    chosen, note = auto_flatter_start(spec, entry.robot, requested, heights, search_radius_m)
+    if note is None:
+        return None
+    entry.start_xy, entry.start_place = list(chosen), None
+    spec.mission = spec.mission or entry.mission()
+    spec.mission.start_xy, spec.mission.start_place = list(chosen), None
+    spec.fill_defaults()
+    if note not in spec.assumptions:
+        spec.assumptions.append(note)
+    return note
+
+
+def find_gentler_route(spec: SceneSpec, search_radius_m: float = 15.0) -> tuple[tuple[float, float], tuple[float, float], str] | None:
+    """Translate a single-robot route to flatter ground without changing its direction or length."""
+    if spec.domain != "robot_terrain" or len(spec.robots) != 1:
+        return None
+    entry = spec.robots[0]
+    terrain = spec.terrain
+    if terrain is None:
+        return None
+    base_heights, _ = make_heights(spec)
+    mission = resolve_mission(spec, base_heights)
+    start = np.asarray(mission["start"], dtype=float)
+    if mission["goal"] is None:
+        heading = math.radians(mission["heading_deg"])
+        goal = start + np.array([math.cos(heading), math.sin(heading)]) * 0.7 * terrain.size_m
+    else:
+        goal = np.asarray(mission["goal"], dtype=float)
+    heights, _ = make_heights(spec, tuple(start))
+    cell = terrain.size_m / (GRID - 1)
+    dy, dx = np.gradient(heights, cell, cell)
+    slopes = np.degrees(np.arctan(np.hypot(dx, dy)))
+    footprint = footprint_radius(entry.robot)
+    half, safe_edge = terrain.size_m / 2, terrain.size_m / 2 * EDGE_MARGIN
+
+    def at(point: np.ndarray) -> tuple[float, float] | None:
+        x, y = float(point[0]), float(point[1])
+        if abs(x) + footprint > safe_edge or abs(y) + footprint > safe_edge:
+            return None
+        col = int(round((x + half) / cell)); row = int(round((y + half) / cell))
+        radius_cells = max(0, int(math.ceil(footprint / cell)))
+        r0, r1 = row - radius_cells, row + radius_cells + 1
+        c0, c1 = col - radius_cells, col + radius_cells + 1
+        if r0 < 0 or c0 < 0 or r1 > GRID or c1 > GRID:
+            return None
+        rows, cols = np.ogrid[r0:r1, c0:c1]
+        mask = ((rows - row) * cell) ** 2 + ((cols - col) * cell) ** 2 <= footprint ** 2 + 1e-9
+        values = slopes[r0:r1, c0:c1][mask]
+        return (float(values.max()), float(values.mean())) if values.size else None
+
+    def route_score(offset: np.ndarray) -> tuple[float, float] | None:
+        moved_start, moved_goal = start + offset, goal + offset
+        start_score, goal_score = at(moved_start), at(moved_goal)
+        if start_score is None or goal_score is None:
+            return None
+        samples = np.linspace(0.0, 1.0, 31)
+        line = moved_start[None, :] + samples[:, None] * (moved_goal - moved_start)[None, :]
+        cols = np.clip(np.rint((line[:, 0] + half) / cell).astype(int), 0, GRID - 1)
+        rows = np.clip(np.rint((line[:, 1] + half) / cell).astype(int), 0, GRID - 1)
+        path_slopes = slopes[rows, cols]
+        maximum = max(float(path_slopes.max()), start_score[0], goal_score[0])
+        mean = float((path_slopes.mean() + start_score[1] + goal_score[1]) / 3)
+        return maximum, mean
+
+    current_score = route_score(np.zeros(2))
+    if current_score is None:
+        return None
+    stride = max(1, int(round(0.5 / cell)))
+    candidates = []
+    for row in range(0, GRID, stride):
+        for col in range(0, GRID, stride):
+            offset = np.array([-half + col * cell, -half + row * cell]) - start
+            distance = float(np.linalg.norm(offset))
+            if distance > search_radius_m or distance < cell:
+                continue
+            score = route_score(offset)
+            if score is not None:
+                candidates.append((score[1], score[0], distance, offset))
+    if not candidates:
+        return None
+    best = min(candidates, key=lambda item: (item[0], item[1], item[2]))
+    if best[0] >= current_score[1] - 0.5:
+        return None
+    moved_start, moved_goal = start + best[3], goal + best[3]
+    note = (f"Moved the start and goal {best[2]:.1f} m to a gentler route while keeping the same direction and "
+            f"distance: average slope {best[0]:.1f}° instead of {current_score[1]:.1f}°.")
+    return (tuple(round(float(v), 2) for v in moved_start),
+            tuple(round(float(v), 2) for v in moved_goal), note)
+
+
+def apply_gentler_route(spec: SceneSpec, search_radius_m: float = 15.0) -> str | None:
+    """Apply a flatter parallel route to a single robot scene and preserve its travel vector."""
+    result = find_gentler_route(spec, search_radius_m)
+    if result is None:
+        return None
+    start, goal, note = result
+    entry = spec.robots[0]
+    entry.start_xy, entry.start_place = list(start), None
+    entry.goal_xy, entry.goal_place = list(goal), None
+    spec.mission = Mission(start_xy=list(start), goal_xy=list(goal), goal_radius_m=entry.goal_radius_m)
+    if note not in spec.assumptions:
+        spec.assumptions.append(note)
+    spec.fill_defaults()
+    _refresh_default_time_limit(spec)
+    _refresh_default_time_limit(spec)
+    return note
+
+
 def height_at(H: np.ndarray, size_m: float, x: float, y: float, radius_m: float = 0.45) -> float:
     """Highest ground within `radius_m` of (x, y): the robot spawns just above its own footprint."""
     half, cell = size_m / 2, size_m / (GRID - 1)
@@ -810,7 +1037,7 @@ class MuJoCoSimulator(Simulator):
         direction = target - np.asarray(base_start)
         direction /= np.linalg.norm(direction) or 1.0
         normal = np.array([-direction[1], direction[0]])
-        starts = []
+        requested_starts = []
         for index, entry in enumerate(spec.robots):
             if entry.start_xy is not None:
                 start = tuple(entry.start_xy)
@@ -819,7 +1046,23 @@ class MuJoCoSimulator(Simulator):
             else:
                 offset = (index - (count - 1) / 2) * lane_spacing
                 start = tuple(np.asarray(base_start) + normal * offset)
+            requested_starts.append(start)
+
+        starts = []
+        moved_start = False
+        for index, (entry, requested_start) in enumerate(zip(spec.robots, requested_starts)):
+            avoid = [(starts[other_index], footprint_radius(spec.robots[other_index].robot))
+                     for other_index in range(len(starts))]
+            avoid.extend((requested_starts[other_index], footprint_radius(spec.robots[other_index].robot))
+                         for other_index in range(index + 1, len(spec.robots)))
+            start = requested_start
+            if entry.start_xy is None:
+                start, note = auto_flatter_start(spec, entry.robot, start, initial_heights, avoid=avoid)
+                entry.start_xy, entry.start_place = list(start), None
+                moved_start = moved_start or note is not None
             starts.append(start)
+        if moved_start:
+            _refresh_default_time_limit(spec)
         H, zmax = make_heights(spec, starts[0])
         self.missions = {}
         self.robot_entries = {}
@@ -933,6 +1176,17 @@ class MuJoCoSimulator(Simulator):
         t, env = spec.terrain, spec.environment
         H, zmax = make_heights(spec)
         mission = resolve_mission(spec, H)
+        if spec.mission is None or spec.mission.start_xy is None:
+            H, zmax = make_heights(spec, mission["start"])
+            start, _ = auto_flatter_start(spec, spec.robot, mission["start"], H)
+            if start != mission["start"]:
+                spec.mission = spec.mission or Mission()
+                spec.mission.start_xy, spec.mission.start_place = list(start), None
+                if spec.robots:
+                    spec.robots[0].start_xy, spec.robots[0].start_place = list(start), None
+                H, zmax = make_heights(spec, start)
+                mission = resolve_mission(spec, H)
+                _refresh_default_time_limit(spec)
         if mission["start"] != default_start(t.size_m):        # smooth the landing spot where the robot really starts
             H, zmax = make_heights(spec, mission["start"])
         self.mission = mission
@@ -1390,12 +1644,21 @@ class MuJoCoSimulator(Simulator):
                 and tilt_peak < FALL_TILT_DEG
                 and height_delta <= 0.1 * robot_card.standing_height_m
             )
+            start_slope_note = ""
+            mission_data = build.scene.get("mission") or {}
+            if mission_data.get("start") is not None:
+                probe = TerrainProbe(model)
+                if probe.ok:
+                    heading_rad = math.radians(mission_data.get("heading_deg", 0.0))
+                    heading = np.array([math.cos(heading_rad), math.sin(heading_rad)])
+                    start_slope = probe.describe(*mission_data["start"], heading)["slope_deg"]
+                    start_slope_note = f" Starting footprint ground slope {start_slope:.1f}°."
             checks.append(
                 Check(
                     "Library robot stands for 1 s at zero command",
                     stands,
                     f"Peak tilt {tilt_peak:.1f}°, pelvis height changed {height_delta:.3f} m "
-                    f"(limit {0.1 * robot_card.standing_height_m:.3f} m).",
+                    f"(limit {0.1 * robot_card.standing_height_m:.3f} m).{start_slope_note}",
                 )
             )
         else:

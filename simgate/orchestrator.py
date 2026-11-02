@@ -3,6 +3,7 @@
 Every step emits events, so the browser can show the agents working live.
 """
 import asyncio
+import re
 import uuid
 from typing import Awaitable, Callable
 
@@ -45,7 +46,11 @@ class Session:
 
     async def _handle(self, text: str) -> None:
         try:
-            if (self.spec is not None and self.spec.domain == "robot_terrain"
+            if self.spec is not None and re.search(r"\bstart on flatter ground\b", text, re.I):
+                await self._start_on_flatter_ground()
+            elif self.spec is not None and re.search(r"\bfind a gentler route\b", text, re.I):
+                await self._find_a_gentler_route()
+            elif (self.spec is not None and self.spec.domain == "robot_terrain"
                     and agents.is_stress_repeat(text)):   # "repeat ×3" is a repeated stress test, not a rerun
                 await self.run_stress(text)
             elif self.build is not None and agents.is_run_anyway(text):
@@ -445,8 +450,42 @@ class Session:
 
         self.checks = checks
         self.awaiting_approval = not blocking_failures(checks)
-        await self.emit({"type": "question", "message": "Does this look right? Say \"run\" to start, or tell me what to change.",
+        blocked = blocking_failures(checks)
+        guidance = next_actions("checks" if blocked else "scene", {
+            "kind": "check_failed" if blocked else "ready", "checks": [check.__dict__ for check in checks],
+        }, scene_facts(spec, {}), spec)
+        await self.emit({"type": "question", "message": guidance["reason"], "actions": guidance["actions"],
                          "stress_test_available": spec.domain == "robot_terrain"})
+
+    async def _start_on_flatter_ground(self) -> None:
+        if self.spec is None or self.spec.domain != "robot_terrain":
+            await self.emit({"type": "error", "message": "Start on flatter ground needs a robot scene."})
+            return
+        from .backends.mujoco_backend import move_start_to_flatter
+
+        spec = self.spec.model_copy(deep=True)
+        note = move_start_to_flatter(spec, search_radius_m=15.0)
+        if note is None:
+            await self.emit({"type": "explanation", "message": "No flatter starting spot was found within 15 m; the start was left unchanged."})
+            return
+        await self.agent("Director", "working", "Looking for flatter ground near the start…")
+        await self.build_and_check(spec)
+        await self.agent("Director", "done", note)
+
+    async def _find_a_gentler_route(self) -> None:
+        if self.spec is None or self.spec.domain != "robot_terrain":
+            await self.emit({"type": "error", "message": "Finding a gentler route needs a robot scene."})
+            return
+        from .backends.mujoco_backend import apply_gentler_route
+
+        spec = self.spec.model_copy(deep=True)
+        note = apply_gentler_route(spec)
+        if note is None:
+            await self.emit({"type": "explanation", "message": "I couldn't find a gentler parallel route on this terrain; the world was left unchanged."})
+            return
+        await self.agent("Director", "working", "Finding flatter start and goal locations along the same route…")
+        await self.build_and_check(spec)
+        await self.agent("Director", "done", note)
 
     async def restore_scene(self, scene_data: dict) -> None:
         """Rebuild a locally saved, validated scene without planning a new one."""

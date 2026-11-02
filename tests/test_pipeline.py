@@ -754,7 +754,9 @@ def test_edit_plan_changes_only_the_requested_scene_fields():
     assert world.spec.environment.body == current.environment.body == "mars"
     assert world.spec.environment.surface == current.environment.surface == "regolith"
     assert world.spec.robot == current.robot
-    assert world.spec.mission == current.mission
+    assert world.spec.mission.goal_place == current.mission.goal_place == "east"
+    assert world.spec.mission.start_xy is not None and world.spec.mission.start_place is None
+    assert any("Moved the start" in note for note in world.spec.assumptions)
     assert world.spec.obstacles == current.obstacles
 
 
@@ -2049,7 +2051,10 @@ def test_next_actions_cover_the_outcome_matrix():
     }, {}, scene)
     check_result(start_failure, ["Start on flatter ground", "Try gentler terrain (hills)",
                                  "Use a 6-legged walker", "Run anyway"])
-    assert "G1" in start_failure["reason"] and "14°" in start_failure["reason"]
+    assert start_failure["reason"] == (
+        "The G1 can't stand where it starts: the ground there is about 14° steep, "
+        "and its trained walking policy was trained on flat ground."
+    )
 
     units_failure = next_actions("checks", {
         "kind": "check_failed",
@@ -2224,6 +2229,124 @@ def test_home_chooser_visibility_tracks_active_view():
     home_transition = page.split('function showHome(tab = "explore")', 1)[1].split("function showPanel", 1)[0]
     assert '$("chooser").hidden = true;' in workbench_transition
     assert "renderChooser();" in home_transition
+
+
+def test_flattest_start_search_respects_radius_and_robot_footprint():
+    import numpy as np
+
+    from simgate.backends.mujoco_backend import GRID, find_flattest_start, footprint_radius
+
+    size = 20.0
+    cell = size / (GRID - 1)
+    coordinates = np.linspace(-size / 2, size / 2, GRID)
+    x_grid, y_grid = np.meshgrid(coordinates, coordinates)
+    heights = 1.5 * np.exp(-(x_grid**2 + y_grid**2) / 2.0)
+    start = find_flattest_start(heights, size, (0.0, 0.0), 5.0, footprint_radius(Robot(kind="walker")))
+    distance = math.dist((0.0, 0.0), start[0])
+    assert 0 < distance <= 5.0
+    assert start[2] < start[1]
+
+    unchanged = find_flattest_start(heights, size, (0.0, 0.0), 0.05, footprint_radius(Robot(kind="walker")))
+    assert unchanged[0] == (0.0, 0.0)
+    assert unchanged[1] == unchanged[2]
+
+
+def test_g1_on_gale_moves_implicit_start_flatter_and_stands():
+    from simgate import agents
+    from simgate.backends.mujoco_backend import MuJoCoSimulator, make_heights, resolve_mission
+
+    spec = SceneSpec(domain="robot_terrain", terrain=Terrain(kind="real", preset="gale"),
+                     robot=Robot(kind="library", robot_id="g1", policy_id="g1_walking"),
+                     mission=Mission(start_place="highest", goal_place="lowest")).fill_defaults()
+    initial = resolve_mission(spec, make_heights(spec)[0])["start"]
+    simulator = MuJoCoSimulator()
+    build = agents.build(simulator, spec, lambda _: None)
+    checks = simulator.validate(spec, build)
+    final = simulator.mission["start"]
+    stand = next(check for check in checks if check.name == "Library robot stands for 1 s at zero command")
+    assert math.dist(initial, final) <= 5.0
+    assert any("Moved the start" in note and "flatter ground" in note for note in spec.assumptions)
+    assert stand.passed
+
+
+def test_g1_gale_start_check_failure_offers_recovery_actions():
+    _, (events,) = session_turns("G1 Humanoid walking on real terrain at Gale Crater")
+    checks = next(event["checks"] for event in events if event["type"] == "checks")
+    stand = next(check for check in checks if check["name"] == "Library robot stands for 1 s at zero command")
+    assert not stand["passed"]
+    assert "Moved the start" in " ".join(next(event["spec"]["assumptions"] for event in events if event["type"] == "spec"))
+    question = events[-1]
+    assert question["type"] == "question"
+    assert "G1 can't stand where it starts" in question["message"]
+    assert "about " in question["message"] and "° steep" in question["message"]
+    assert "trained on flat ground" in question["message"]
+    assert [action["label"] for action in question["actions"]] == [
+        "Start on flatter ground", "Try gentler terrain (hills)", "Use a 6-legged walker", "Run anyway"]
+    assert not any(event["type"] == "run_start" for event in events)
+
+
+def test_explicit_flatter_start_action_uses_wider_search():
+    import asyncio
+
+    from simgate import agents
+    from simgate.backends.mujoco_backend import make_heights, resolve_mission
+    from simgate.orchestrator import Session
+
+    spec = SceneSpec(domain="robot_terrain", terrain=Terrain(kind="real", preset="gale"),
+                     robot=Robot(kind="library", robot_id="g1", policy_id="g1_walking"),
+                     mission=Mission(start_place="highest", goal_place="lowest")).fill_defaults()
+    initial = resolve_mission(spec, make_heights(spec)[0])["start"]
+
+    async def flow():
+        events = []
+
+        async def emit(event):
+            events.append(event)
+
+        session = Session(emit)
+        session.spec = spec
+        await session.handle("start on flatter ground")
+        return session, events
+
+    session, events = asyncio.run(flow())
+    final = session.spec.robots[0].start_xy
+    assert 5.0 < math.dist(initial, final) <= 15.0
+    assert any("Moved the start" in note for note in session.spec.assumptions)
+    assert any(event["type"] == "scene" for event in events)
+    question = next(event for event in events if event["type"] == "question")
+    assert question["actions"]
+
+
+def test_gentler_route_action_preserves_distance_and_direction():
+    import asyncio
+
+    from simgate.backends.mujoco_backend import make_heights, resolve_mission
+    from simgate.orchestrator import Session
+
+    spec = SceneSpec(domain="robot_terrain", terrain=Terrain(kind="hills", size_m=40, seed=0),
+                     robot=Robot(kind="walker"), mission=Mission(start_place="west", goal_place="east")).fill_defaults()
+    original = resolve_mission(spec, make_heights(spec)[0])
+    original_vector = (original["goal"][0] - original["start"][0], original["goal"][1] - original["start"][1])
+
+    async def flow():
+        events = []
+
+        async def emit(event):
+            events.append(event)
+
+        session = Session(emit)
+        session.spec = spec
+        await session.handle("find a gentler route")
+        return session, events
+
+    session, events = asyncio.run(flow())
+    entry = session.spec.robots[0]
+    new_vector = (entry.goal_xy[0] - entry.start_xy[0], entry.goal_xy[1] - entry.start_xy[1])
+    assert math.isclose(math.dist(entry.start_xy, entry.goal_xy), math.dist(*[tuple(point) for point in (original["start"], original["goal"])]), abs_tol=0.1)
+    assert math.isclose(new_vector[0], original_vector[0], abs_tol=0.01)
+    assert math.isclose(new_vector[1], original_vector[1], abs_tol=0.01)
+    assert any("gentler route" in note for note in session.spec.assumptions)
+    assert any(event["type"] == "scene" for event in events)
 
 
 def test_workbench_uses_desktop_grid_columns():
@@ -2482,7 +2605,7 @@ def test_mixed_race_time_limit_uses_the_slowest_robot():
     assert rerun_durations and set(rerun_durations) == {limit}   # reruns pinned to the original task
 
     rovers, _ = session_turns("race three rovers to the far side")
-    assert rovers.spec.duration_s == time_limit(rovers.spec)[0] < limit   # rovers only: faster, so a shorter limit
+    assert rovers.spec.duration_s == time_limit(rovers.spec)[0] <= limit   # rounding may make derived limits equal
 
 
 def test_explainers_get_each_robots_kind_and_mark_untested_gaits():

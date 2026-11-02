@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from .spec import SceneSpec
@@ -100,11 +101,13 @@ def _plain_check_reason(outcome: dict[str, Any], facts: dict[str, Any], scene: S
     slope = facts.get("start_slope_deg") or outcome.get("start_slope_deg")
     entry = _robot(scene)
     trained_walker = bool(entry and entry.robot.kind == "library")
+    if slope is None and (match := re.search(r"starting footprint ground slope ([\d.]+)°", str(detail), re.I)):
+        slope = float(match.group(1))
     if "unit" in evidence:
         return "The robot file uses inconsistent units, so its size and movement cannot be checked safely."
     if "rest" in evidence or "stand" in evidence or "spawn" in evidence:
         if slope is not None:
-            policy = " and its trained walking policy is made for flat ground" if trained_walker else ""
+            policy = ", and its trained walking policy was trained on flat ground" if trained_walker else ""
             return f"{robot_name} can't stand where it starts: the ground there is about {slope:g}° steep{policy}."
         return f"{robot_name} can't stand securely where it starts, so the physics check stopped the run."
     if "slope" in evidence and slope is not None:
