@@ -436,8 +436,15 @@ def place_structures(spec: SceneSpec, heights: np.ndarray) -> tuple[list[dict], 
             approach_offset = dimensions["record"]["footprint_m"] / 2 + 0.75
             approach_xy = (module_center[0] - math.cos(yaw) * approach_offset,
                            module_center[1] - math.sin(yaw) * approach_offset)
-            approach_xy = tuple(float(np.clip(value, -size_m / 2 * EDGE_MARGIN, size_m / 2 * EDGE_MARGIN))
-                                for value in approach_xy)
+            safe_edge = size_m / 2 * EDGE_MARGIN
+            approaches = [(module_center[0] + math.cos(yaw + angle) * approach_offset,
+                           module_center[1] + math.sin(yaw + angle) * approach_offset)
+                          for angle in (math.pi, 0, math.pi / 2, -math.pi / 2)]
+            approach_xy = next((point for point in approaches
+                                if max(abs(point[0]), abs(point[1])) <= safe_edge), None)
+            if approach_xy is None:
+                notes.append("Lander not placed: there is no clear adjacent access point inside the spawn bounds.")
+                continue
             access_points["lander"] = {"x": round(approach_xy[0], 2), "y": round(approach_xy[1], 2),
                                         "z": round(height_at(heights, size_m, *approach_xy), 2)}
         if access_points:

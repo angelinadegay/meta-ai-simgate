@@ -526,6 +526,7 @@ def test_exact_jezero_mars_base_prompt_has_top_airlock_start_and_bridge(monkeypa
     assert distance == pytest.approx(habitat["dimensions"]["module_length_m"] / 2 + 0.2, abs=0.02)
     access = lander["access_points"]["lander"]
     assert list(simulator.mission["start"]) == [access["x"], access["y"]]
+    assert math.dist(simulator.mission["start"], [lander["position"]["x"], lander["position"]["y"]]) >= lander["dimensions"]["footprint_m"] / 2 + 0.7
     gap = next(item for item in build.scene["course"] if item["kind"] == "gap")
     assert bridge["gap"]["center"] == pytest.approx(gap["xy"], abs=0.02)
     model = mujoco.MjModel.from_xml_string(build.code)
