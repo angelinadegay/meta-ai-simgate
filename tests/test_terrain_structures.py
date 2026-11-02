@@ -487,3 +487,47 @@ def test_physics_dimensions_match_habitat_and_local_insight_profile():
         assert model.geom_size[deck][:2] == pytest.approx([0.75, 0.75])
         panel = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, "struct1_lander_solar_1")
         assert model.geom_pos[panel][0] - lander["position"]["x"] + model.geom_size[panel][0] == pytest.approx(3)
+
+
+@pytest.mark.parametrize("mock", [True, False])
+def test_exact_jezero_mars_base_prompt_has_top_airlock_start_and_bridge(monkeypatch, mock):
+    import asyncio
+    import json
+    import mujoco
+    from simgate import config, llm
+    from simgate.director import Director
+    from simgate.workflows import _prepare_robot_world
+    from simgate.backends.mujoco_backend import MuJoCoSimulator
+
+    monkeypatch.setattr(config, "MOCK_MODE", mock)
+    monkeypatch.setattr(llm, "chat", lambda *args, **kwargs: json.dumps({
+        "workflow": "build", "summary": "Mars base", "world": {"terrain_kind": "flat"},
+        "robots": [{"kind": "rover"}],
+    }))
+    prompt = ("Build a Mars base on Jezero: a habitat, a lander, and a bridge over a trench. "
+              "Can the rover drive from the lander to the habitat?")
+    director = Director()
+    plan = director.plan(prompt)
+    assert plan.world.preset == "jezero" and plan.world.terrain_kind == "real"
+    assert {item.kind for item in plan.structures} == {"habitat", "lander", "bridge"}
+    assert plan.robots[0].start_structure == "lander"
+    assert plan.goal.structure == "habitat_airlock"
+    world = asyncio.run(_prepare_robot_world(plan, None, director))
+    simulator = MuJoCoSimulator()
+    build = simulator.build(world.spec)
+    assert world.spec.terrain.kind == "real" and world.spec.terrain.preset == "jezero"
+    records = {record["kind"]: record for record in build.scene["structures"]}
+    assert set(records) == {"habitat", "lander", "bridge"}, build.scene["structure_notes"]
+    habitat, lander, bridge = (records[kind] for kind in ("habitat", "lander", "bridge"))
+    airlock = habitat["access_points"]["habitat_airlock"]
+    assert simulator.mission["goal_structure"] == "habitat_airlock"
+    assert list(simulator.mission["goal"]) == [airlock["x"], airlock["y"]]
+    distance = math.dist([habitat["position"]["x"], habitat["position"]["y"]], simulator.mission["goal"])
+    assert distance == pytest.approx(habitat["dimensions"]["module_length_m"] / 2 + 0.2, abs=0.02)
+    access = lander["access_points"]["lander"]
+    assert list(simulator.mission["start"]) == [access["x"], access["y"]]
+    gap = next(item for item in build.scene["course"] if item["kind"] == "gap")
+    assert bridge["gap"]["center"] == pytest.approx(gap["xy"], abs=0.02)
+    model = mujoco.MjModel.from_xml_string(build.code)
+    marker = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, "goal_zone")
+    assert model.geom_pos[marker][2] == pytest.approx(airlock["z"] + 0.02, abs=0.02)

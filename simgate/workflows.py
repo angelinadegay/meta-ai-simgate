@@ -303,6 +303,8 @@ def _spawn_args(robot_plan: RobotPlan) -> list[dict[str, Any]]:
         }
         if robot_plan.start_place is not None:
             args["start"] = robot_plan.start_place
+        if robot_plan.start_structure is not None:
+            args["start_structure"] = robot_plan.start_structure
         if robot_plan.goal_place is not None:
             args["goal"] = robot_plan.goal_place
         copies.append(args)

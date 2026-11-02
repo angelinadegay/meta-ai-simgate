@@ -83,6 +83,7 @@ class RobotPlan(BaseModel):
     legs: Literal[4, 6] | None = None
     wheels: Literal[4, 6] | None = None
     start_place: PlanPlace | None = None
+    start_structure: Literal["lander"] | None = None
     goal_place: PlanPlace | None = None
     _notes: list[str] = PrivateAttr(default_factory=list)   # assumptions to show the user
 

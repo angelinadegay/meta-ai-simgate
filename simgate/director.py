@@ -789,8 +789,9 @@ def _apply_text_guards(plan: Plan, text: str) -> list[str]:
             from .spec import Obstacle, TerrainStructure
 
             asks_habitat = bool(re.search(r"\bhabitat\b|\b(?:mars|lunar) base\b", source))
-            asks_lander = bool(re.search(r"\blander\b", source))
-            asks_bridge = bool(re.search(r"\bbridge\b", source))
+            mars_base = bool(re.search(r"\bmars base\b", source))
+            asks_lander = mars_base or bool(re.search(r"\blander\b", source))
+            asks_bridge = mars_base or bool(re.search(r"\bbridge\b", source))
             to_habitat = bool(re.search(r"\bto (?:the )?(?:habitat|airlock)\b", source))
             to_lander = bool(re.search(r"\bto (?:the )?lander\b", source))
             from_lander = bool(re.search(r"\b(?:from|beside|next to|at) (?:the )?lander\b", source))
@@ -829,6 +830,7 @@ def _apply_text_guards(plan: Plan, text: str) -> list[str]:
 
             if plan.robots and from_lander:
                 plan.robots[0].start_place = "start_area"
+                plan.robots[0].start_structure = "lander"
             goal_structure = ("habitat_airlock" if to_habitat else "lander" if to_lander else None)
             if goal_structure and (plan.goal is None or plan.goal.structure != goal_structure):
                 plan.goal = GoalPlan(structure=goal_structure)

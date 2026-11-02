@@ -1026,21 +1026,31 @@ class MuJoCoSimulator(Simulator):
         self.structure_notes: list[str] = []
 
     def _resolve_structure_goals(self, spec: SceneSpec) -> None:
-        targets = [entry for entry in spec.robots if entry.goal_structure is not None]
+        targets = [entry for entry in spec.robots if entry.goal_structure is not None or entry.start_structure is not None]
         if not targets:
             return
         from ..structures import structure_goal_xy
 
         for entry in targets:
-            xy = structure_goal_xy(self.structure_placements, entry.goal_structure)
-            entry.goal_xy, entry.goal_place = list(xy), None
             mission = self.missions.get(entry.id)
             if mission is None and spec.robots and entry.id == spec.robots[0].id:
                 mission = self.mission
             if mission is None:
                 raise ValueError(f"No resolved mission for robot {entry.id!r}.")
+            if entry.start_structure is not None:
+                start = structure_goal_xy(self.structure_placements, entry.start_structure)
+                entry.start_xy, entry.start_place = list(start), None
+                mission["start"] = tuple(start)
+            if entry.goal_structure is None:
+                continue
+            xy = structure_goal_xy(self.structure_placements, entry.goal_structure)
+            entry.goal_xy, entry.goal_place = list(xy), None
             start = mission["start"]
             mission["goal"] = tuple(xy)
+            mission["goal_structure"] = entry.goal_structure
+            point = next(record["access_points"][entry.goal_structure] for record in self.structure_placements
+                         if entry.goal_structure in record.get("access_points", {}))
+            mission["goal_z"] = point["z"]
             if entry.start_heading_deg is None:
                 mission["heading_deg"] = round(math.degrees(math.atan2(xy[1] - start[1], xy[0] - start[0])), 1)
 
@@ -1049,6 +1059,20 @@ class MuJoCoSimulator(Simulator):
             spec.mission = spec.robots[0].mission()
         _refresh_default_time_limit(spec)
         self.mission = self.missions.get(spec.robots[0].id, self.mission) if spec.robots else self.mission
+
+    def _shift_structure_heights(self, offset: float) -> None:
+        for record in self.structure_placements:
+            record["position"]["z"] = round(record["position"]["z"] + offset, 3)
+            for point in record.get("access_points", {}).values():
+                point["z"] = round(point["z"] + offset, 3)
+            for point in record.get("gap", {}).get("bearings", []):
+                point["z"] += offset
+        missions = [self.mission, *self.missions.values()]
+        seen = set()
+        for mission in missions:
+            if id(mission) not in seen and "goal_z" in mission:
+                mission["goal_z"] += offset
+                seen.add(id(mission))
 
     def _multi_template(self, spec: SceneSpec) -> tuple[str, np.ndarray, float]:
         terrain = spec.terrain
@@ -1129,7 +1153,6 @@ class MuJoCoSimulator(Simulator):
         obstacle_xml, self.course, self.course_notes = "", [], []
         from ..structures import structure_geoms
 
-        structure_xml = structure_geoms(self.structure_placements)
         if spec.obstacles:
             mission = self.mission
             goal = mission["goal"]
@@ -1142,10 +1165,12 @@ class MuJoCoSimulator(Simulator):
             slots, self.course_notes = course.plan_course(spec, H, mission["start"], goal, terrain.seed)
             if any(slot["ob"].kind == "gap" for slot in slots):
                 course.cut_gaps(slots, H, terrain.size_m)
+                self._shift_structure_heights(-float(H.min()))
                 H -= H.min()
                 zmax = max(float(H.max()), 0.01)
             obstacle_xml, self.course = course.build_geoms(slots, H, terrain.size_m, terrain.seed)
 
+        structure_xml = structure_geoms(self.structure_placements)
         robot_xml, actuator_xml, mesh_xml, defaults_xml = [], [], [], []   # two G1s share one copy of their defaults
         compiler_assets = set()
         markers = []
@@ -1183,7 +1208,7 @@ class MuJoCoSimulator(Simulator):
             }
             if mission["goal"] is not None:
                 gx, gy = mission["goal"]
-                gz = height_at(H, terrain.size_m, gx, gy, mission["radius"])
+                gz = mission.get("goal_z", height_at(H, terrain.size_m, gx, gy, mission["radius"]))
                 goal_mark = next((marker for marker in markers if marker[0] == (gx, gy, mission["radius"])), None)
                 if goal_mark is None:
                     markers.append(((gx, gy, mission["radius"]), f'''
@@ -1247,7 +1272,6 @@ class MuJoCoSimulator(Simulator):
         self.course, self.course_notes, obstacle_xml = [], [], ""
         from ..structures import structure_geoms
 
-        structure_xml = structure_geoms(self.structure_placements)
         if spec.obstacles:
             goal = mission["goal"]
             if goal is None:     # no goal (e.g. one was removed): run the course straight ahead
@@ -1256,10 +1280,12 @@ class MuJoCoSimulator(Simulator):
             slots, self.course_notes = course.plan_course(spec, H, mission["start"], goal, t.seed)
             if any(sl["ob"].kind == "gap" for sl in slots):
                 course.cut_gaps(slots, H, t.size_m)
+                self._shift_structure_heights(-float(H.min()))
                 H -= H.min()
                 zmax = max(float(H.max()), 0.01)
             obstacle_xml, self.course = course.build_geoms(slots, H, t.size_m, t.seed)
             obstacle_xml += "\n" if obstacle_xml else ""
+        structure_xml = structure_geoms(self.structure_placements)
         half = t.size_m / 2
         (sx, sy), yaw = perturbed(spec, 0, mission["start"], mission["heading_deg"])
         mesh_xml, defaults_xml, compiler_xml = "", "", ""
@@ -1280,7 +1306,7 @@ class MuJoCoSimulator(Simulator):
         markers = ""
         if mission["goal"] is not None:     # visual only: no collisions, no mass
             gx, gy = mission["goal"]
-            gz, r = height_at(H, t.size_m, gx, gy, mission["radius"]), mission["radius"]
+            gz, r = mission.get("goal_z", height_at(H, t.size_m, gx, gy, mission["radius"])), mission["radius"]
             markers = (f'    <geom name="goal_zone" type="cylinder" size="{r:.2f} 0.02" pos="{gx:.2f} {gy:.2f} {gz + 0.02:.3f}" '
                        f'contype="0" conaffinity="0" rgba="0.2 0.85 0.5 0.35"/>\n'
                        f'    <geom name="goal_flag" type="capsule" fromto="{gx:.2f} {gy:.2f} {gz:.3f} {gx:.2f} {gy:.2f} {gz + 1.5:.3f}" '

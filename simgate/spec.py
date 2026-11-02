@@ -65,6 +65,7 @@ class Mission(BaseModel):
     A named place (e.g. "lowest") is resolved on the actual terrain, so the model never guesses numbers."""
     start_xy: Optional[list[float]] = None
     start_place: Optional[Place] = None
+    start_structure: Optional[Literal["lander"]] = None
     start_heading_deg: Optional[float] = None   # 0 = facing east (+x), 90 = north; default: facing the goal
     goal_xy: Optional[list[float]] = None
     goal_place: Optional[Place] = None
@@ -81,6 +82,7 @@ class RobotEntry(BaseModel):
     robot: Robot
     start_xy: Optional[list[float]] = None
     start_place: Optional[Place] = None
+    start_structure: Optional[Literal["lander"]] = None
     start_heading_deg: Optional[float] = None
     goal_xy: Optional[list[float]] = None
     goal_place: Optional[Place] = None
@@ -91,6 +93,7 @@ class RobotEntry(BaseModel):
         return Mission(
             start_xy=self.start_xy,
             start_place=self.start_place,
+            start_structure=self.start_structure,
             start_heading_deg=self.start_heading_deg,
             goal_xy=self.goal_xy,
             goal_place=self.goal_place,
@@ -112,6 +115,7 @@ class Obstacle(BaseModel):
     placement: Literal["path", "scattered", "place"] = "path"
     place: Optional[Place] = None
     height_m: Optional[float] = Field(None, gt=0.0, le=2.0)   # exact height (gap: depth stays fixed, this is its width)
+    path_fraction: Optional[float] = Field(None, gt=0.0, lt=1.0)
 
 
 StructurePlacement = Literal["near_start", "near_goal", "over_gap"] | Place
@@ -226,6 +230,7 @@ class SceneSpec(BaseModel):
                         robot=self.robot.model_copy(deep=True),
                         start_xy=mission.start_xy,
                         start_place=mission.start_place,
+                        start_structure=mission.start_structure,
                         start_heading_deg=mission.start_heading_deg,
                         goal_xy=mission.goal_xy,
                         goal_place=mission.goal_place,

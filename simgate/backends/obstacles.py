@@ -158,6 +158,8 @@ def plan_course(spec, H: np.ndarray, start, goal, seed: int) -> tuple[list[dict]
         ext = extent(ob.kind, v)
         if ob.placement == "path":
             centre_s = min(s + ext / 2, usable[1] - ext / 2) if need <= room else s + ext / 2 * min(room / need, 1)
+            if ob.path_fraction is not None:
+                centre_s = float(np.clip(L * ob.path_fraction, usable[0] + ext / 2, usable[1] - ext / 2))
             c = start + d * centre_s
             s = s + ext + (gap_between if need <= room else 0.3)
             slots.append(dict(ob=ob, value=v, n=n, centre=c, d=d, u=u, along=centre_s))

@@ -28,6 +28,8 @@ def _robot_mission(spec: SceneSpec, entry, heights: np.ndarray) -> dict:
     robot_spec = spec.model_copy(deep=True)
     robot_spec.robot = entry.robot.model_copy(deep=True)
     robot_spec.mission = entry.mission()
+    if robot_spec.mission.start_structure is not None:
+        robot_spec.mission.start_xy, robot_spec.mission.start_place = None, "start_area"
     if robot_spec.mission.goal_structure is not None:
         robot_spec.mission.goal_xy, robot_spec.mission.goal_place = None, None
     return resolve_mission(robot_spec, heights)
@@ -132,7 +134,7 @@ def _dimensions(request: TerrainStructure, widest_robot: float, body: str = "ear
         footprint = 4.5 * scale
         return {"record": {"height_m": round(4.0 * scale, 2), "footprint_m": round(footprint, 2), "legs": 4},
                 "length": footprint, "width": footprint, "offset": 0.0}
-    minimum_deck = 1.2 * widest_robot
+    minimum_deck = 1.2 * widest_robot + 0.24
     deck_width = max(minimum_deck, minimum_deck * scale)
     return {"record": {"deck_width_m": round(deck_width, 2), "bearing_each_m": BEARING_M},
             "length": 0.0, "width": deck_width, "offset": 0.0}
@@ -209,7 +211,7 @@ def _route(spec: SceneSpec, heights: np.ndarray):
     return start, goal, route_goal, yaw, starts
 
 
-def _path_gaps(spec: SceneSpec, heights: np.ndarray, start, route_goal):
+def _path_gaps(spec: SceneSpec, heights: np.ndarray, start, route_goal, choose_site: bool = False):
     from .backends import obstacles as course
 
     if route_goal is None or not spec.obstacles:
@@ -218,6 +220,26 @@ def _path_gaps(spec: SceneSpec, heights: np.ndarray, start, route_goal):
     gaps = [slot for slot in slots if slot["ob"].kind == "gap" and slot["ob"].placement == "path"]
     if not gaps:
         return []
+    if choose_site and spec.terrain.kind == "real" and len(gaps) == 1:
+        slot = gaps[0]
+        route_length = math.dist(start, route_goal)
+        slope = _slope_grid(heights, spec.terrain.size_m)
+        yaw = math.atan2(slot["d"][1], slot["d"][0])
+        width = 1.2 * max(entry.robot.chassis_width + (2 * entry.robot.wheel_width + 0.02
+                    if entry.robot.kind == "rover" else 0) for entry in spec.robots) + 0.24
+        candidates = []
+        for fraction in np.linspace(0.2, 0.8, 25):
+            centre = np.asarray(start) + slot["d"] * route_length * fraction
+            if min(math.dist(centre, start), math.dist(centre, route_goal)) < 3:
+                continue
+            values = _bridge_bearing_slopes(slope, spec.terrain.size_m, centre, yaw, slot["value"], width)
+            if values is not None and footprint_inside_terrain(centre, yaw, slot["value"] + 2 * BEARING_M,
+                                                               width, spec.terrain.size_m):
+                candidates.append((float(values.max()), abs(fraction - 0.5), float(fraction), centre))
+        if candidates:
+            _, _, fraction, centre = min(candidates, key=lambda item: item[:2])
+            slot["ob"].path_fraction = fraction
+            slot["centre"], slot["along"] = centre, route_length * fraction
     lowered = heights.copy()
     course.cut_gaps(gaps, lowered, spec.terrain.size_m)
     return [{"slot": slot,
@@ -254,7 +276,7 @@ def place_structures(spec: SceneSpec, heights: np.ndarray) -> tuple[list[dict], 
         return [], ["No robot spawn was available to place terrain structures safely."]
 
     from .backends import obstacles as course
-    from .backends.mujoco_backend import height_at
+    from .backends.mujoco_backend import EDGE_MARGIN, height_at
 
     route = _route(spec, heights)
     if route is None:
@@ -262,7 +284,8 @@ def place_structures(spec: SceneSpec, heights: np.ndarray) -> tuple[list[dict], 
     start, goal, route_goal, route_yaw, starts = route
     gaps = _path_gaps(spec, heights, start, route_goal)
     slope = _slope_grid(heights, spec.terrain.size_m)
-    widest_robot = max(entry.robot.chassis_width for entry in spec.robots)
+    widest_robot = max(entry.robot.chassis_width + (2 * entry.robot.wheel_width + 0.02
+                        if entry.robot.kind == "rover" else 0) for entry in spec.robots)
     cell = spec.terrain.size_m / (heights.shape[0] - 1)
     candidate_step = max(0.5, cell * 4)
     size_m = spec.terrain.size_m
@@ -282,8 +305,14 @@ def place_structures(spec: SceneSpec, heights: np.ndarray) -> tuple[list[dict], 
                 route_spec.robots[0].goal_xy = structure_goal_xy(placed, primary.goal_structure)
                 route_spec.robots[0].goal_place = None
                 route_spec.robots[0].goal_structure = None
+                if primary.start_structure == "lander":
+                    route_spec.robots[0].start_xy = structure_goal_xy(placed, "lander")
+                    route_spec.robots[0].start_place = None
+                    route_spec.robots[0].start_structure = None
                 start, goal, route_goal, route_yaw, starts = _route(route_spec, heights)
-                gaps = _path_gaps(route_spec, heights, start, route_goal)
+                gaps = _path_gaps(route_spec, heights, start, route_goal, choose_site=True)
+                for original, selected in zip(spec.obstacles, route_spec.obstacles):
+                    original.path_fraction = selected.path_fraction
         target, target_name, extra = _target(request, spec, heights, start, goal, gaps, used_gaps)
         if target is None:
             notes.append(f"{request.kind.title()} not placed: {extra}.")
@@ -395,15 +424,17 @@ def place_structures(spec: SceneSpec, heights: np.ndarray) -> tuple[list[dict], 
             run = float(dimensions["record"]["ramp"]["run_m"])
             rise = float(dimensions["record"]["airlock_rise_m"])
             airlock_xy = (module_center[0] + math.cos(yaw) *
-                          (dimensions["record"]["module_length_m"] / 2 + run),
+                          (dimensions["record"]["module_length_m"] / 2 + 0.2),
                           module_center[1] + math.sin(yaw) *
-                          (dimensions["record"]["module_length_m"] / 2 + run))
+                          (dimensions["record"]["module_length_m"] / 2 + 0.2))
             access_points["habitat_airlock"] = {"x": round(airlock_xy[0], 2), "y": round(airlock_xy[1], 2),
                                                  "z": round(z + rise, 2)}
         elif request.kind == "lander":
             approach_offset = dimensions["record"]["footprint_m"] / 2 + 0.75
             approach_xy = (module_center[0] - math.cos(yaw) * approach_offset,
                            module_center[1] - math.sin(yaw) * approach_offset)
+            approach_xy = tuple(float(np.clip(value, -size_m / 2 * EDGE_MARGIN, size_m / 2 * EDGE_MARGIN))
+                                for value in approach_xy)
             access_points["lander"] = {"x": round(approach_xy[0], 2), "y": round(approach_xy[1], 2),
                                         "z": round(height_at(heights, size_m, *approach_xy), 2)}
         if access_points:
@@ -527,14 +558,14 @@ def structure_geoms(placements: list[dict]) -> str:
             deck_width = float(dimensions["deck_width_m"])
             thickness = 0.2
             pitch = float(record["orientation"].get("pitch_deg", 0.0))
-            deck_center = (x, y, base_z + thickness / 2)
+            deck_center = (x, y, base_z - thickness / 2 + 0.03)
             box(f"{prefix}_deck", (span / 2, deck_width / 2, thickness / 2), deck_center, yaw, pitch)
             rail_width, rail_height = 0.12, 0.25
             for side, sign in (("left", -1), ("right", 1)):
                 across = sign * (deck_width / 2 - rail_width / 2)
                 rail_center = (x - sine * across,
                                y + cosine * across,
-                               base_z + thickness + rail_height / 2)
+                               base_z + 0.03 + rail_height / 2)
                 box(f"{prefix}_rail_{side}", (span / 2, rail_width / 2, rail_height / 2),
                     rail_center, yaw, pitch)
 

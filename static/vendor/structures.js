@@ -156,19 +156,19 @@ function bridgeSkin(record, group) {
   for (let index = 0; index < plates; index++) {
     const start = -span / 2 + index * span / plates + (index ? 0.009 : 0);
     const end = -span / 2 + (index + 1) * span / plates - (index < plates - 1 ? 0.009 : 0);
-    box(group, [end - start, width, 0.19], deck, [(start + end) / 2, 0, 0.1], "bridge_deck_plate");
+    box(group, [end - start, width, 0.19], deck, [(start + end) / 2, 0, -0.07], "bridge_deck_plate");
   }
   for (const side of [-1, 1]) {
     const across = side * (width / 2 - 0.06);
     for (const [start, end] of geometry.members) {
       const from = geometry.nodes[start], to = geometry.nodes[end];
-      tube(group, [from[0] - span / 2, across, from[1] + 0.2],
-        [to[0] - span / 2, across, to[1] + 0.2], 0.035, alloy, "bridge_truss_member");
+      tube(group, [from[0] - span / 2, across, from[1] + 0.03],
+        [to[0] - span / 2, across, to[1] + 0.03], 0.035, alloy, "bridge_truss_member");
     }
     tube(group, [-span / 2, across, 0.47], [span / 2, across, 0.47], 0.045, alloy, "bridge_rail");
     for (let index = 0; index <= panels; index++) {
       const x = index * span / panels - span / 2;
-      tube(group, [x, across, 0.2], [x, across, 0.47], 0.025, alloy, "bridge_rail_post");
+      tube(group, [x, across, 0.03], [x, across, 0.47], 0.025, alloy, "bridge_rail_post");
     }
   }
 }
@@ -189,7 +189,7 @@ function analysisOverlay(record, root) {
   if (record.kind === "bridge") {
     const { nodes: points, members: connections } = bridgeNodes(report.panels, report.span_m, report.depth_m);
     nodes = points; members = connections.map((pair, index) => ({ tag: index + 1, nodes: pair }));
-    mapPoint = ([x, height]) => [x - report.span_m / 2, -record.dimensions.deck_width_m / 2, height + 0.23];
+    mapPoint = ([x, height]) => [x - report.span_m / 2, -record.dimensions.deck_width_m / 2, height + 0.06];
     for (const mode of ["yield", "buckling"]) {
       const check = report.checks?.[mode];
       if (check?.member) values.set(check.member, Math.max(values.get(check.member) || 0, check.utilisation_pct));

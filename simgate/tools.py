@@ -49,6 +49,7 @@ class SpawnRobotArgs(ToolArgs):
     legs: Literal[4, 6] | None = None
     wheels: Literal[4, 6] | None = None
     start: Place | list[float] | None = None
+    start_structure: Literal["lander"] | None = None
     goal: Place | list[float] | None = None
 
     @model_validator(mode="after")
@@ -254,7 +255,8 @@ def spawn_robot(world: World, args: dict[str, Any]) -> ToolResult:
     existing = {entry.id for entry in spec.robots}
     while f"r{index}" in existing:
         index += 1
-    entry = RobotEntry(id=f"r{index}", label=parsed.label or f"{default_label} {index}", robot=robot)
+    entry = RobotEntry(id=f"r{index}", label=parsed.label or f"{default_label} {index}", robot=robot,
+                       start_structure=parsed.start_structure)
     if parsed.start is not None:
         _apply_place(entry, "start", parsed.start)
     if parsed.goal is not None:

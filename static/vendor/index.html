@@ -1076,7 +1076,8 @@ function updateSceneContext(spec = currentSpec) {
   sceneDetails.appendChild(textEl("strong", worldCard?.name || `${body.replace(/^\w/, (letter) => letter.toUpperCase())} · ${surface}`));
   if (worldCard) sceneDetails.append(textEl("span", `Credit: ${worldCard.credit}`), textEl("span", `License: ${worldCard.license}`));
   else sceneDetails.appendChild(textEl("span", `Reference values · ${gravity} m/s² · friction ${spec.environment?.friction ?? "—"}`));
-  const goal = entries[0]?.goal_place || spec.mission?.goal_place || (entries[0]?.goal_xy || spec.mission?.goal_xy ? "coordinates" : "not set");
+  const structureGoal = current?.mission?.goal_structure || entries[0]?.goal_structure || spec.mission?.goal_structure;
+  const goal = structureGoal ? structureGoal.replaceAll("_", " ") : entries[0]?.goal_place || spec.mission?.goal_place || (entries[0]?.goal_xy || spec.mission?.goal_xy ? "coordinates" : "not set");
   $("goalPill").textContent = `◎  Goal: ${goal}`; $("goalPill").hidden = false;
 }
 function metricInsight(metrics = {}) {
