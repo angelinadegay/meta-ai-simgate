@@ -100,20 +100,24 @@ function habitatSkin(record, group) {
     box(group, [length * 0.1, 0.11, radius * 0.29], window, [x, sign * radius, radius * 1.12], "habitat_window");
   }
   const run = dimensions.ramp.run_m, width = dimensions.ramp.width_m;
-  const ramp = box(group, [Math.hypot(run, rise), width, 0.09], metal(0x869b9a),
-    [length / 2 + run / 2, 0, rise / 2], "airlock_ramp");
-  ramp.rotation.y = Math.atan2(rise, run);
+  const top = dimensions.ramp.top_z !== undefined ? dimensions.ramp.top_z - record.position.z : rise;
+  const toe = dimensions.ramp.toe_z !== undefined ? dimensions.ramp.toe_z - record.position.z : 0;
+  const rampPitch = Math.atan2(top - toe, run);
+  const ramp = box(group, [Math.hypot(run, top - toe), width, 0.09], metal(0x869b9a),
+    [length / 2 + run / 2, 0, (top + toe) / 2 - 0.045 * Math.cos(rampPitch)], "airlock_ramp");
+  ramp.rotation.y = rampPitch;
   for (let index = 1; index < 15; index++) {
     const fraction = index / 15;
-    tube(group, [length / 2 + run * fraction, -width / 2, rise * (1 - fraction) + 0.06],
-      [length / 2 + run * fraction, width / 2, rise * (1 - fraction) + 0.06], 0.012, dark, "ramp_tread");
+    const height = top * (1 - fraction) + toe * fraction;
+    tube(group, [length / 2 + run * fraction, -width / 2, height + 0.06],
+      [length / 2 + run * fraction, width / 2, height + 0.06], 0.012, dark, "ramp_tread");
   }
   for (const sign of [-1, 1]) {
     const across = sign * (width / 2 - 0.06);
-    tube(group, [length / 2, across, rise + 0.8], [length / 2 + run, across, 0.8],
+    tube(group, [length / 2, across, top + 0.8], [length / 2 + run, across, toe + 0.8],
       0.035, alloy, "ramp_side_rail");
     for (let index = 0; index <= 4; index++) {
-      const fraction = index / 4, x = length / 2 + run * fraction, z = rise * (1 - fraction);
+      const fraction = index / 4, x = length / 2 + run * fraction, z = top * (1 - fraction) + toe * fraction;
       tube(group, [x, across, z + 0.04], [x, across, z + 0.8], 0.025, alloy, "ramp_rail_post");
     }
   }

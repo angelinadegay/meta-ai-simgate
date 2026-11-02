@@ -1002,6 +1002,7 @@ class Navigator:
         self.goal = np.array(mission["goal"]) if mission and mission.get("goal") is not None else None
         self.radius = float(mission.get("radius", 1.0)) if mission else 1.0
         self.goal_z = mission.get("goal_z") if mission and mission.get("goal_structure") else None
+        self.waypoints = [np.array(point, dtype=float) for point in mission.get("waypoints", [])] if mission else []
         self.reached_at: float | None = None
         self.max_turn = self.MAX_TURN if robot_kind == "rover" else self.WALKER_MAX_TURN   # walkers wobble when one side steps backward
 
@@ -1010,12 +1011,14 @@ class Navigator:
         """(turn, go) for this instant."""
         if self.goal is None:
             return 0.0, 1.0
+        while self.waypoints and float(np.linalg.norm(self.waypoints[0] - pos_xy)) <= 0.3:
+            self.waypoints.pop(0)
         at_height = self.goal_z is None or (surface_z is not None and abs(surface_z - self.goal_z) <= 0.15)
-        if self.reached_at is None and float(np.linalg.norm(self.goal - pos_xy)) <= self.radius and at_height:
+        if not self.waypoints and self.reached_at is None and float(np.linalg.norm(self.goal - pos_xy)) <= self.radius and at_height:
             self.reached_at = t
         if self.reached_at is not None:
             return 0.0, float(np.clip(1 - (t - self.reached_at) / self.STOP_FADE_S, 0.0, 1.0))
-        d = self.goal - pos_xy
+        d = (self.waypoints[0] if self.waypoints else self.goal) - pos_xy
         err = math.atan2(d[1], d[0]) - math.atan2(heading[1], heading[0])
         err = (err + math.pi) % (2 * math.pi) - math.pi
         return float(np.clip(self.GAIN * err, -self.max_turn, self.max_turn)), 1.0
@@ -1062,6 +1065,22 @@ class MuJoCoSimulator(Simulator):
             point = next(record["access_points"][entry.goal_structure] for record in self.structure_placements
                          if entry.goal_structure in record.get("access_points", {}))
             mission["goal_z"] = point["z"]
+            if entry.goal_structure == "habitat_airlock":
+                waypoints = []
+                bridges = sorted((record for record in self.structure_placements if record["kind"] == "bridge"),
+                                 key=lambda record: math.dist(mission["start"], [record["position"]["x"], record["position"]["y"]]))
+                for bridge in bridges:
+                    yaw = math.radians(bridge["orientation"]["yaw_deg"])
+                    distance = bridge["dimensions"]["span_m"] / 2 + 0.8
+                    for sign in (-1, 1):
+                        waypoints.append([bridge["position"]["x"] + sign * math.cos(yaw) * distance,
+                                          bridge["position"]["y"] + sign * math.sin(yaw) * distance])
+                habitat = next(record for record in self.structure_placements if record["kind"] == "habitat")
+                yaw = math.radians(habitat["orientation"]["yaw_deg"])
+                distance = habitat["dimensions"]["module_length_m"] / 2 + habitat["dimensions"]["ramp"]["run_m"] + 0.8
+                waypoints.append([habitat["position"]["x"] + math.cos(yaw) * distance,
+                                  habitat["position"]["y"] + math.sin(yaw) * distance])
+                mission["waypoints"] = waypoints
             if entry.start_heading_deg is None:
                 mission["heading_deg"] = round(math.degrees(math.atan2(xy[1] - start[1], xy[0] - start[0])), 1)
 
@@ -1076,6 +1095,10 @@ class MuJoCoSimulator(Simulator):
             record["position"]["z"] = round(record["position"]["z"] + offset, 3)
             for point in record.get("access_points", {}).values():
                 point["z"] = round(point["z"] + offset, 3)
+            ramp = record.get("dimensions", {}).get("ramp", {})
+            for key in ("top_z", "toe_z"):
+                if key in ramp:
+                    ramp[key] += offset
             for point in record.get("gap", {}).get("bearings", []):
                 point["z"] += offset
         missions = [self.mission, *self.missions.values()]

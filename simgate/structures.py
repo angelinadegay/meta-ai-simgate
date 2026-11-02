@@ -426,6 +426,26 @@ def place_structures(spec: SceneSpec, heights: np.ndarray) -> tuple[list[dict], 
         if request.kind == "habitat":
             run = float(dimensions["record"]["ramp"]["run_m"])
             rise = float(dimensions["record"]["airlock_rise_m"])
+            top_z = z + rise
+            for attempt in range(30):
+                toe_xy = (module_center[0] + math.cos(yaw) * (dimensions["record"]["module_length_m"] / 2 + run),
+                          module_center[1] + math.sin(yaw) * (dimensions["record"]["module_length_m"] / 2 + run))
+                toe_z = height_at(heights, size_m, *toe_xy, radius_m=0.05)
+                required = max(0.0, top_z - toe_z) / math.tan(math.radians(HABITAT_RAMP_LIMIT_DEG))
+                if required <= run + 0.001:
+                    break
+                run = math.ceil(required * 100) / 100
+            ramp_center = (module_center[0] + math.cos(yaw) * run / 2,
+                           module_center[1] + math.sin(yaw) * run / 2)
+            ramp_length = dimensions["record"]["module_length_m"] + run
+            if toe_z >= top_z or not footprint_inside_terrain(ramp_center, yaw, ramp_length, width, size_m):
+                notes.append("Habitat not placed: a terrain-connected ramp cannot fit within its terrain setback.")
+                continue
+            dimensions["record"]["ramp"].update({"run_m": round(run, 2), "top_z": round(top_z, 3),
+                "toe_z": round(toe_z, 3), "slope_deg": round(math.degrees(math.atan2(top_z - toe_z, run)), 3)})
+            record["footprint"].update({"center_xy": [round(value, 2) for value in ramp_center],
+                                         "length_m": round(ramp_length, 2)})
+            footprint_center, length = ramp_center, ramp_length
             airlock_xy = (module_center[0] + math.cos(yaw) *
                           (dimensions["record"]["module_length_m"] / 2 + 0.2),
                           module_center[1] + math.sin(yaw) *
@@ -522,10 +542,11 @@ def structure_geoms(placements: list[dict]) -> str:
                        f'quat="{quat(yaw, 90.0)}" contype="1" conaffinity="1" '
                        'rgba="0.58 0.59 0.60 1"/>')
             run, ramp_width = float(ramp["run_m"]), float(ramp["width_m"])
+            top_z, toe_z = float(ramp.get("top_z", base_z + rise)), float(ramp.get("toe_z", base_z))
+            pitch = math.degrees(math.atan2(top_z - toe_z, run))
             ramp_center = (x + cosine * (length / 2 + run / 2),
-                           y + sine * (length / 2 + run / 2), base_z + rise / 2)
-            pitch = math.degrees(math.atan2(rise, run))
-            box(f"{prefix}_ramp", (run / 2, ramp_width / 2, 0.06), ramp_center, yaw, pitch)
+                           y + sine * (length / 2 + run / 2), (top_z + toe_z) / 2 - 0.06 * math.cos(math.radians(pitch)))
+            box(f"{prefix}_ramp", (math.hypot(run, top_z - toe_z) / 2, ramp_width / 2, 0.06), ramp_center, yaw, pitch)
 
         elif kind == "lander":
             footprint = float(dimensions["footprint_m"])

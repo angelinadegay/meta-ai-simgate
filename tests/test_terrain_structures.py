@@ -524,6 +524,9 @@ def test_exact_jezero_mars_base_prompt_has_top_airlock_start_and_bridge(monkeypa
     assert list(simulator.mission["goal"]) == [airlock["x"], airlock["y"]]
     distance = math.dist([habitat["position"]["x"], habitat["position"]["y"]], simulator.mission["goal"])
     assert distance == pytest.approx(habitat["dimensions"]["module_length_m"] / 2 + 0.2, abs=0.02)
+    ramp = habitat["dimensions"]["ramp"]
+    assert ramp["top_z"] == pytest.approx(airlock["z"], abs=0.01)
+    assert ramp["slope_deg"] <= 12.01
     access = lander["access_points"]["lander"]
     assert list(simulator.mission["start"]) == [access["x"], access["y"]]
     assert math.dist(simulator.mission["start"], [lander["position"]["x"], lander["position"]["y"]]) >= lander["dimensions"]["footprint_m"] / 2 + 0.7
@@ -546,3 +549,15 @@ def test_raised_airlock_goal_requires_ramp_height_but_flat_goals_do_not():
     flat = Navigator({"goal": [0, 0], "radius": 1}, "rover")
     flat.command(position, heading, 1)
     assert flat.reached_at == 1
+
+
+def test_structure_approach_waypoint_is_visited_before_goal():
+    from simgate.backends.mujoco_backend import Navigator
+
+    navigator = Navigator({"goal": [0, 0], "radius": 1, "waypoints": [[-3, 0]]}, "rover")
+    navigator.command(np.array([0.5, 0]), np.array([-1, 0]), 1)
+    assert navigator.reached_at is None
+    navigator.command(np.array([-3, 0]), np.array([1, 0]), 2)
+    assert not navigator.waypoints and navigator.reached_at is None
+    navigator.command(np.array([0.5, 0]), np.array([-1, 0]), 3)
+    assert navigator.reached_at == 3
