@@ -304,3 +304,163 @@ def test_structure_goal_resolves_for_single_robot_and_race(count, target, kind):
     assert all(list(mission["goal"]) == point for mission in sim.missions.values())
     rebuilt = MuJoCoSimulator().build(spec)
     assert rebuilt.scene["structures"] == build.scene["structures"]
+
+
+@pytest.mark.parametrize("count", [1, 2])
+@pytest.mark.parametrize("mass,passed", [(10.0, True), (100_000.0, False)])
+def test_bridge_build_checks_heaviest_compiled_robot(count, mass, passed):
+    import json
+
+    from simgate.backends.mujoco_backend import MuJoCoSimulator
+
+    spec = flat_scene(structures=[TerrainStructure(kind="bridge", size="small", placement="over_gap")])
+    spec.obstacles = [Obstacle(kind="gap", size="medium", placement="path")]
+    spec.robots[0].robot.mass_kg = mass if count == 1 else 5
+    spec.robots[0].label = "Light rover" if count == 2 else "Load rover"
+    if count == 2:
+        spec.robots.append(RobotEntry(id="heavy", label="Heavy rover", robot=Robot(mass_kg=mass),
+                                      start_xy=[-12, 4], goal_place="east"))
+    spec.fill_defaults()
+    sim = MuJoCoSimulator()
+    build = sim.build(spec, view=False)
+    bridge = next(item for item in build.scene["structures"] if item["kind"] == "bridge")
+    report = bridge["structural_check"]
+    assert report["robot_mass_kg"] == pytest.approx(mass, rel=0.01)
+    assert report["robot_label"] == ("Heavy rover" if count == 2 else "Load rover")
+    assert report["gravity_m_s2"] == spec.environment.gravity
+    assert report["span_m"] == bridge["dimensions"]["span_m"]
+    assert report["section"] == "SHS40x40x3"
+    assert report["passed"] is passed
+    json.dumps(report, allow_nan=False)
+    checks = sim.validate(spec, build)
+    structural = [check for check in checks if "structural screening" in check.name]
+    assert len(structural) == 1 and structural[0].passed is passed
+    assert not structural[0].advisory
+    assert report["honesty"] in structural[0].detail
+
+
+def test_every_placed_bridge_gets_a_structural_report():
+    from simgate.backends.mujoco_backend import MuJoCoSimulator
+
+    spec = flat_scene(structures=[TerrainStructure(kind="bridge", placement="over_gap"),
+                                  TerrainStructure(kind="bridge", size="large", placement="over_gap")])
+    spec.obstacles = [Obstacle(kind="gap", size="small", placement="path"),
+                      Obstacle(kind="gap", size="medium", placement="path")]
+    sim = MuJoCoSimulator()
+    build = sim.build(spec)
+    bridges = [item for item in build.scene["structures"] if item["kind"] == "bridge"]
+    assert len(bridges) == 2
+    assert [item["structural_check"]["section"] for item in bridges] == ["SHS60x60x4", "SHS80x80x4"]
+    assert all(item["structural_check"]["passed"] for item in bridges)
+    assert len([check for check in sim.validate(spec, build) if "structural screening" in check.name]) == 2
+
+
+@pytest.mark.parametrize("count", [1, 2])
+@pytest.mark.parametrize("body", ["earth", "mars"])
+def test_habitat_and_lander_reports_use_scene_dimensions_and_gravity(count, body):
+    import json
+
+    from simgate.backends.mujoco_backend import MuJoCoSimulator
+
+    spec = flat_scene(structures=[TerrainStructure(kind="habitat", placement="near_goal"),
+                                  TerrainStructure(kind="lander", placement="near_start")])
+    spec.environment.body, spec.environment.gravity = body, None
+    if count == 2:
+        spec.robots.append(RobotEntry(id="r2", label="Second rover", robot=Robot(),
+                                      start_xy=[-12, 4], goal_place="east"))
+    spec.fill_defaults()
+    sim = MuJoCoSimulator()
+    build = sim.build(spec)
+    assert {item["kind"] for item in build.scene["structures"]} == {"habitat", "lander"}
+    habitat, lander = (next(item for item in build.scene["structures"] if item["kind"] == kind)
+                       for kind in ("habitat", "lander"))
+    rib = habitat["structural_check"]
+    assert rib["frame"]["gravity_m_s2"] == spec.environment.gravity
+    assert max(point[0] for point in rib["frame"]["nodes"].values()) == habitat["dimensions"]["module_diameter_m"]
+    assert rib["tributary_length_m"] * rib["rib_count"] == habitat["dimensions"]["module_length_m"]
+    legs = lander["structural_check"]
+    assert legs["gravity_m_s2"] == spec.environment.gravity
+    assert legs["cases"]["landing_what_if"]["what_if"]
+    json.dumps(build.scene["structures"], allow_nan=False)
+    checks = sim.validate(spec, build)
+    habitat_check = next(check for check in checks if check.name.startswith("Habitat "))
+    assert habitat_check.passed == rib["passed"] and not habitat_check.advisory
+    lander_checks = [check for check in checks if check.name.startswith("Lander ")]
+    assert len(lander_checks) == 2
+    assert not next(check for check in lander_checks if "local-gravity weight" in check.name).advisory
+    what_if = next(check for check in lander_checks if "landing what-if" in check.name)
+    assert what_if.advisory and "static equivalent" in what_if.detail
+
+
+def test_failed_lander_what_if_does_not_block_normal_gravity_case(monkeypatch):
+    from simgate.backends.base import blocking_failures
+    from simgate.backends.mujoco_backend import MuJoCoSimulator
+    from simgate.structural import frames
+
+    original = frames.check_lander
+    monkeypatch.setattr(frames, "check_lander", lambda **kwargs: original(**kwargs, body_mass_kg=50_000))
+    spec = flat_scene(structures=[TerrainStructure(kind="lander", placement="near_start")])
+    sim = MuJoCoSimulator()
+    build = sim.build(spec)
+    report = build.scene["structures"][0]["structural_check"]
+    assert report["cases"]["static"]["passed"]
+    assert not report["cases"]["landing_what_if"]["passed"]
+    assert not report["passed"]
+    checks = [check for check in sim.validate(spec, build) if check.name.startswith("Lander ")]
+    assert len(checks) == 2
+    assert not blocking_failures(checks)
+    assert any(not check.passed and check.advisory and "what-if" in check.name for check in checks)
+
+
+def test_full_rotated_footprints_have_one_metre_terrain_setback():
+    from simgate.backends.mujoco_backend import MuJoCoSimulator
+    from simgate.structures import footprint_inside_terrain
+
+    spec = flat_scene(structures=[TerrainStructure(kind="habitat", placement="near_goal"),
+                                  TerrainStructure(kind="lander", placement="near_start"),
+                                  TerrainStructure(kind="bridge", placement="over_gap")])
+    spec.terrain.size_m = 20
+    spec.robots[0].start_xy = None
+    spec.robots[0].goal_xy, spec.robots[0].goal_place = None, "east"
+    spec.obstacles = [Obstacle(kind="gap", placement="path")]
+    build = MuJoCoSimulator().build(spec)
+    assert spec.terrain.size_m >= 40
+    assert any("1 m terrain setbacks" in note for note in spec.assumptions)
+    assert len(build.scene["structures"]) == 3
+    for record in build.scene["structures"]:
+        footprint = record["footprint"]
+        assert footprint_inside_terrain(footprint["center_xy"], math.radians(record["orientation"]["yaw_deg"]),
+                                        footprint["length_m"], footprint["width_m"], spec.terrain.size_m)
+    assert not footprint_inside_terrain([9, 0], math.pi / 4, 4, 4, 20)
+
+
+def test_larger_real_structure_patch_uses_source_metres_and_keeps_preset(monkeypatch):
+    from simgate import terrain_data, terrain_import
+    from simgate.structures import prepare_structure_terrain
+
+    original = np.zeros((40, 40))
+    meta = {"label": "Measured Jezero test", "source": "source.tif", "meters_per_pixel": 1,
+            "source_shape": [500, 500], "window_top_left_px": [200, 200], "size_m": 40,
+            "relief_m": 0, "credit": "Test", "body": "mars", "surface": "regolith"}
+    calls = []
+    monkeypatch.setattr(terrain_data, "load_preset", lambda name: (original, meta))
+
+    def read_source(source, size_m, pixel):
+        calls.append((source, size_m, pixel))
+        return np.zeros((int(size_m), int(size_m))), 1.0, {"base_elevation_m": -2500}
+
+    monkeypatch.setattr(terrain_import, "geotiff_heights", read_source)
+    terrain_data.load_structure_patch.cache_clear()
+    try:
+        spec = flat_scene(structures=[TerrainStructure(kind="habitat", placement="near_goal"),
+                                      TerrainStructure(kind="lander", placement="near_start")])
+        spec.terrain = Terrain(kind="real", preset="jezero", size_m=40)
+        prepare_structure_terrain(spec)
+        assert spec.terrain.kind == "real" and spec.terrain.preset == "jezero"
+        assert spec.terrain.size_m == 80 and spec.terrain.structure_crop_size_m == 80
+        assert terrain_data.scene_heights(spec.terrain).shape == (80, 80)
+        assert calls[0][0:2] == ("source.tif", 240)
+        assert original.shape == (40, 40)
+        assert any("not stretched or flattened" in note for note in spec.assumptions)
+    finally:
+        terrain_data.load_structure_patch.cache_clear()

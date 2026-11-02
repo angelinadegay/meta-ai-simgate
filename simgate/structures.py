@@ -14,6 +14,7 @@ SEARCH_RADIUS_M = 6.0
 PATH_CLEARANCE_M = 0.25
 START_CLEARANCE_M = 0.25
 STRUCTURE_CLEARANCE_M = 0.5
+TERRAIN_SETBACK_M = 1.0
 BEARING_M = 0.5
 HABITAT_RAMP_LIMIT_DEG = 12.0
 HABITAT_RAMP_RISE_M = 1.0
@@ -141,6 +142,43 @@ def _candidate_centers(target, radius: float, step: float):
     return candidates
 
 
+def footprint_inside_terrain(center, yaw: float, length: float, width: float, size_m: float) -> bool:
+    extent_x = abs(math.cos(yaw)) * length / 2 + abs(math.sin(yaw)) * width / 2
+    extent_y = abs(math.sin(yaw)) * length / 2 + abs(math.cos(yaw)) * width / 2
+    limit = size_m / 2 - TERRAIN_SETBACK_M
+    return abs(center[0]) + extent_x <= limit and abs(center[1]) + extent_y <= limit
+
+
+def prepare_structure_terrain(spec: SceneSpec) -> None:
+    if not spec.structures or spec.terrain is None:
+        return
+    if spec.terrain.kind == "real":
+        if spec.terrain.structure_crop_size_m is None and len(spec.structures) > 1:
+            from .terrain_data import load_structure_patch
+
+            requested = max(80.0, spec.terrain.size_m * 2)
+            _, meta = load_structure_patch(spec.terrain.preset, requested)
+            previous = spec.terrain.size_m
+            spec.terrain.structure_crop_size_m = requested
+            spec.terrain.size_m = float(meta["size_m"])
+            spec.assumptions.append(f"Selected a larger measured {meta['label']} patch: {previous:g} m to "
+                                    f"{spec.terrain.size_m:g} m for full structure footprints and 1 m setbacks; "
+                                    "source elevations were not stretched or flattened.")
+        return
+    dimensions = [_dimensions(item, max(entry.robot.chassis_width for entry in spec.robots))
+                  for item in spec.structures]
+    minimum = max(40.0 if len(spec.structures) > 1 else 20.0,
+                  max(item["length"] + item["width"] + 2 * TERRAIN_SETBACK_M + 8 for item in dimensions))
+    required = math.ceil(minimum / 10) * 10
+    if spec.terrain.size_m < required:
+        previous = spec.terrain.size_m
+        spec.terrain.size_m = float(required)
+        note = (f"Expanded generated terrain from {previous:g} m to {required:g} m so full structure "
+                "footprints and their 1 m terrain setbacks fit inside the physics area.")
+        if note not in spec.assumptions:
+            spec.assumptions.append(note)
+
+
 def _route(spec: SceneSpec, heights: np.ndarray):
     from .backends.mujoco_backend import footprint_radius
 
@@ -257,8 +295,11 @@ def place_structures(spec: SceneSpec, heights: np.ndarray) -> tuple[list[dict], 
 
         best = None
         best_site_slope = None
-        search_radius = 0.0 if bridge_gap else SEARCH_RADIUS_M
+        search_radius = 0.0 if bridge_gap else (max(SEARCH_RADIUS_M, size_m * 0.6)
+                               if spec.terrain.kind == "real" else SEARCH_RADIUS_M)
         for distance, footprint_center in _candidate_centers(target, search_radius, candidate_step):
+            if not footprint_inside_terrain(footprint_center, yaw, length, width, size_m):
+                continue
             module_center = (footprint_center[0] - math.cos(yaw) * offset,
                              footprint_center[1] - math.sin(yaw) * offset)
             if bridge_gap:

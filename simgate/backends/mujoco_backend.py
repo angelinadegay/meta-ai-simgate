@@ -1218,6 +1218,9 @@ class MuJoCoSimulator(Simulator):
         return xml, H, zmax
 
     def template(self, spec: SceneSpec) -> tuple[str, np.ndarray, float]:
+        from ..structures import prepare_structure_terrain
+
+        prepare_structure_terrain(spec)
         if len(spec.robots) > 1:
             return self._multi_template(spec)
         t, env = spec.terrain, spec.environment
@@ -1324,6 +1327,42 @@ class MuJoCoSimulator(Simulator):
         scene["course_notes"] = self.course_notes
         scene["structures"] = self.structure_placements
         scene["structure_notes"] = self.structure_notes
+        bridges = [item for item in self.structure_placements if item["kind"] == "bridge"]
+        if bridges:
+            from ..structural.bridge import check_bridge
+
+            robot_loads = []
+            for entry in spec.robots:
+                root_name = self.robot_entries[entry.id]["root_body_name"] if len(spec.robots) > 1 else "rover"
+                root = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, root_name)
+                if root < 0:
+                    raise ValueError(f"Cannot determine bridge loading for robot {entry.id!r}.")
+                mass = float(model.body_mass[model.body_rootid == root].sum())
+                robot_loads.append((mass, entry.label))
+            mass, label = max(robot_loads, key=lambda item: item[0])
+            sections = {"small": "SHS40x40x3", "medium": "SHS60x60x4", "large": "SHS80x80x4"}
+            for bridge in bridges:
+                bridge["structural_check"] = check_bridge(
+                    span_m=bridge["dimensions"]["span_m"], robot_mass_kg=mass,
+                    gravity_m_s2=float(np.linalg.norm(model.opt.gravity)),
+                    section=sections[bridge["size"]], robot_label=label,
+                )
+        frames = [item for item in self.structure_placements if item["kind"] in ("habitat", "lander")]
+        if frames:
+            from ..structural.frames import check_habitat, check_lander
+
+            gravity = float(np.linalg.norm(model.opt.gravity))
+            for structure in frames:
+                dimensions = structure["dimensions"]
+                if structure["kind"] == "habitat":
+                    structure["structural_check"] = check_habitat(
+                        module_length_m=dimensions["module_length_m"], diameter_m=dimensions["module_diameter_m"],
+                        height_m=dimensions["module_height_m"], gravity_m_s2=gravity,
+                    )
+                else:
+                    structure["structural_check"] = check_lander(
+                        footprint_m=dimensions["footprint_m"], height_m=dimensions["height_m"], gravity_m_s2=gravity,
+                    )
         if len(spec.robots) > 1:
             for robot_id, info in self.robot_entries.items():
                 root_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, info["root_body_name"])
@@ -1392,7 +1431,7 @@ class MuJoCoSimulator(Simulator):
             "geoms": geoms,
             "poses": self._poses(model, data),
         }
-        if spec.terrain.kind == "real" and spec.terrain.preset:
+        if spec.terrain.kind == "real" and spec.terrain.preset and spec.terrain.structure_crop_size_m is None:
             if (ortho := load_ortho_image(spec.terrain.preset)) is not None:
                 image, metadata = ortho
                 scene["terrain_ortho"] = {
@@ -1578,6 +1617,17 @@ class MuJoCoSimulator(Simulator):
 
     def validate(self, spec: SceneSpec, build: BuildResult) -> list[Check]:
         checks = [Check("Model compiles", True, "MuJoCo accepted the scene.")]
+        for index, structure in enumerate(build.scene.get("structures", [])):
+            if structure["kind"] in ("bridge", "habitat"):
+                report = structure["structural_check"]
+                checks.append(Check(f"{structure['kind'].title()} {index + 1} structural screening", report["passed"],
+                                    f"{report['summary']} {report['honesty']}. {report['assumptions']}"))
+            elif structure["kind"] == "lander":
+                report = structure["structural_check"]
+                for case in report["cases"].values():
+                    checks.append(Check(f"Lander {index + 1} {case['label']}", case["passed"],
+                                        f"{case['summary']} {case['honesty']}. {case['assumptions']}",
+                                        advisory=case["what_if"]))
         env = spec.environment
         model, data = self._make(build)
         if len(spec.robots) > 1:

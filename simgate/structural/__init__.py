@@ -1,0 +1,1 @@
+"""Standalone structural analysis helpers, independent of terrain structures."""

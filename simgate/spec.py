@@ -30,6 +30,7 @@ class Terrain(BaseModel):
     # None keeps the upload's. Real elevation data (HiRISE, GeoTIFF) keeps the scale it was measured at.
     preset_size_m: Optional[float] = Field(None, ge=1.0, le=1000.0)
     preset_relief_m: Optional[float] = Field(None, ge=0.0, le=500.0)
+    structure_crop_size_m: Optional[float] = Field(None, ge=20.0, le=1000.0)
 
 
 class Robot(BaseModel):
@@ -177,10 +178,12 @@ class SceneSpec(BaseModel):
         env = self.environment
         t = self.terrain
         if self.domain == "robot_terrain" and t is not None and t.kind == "real":
-            from .terrain_data import load_preset, resizable   # local import: only needed for real terrain
+            from .terrain_data import load_preset, load_structure_patch, resizable
             if not t.preset:
                 raise ValueError("Real terrain needs a preset name.")
             _, meta = load_preset(t.preset)
+            if t.structure_crop_size_m is not None:
+                _, meta = load_structure_patch(t.preset, t.structure_crop_size_m)
             resized = t.preset_size_m is not None or t.preset_relief_m is not None
             if resized and not resizable(meta):
                 raise ValueError(f"{meta['label']} is real elevation data: its size and height come from the "

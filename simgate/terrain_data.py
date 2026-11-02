@@ -9,6 +9,7 @@ Uploaded terrains keep theirs in their upload folder (uploads/terrain/<id>/prese
 preset's name is the upload id.
 """
 import json
+import math
 import os
 from functools import lru_cache
 from pathlib import Path
@@ -86,11 +87,51 @@ def resizable(meta: dict) -> bool:
 
 def scene_heights(terrain) -> np.ndarray:
     """A real terrain's heights for one scene: the preset's, scaled to the scene's height range when it has one."""
-    heights = load_preset(terrain.preset)[0]
+    heights = (load_structure_patch(terrain.preset, terrain.structure_crop_size_m)[0]
+               if terrain.structure_crop_size_m is not None else load_preset(terrain.preset)[0])
     top = float(heights.max())
     if terrain.preset_relief_m is not None and top > 0:
         heights = heights * (terrain.preset_relief_m / top)
     return heights
+
+
+@lru_cache(maxsize=16)
+def load_structure_patch(name: str, size_m: float) -> tuple[np.ndarray, dict]:
+    """Select a larger measured source patch; never stretch or overwrite the preset."""
+    import rasterio
+    from scipy.ndimage import maximum_filter, uniform_filter
+
+    from .terrain_import import geotiff_heights, inspect
+
+    original, meta = load_preset(name)
+    source = meta.get("source")
+    if not source or not str(source).lower().endswith((".tif", ".tiff")):
+        raise ValueError(f"{meta['label']} has no source GeoTIFF for a larger measured structure patch.")
+    mpp = float(meta["meters_per_pixel"])
+    requested_pixels = int(round(size_m / mpp))
+    survey_size = min(requested_pixels * 3, *meta["source_shape"])
+    row, col = meta["window_top_left_px"]
+    row = max(0, min(meta["source_shape"][0] - survey_size, row + original.shape[0] // 2 - survey_size // 2))
+    col = max(0, min(meta["source_shape"][1] - survey_size, col + original.shape[1] // 2 - survey_size // 2))
+    with rasterio.Env(GDAL_HTTP_TIMEOUT=20, GDAL_HTTP_MAX_RETRY=1):
+        survey, mpp, details = geotiff_heights(source, survey_size * mpp, pixel=(row, col))
+    dy, dx = np.gradient(survey, mpp, mpp)
+    slopes = np.degrees(np.arctan(np.hypot(dx, dy)))
+    pad = maximum_filter(slopes, size=max(3, int(math.ceil(12 / mpp))))
+    scores = uniform_filter((pad <= 8).astype(float), size=requested_pixels, mode="constant")
+    border = requested_pixels // 2 + 1
+    scores[:border] = scores[-border:] = -1
+    scores[:, :border] = scores[:, -border:] = -1
+    centre_row, centre_col = np.unravel_index(int(np.argmax(scores)), scores.shape)
+    bottom = int(centre_row - requested_pixels // 2)
+    left = int(centre_col - requested_pixels // 2)
+    heights = survey[bottom:bottom + requested_pixels, left:left + requested_pixels].copy()
+    offset = float(heights.min())
+    heights -= offset
+    report = inspect(heights, mpp)
+    patch = {**meta, **report, "window_top_left_px": [row + survey.shape[0] - bottom - requested_pixels, col + left],
+             "base_elevation_m": details["base_elevation_m"] + offset, "structure_patch": True}
+    return heights, patch
 
 
 def resample(heights: np.ndarray, n: int) -> np.ndarray:
