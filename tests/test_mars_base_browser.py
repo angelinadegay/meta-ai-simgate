@@ -86,3 +86,26 @@ def test_true_visual_sizes_are_measured_from_geometry(browser_page):
         artifacts = Path(__file__).parent / "screenshots"
         artifacts.mkdir(exist_ok=True)
         (artifacts / "measured-structure-sizes.json").write_text(json.dumps(result, indent=2))
+
+
+@pytest.mark.parametrize("aspect", [1440 / 900, 390 / 844])
+def test_base_camera_contains_structures_start_goal_and_eases_to_follow(browser_page, aspect):
+        result = browser_page.evaluate("""async aspect => {
+            const THREE=await import('three');const {frameBase,easeIntoFollow}=await import('/static/vendor/base-camera.js');
+            const root=new THREE.Group(),parent=new THREE.Group();parent.rotation.x=-Math.PI/2;parent.add(root);
+            for(const x of [-12,0,14]){const group=new THREE.Group(),skin=new THREE.Group();
+                skin.add(new THREE.Mesh(new THREE.BoxGeometry(6,4,4),new THREE.MeshBasicMaterial()));
+                group.position.set(x,0,2);group.add(skin);group.userData.skin=skin;root.add(group);}
+            const camera=new THREE.PerspectiveCamera(50,aspect,.05,5000),controls={target:new THREE.Vector3()};
+            const scene={mission:{start:[-20,-5],goal:[19,5],goal_z:4}};
+            const bounds=frameBase(camera,controls,root,scene,()=>0);const projected=[];
+            for(const x of [bounds.min.x,bounds.max.x])for(const y of [bounds.min.y,bounds.max.y])for(const z of [bounds.min.z,bounds.max.z]){
+                const point=new THREE.Vector3(x,y,z).project(camera);projected.push([point.x,point.y]);}
+            const initial=camera.position.clone(),robot=new THREE.Vector3(-20,1,5),desired=robot.clone().add(new THREE.Vector3(-3.2,2.2,2.6));
+            easeIntoFollow(camera,controls,robot,1/60);const first=camera.position.distanceTo(initial);
+            const complete=initial.distanceTo(desired);for(let i=0;i<240;i++)easeIntoFollow(camera,controls,robot,1/60);
+            return {projected,first,complete,remaining:camera.position.distanceTo(desired)};
+        }""", aspect)
+        assert all(abs(axis) < 1 for point in result["projected"] for axis in point)
+        assert 0 < result["first"] < result["complete"] * 0.1
+        assert result["remaining"] < result["complete"] * 0.001

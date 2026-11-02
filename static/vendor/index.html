@@ -662,6 +662,7 @@ import * as THREE from "three";
 import { OrbitControls } from "/static/vendor/OrbitControls.js";
 import { buildStructureVisuals, setStructureDetails, measureStructureVisuals } from "/static/vendor/structures.js";
 import { buildTerrainHorizon } from "/static/vendor/terrain-horizon.js";
+import { frameBase, easeIntoFollow } from "/static/vendor/base-camera.js";
 
 const $ = (id) => document.getElementById(id);
 const AGENT_COLORS = { Director: "--director", Planner: "--planner", Router: "--router", Builder: "--builder", Checker: "--checker", Simulator: "--simulator", Explainer: "--explainer", "Stress planner": "--planner", "Batch runner": "--simulator" };
@@ -2061,6 +2062,8 @@ addEventListener("resize", resize); resize();
 let current = null, frames = [], playing = true, streaming = false, idx = 0, acc = 0, followCam = true;
 const meshes = [];
 let structureVisualRoot = null, structureSceneToken = 0;
+let followTransitionRemaining = 0, baseOverview = false;
+controls.addEventListener("start", () => { followCam = false; followTransitionRemaining = 0; baseOverview = false; });
 let batchPlayback = false, batchTimeline = [], batchGhostRuns = [], activeBatchRunId = null, ghostGroup = null;
 let hiddenBaseGeomIds = [];
 let cameraRobotId = null;
@@ -2603,16 +2606,8 @@ function renderStructureCards(structures) {
 
 function focusStructureVisuals(index = null) {
   if (!structureVisualRoot?.children.length) return;
-  world.updateMatrixWorld(true);
-  const bounds = new THREE.Box3();
-  const groups = index === null ? structureVisualRoot.children : [structureVisualRoot.children[index]];
-  for (const group of groups) if (group) bounds.expandByObject(group.userData.skin);
-  if (bounds.isEmpty()) return;
-  const centre = bounds.getCenter(new THREE.Vector3()), size = bounds.getSize(new THREE.Vector3());
-  const vertical = camera.fov * Math.PI / 180, horizontal = 2 * Math.atan(Math.tan(vertical / 2) * camera.aspect);
-  const distance = Math.max(2, size.length() / 2 / Math.sin(Math.min(vertical, horizontal) / 2) * 1.12);
-  controls.target.copy(centre); camera.position.copy(centre).add(new THREE.Vector3(0.8, 0.62, 1).normalize().multiplyScalar(distance));
-  followCam = false; controls.update();
+  frameBase(camera, controls, structureVisualRoot, current, terrainHeightAt, index);
+  baseOverview = index === null; followCam = false; followTransitionRemaining = 0; controls.update();
 }
 
 function loadScene(s) {
@@ -2647,6 +2642,7 @@ function loadScene(s) {
     setStructureDetails(structureVisualRoot, detailsMode);
     visuals.ready.then(() => {
       if (token !== structureSceneToken) return;
+      if (baseOverview) focusStructureVisuals();
       setStructureDetails(structureVisualRoot, detailsMode);
       measureStructureVisuals(structureVisualRoot).forEach((measurement, index) => {
         const label = $(`structureMeasured${index}`);
@@ -2854,7 +2850,7 @@ function applyFrame(f) {
     }
     // Follow cam: move the camera with the robot so it stays the same size on screen.
     const target = meshes[cameraGeom()];
-    if (target && followCam) {
+    if (target && followCam && followTransitionRemaining <= 0) {
       const before = controls.target.clone();
       controls.target.lerp(target.getWorldPosition(new THREE.Vector3()), 0.08);
       camera.position.add(controls.target.clone().sub(before));
@@ -2865,7 +2861,7 @@ function applyFrame(f) {
   $("time").textContent = `${f.t.toFixed(2)} s`; $("scrub").value = idx;
 }
 
-function startRun() { clearGhosts(); resetTrail(); frames = []; idx = 0; acc = 0; playing = true; streaming = true; $("player").hidden = false; $("play").textContent = "❚❚"; if (frameParts) frameParts.maxDisp = 1e-6; }
+function startRun() { clearGhosts(); resetTrail(); frames = []; idx = 0; acc = 0; playing = true; streaming = true; followCam = true; baseOverview = false; followTransitionRemaining = 2.2; $("player").hidden = false; $("play").textContent = "❚❚"; if (frameParts) frameParts.maxDisp = 1e-6; }
 $("play").onclick = () => {
   playing = !playing;
   const end = batchPlayback ? batchTimeline.length : frames.length;
@@ -2880,6 +2876,13 @@ $("scrub").oninput = (e) => {
 const clock = new THREE.Clock();
 function tick() {
   const dt = clock.getDelta();
+  if (followCam && followTransitionRemaining > 0) {
+    const target = meshes[cameraGeom()];
+    if (target) {
+      easeIntoFollow(camera, controls, target.getWorldPosition(new THREE.Vector3()), Math.min(dt, 0.1));
+      followTransitionRemaining = Math.max(0, followTransitionRemaining - dt);
+    }
+  }
   if (flagCloths.length) {
     const time = clock.elapsedTime;
     for (const cloth of flagCloths) {
