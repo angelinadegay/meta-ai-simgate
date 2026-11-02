@@ -26,6 +26,8 @@ def _robot_mission(spec: SceneSpec, entry, heights: np.ndarray) -> dict:
     robot_spec = spec.model_copy(deep=True)
     robot_spec.robot = entry.robot.model_copy(deep=True)
     robot_spec.mission = entry.mission()
+    if robot_spec.mission.goal_structure is not None:
+        robot_spec.mission.goal_xy, robot_spec.mission.goal_place = None, None
     return resolve_mission(robot_spec, heights)
 
 
@@ -222,7 +224,19 @@ def place_structures(spec: SceneSpec, heights: np.ndarray) -> tuple[list[dict], 
     used_gaps: set[tuple[float, float]] = set()
     occupied: list[tuple[tuple[float, float], float]] = []
 
-    for request in spec.structures:
+    requests = sorted(spec.structures, key=lambda request: request.kind == "bridge")
+    resolved_bridge_route = False
+    for request in requests:
+        if request.kind == "bridge" and not resolved_bridge_route:
+            resolved_bridge_route = True
+            primary = spec.robots[0]
+            if primary.goal_structure is not None:
+                route_spec = spec.model_copy(deep=True)
+                route_spec.robots[0].goal_xy = structure_goal_xy(placed, primary.goal_structure)
+                route_spec.robots[0].goal_place = None
+                route_spec.robots[0].goal_structure = None
+                start, goal, route_goal, route_yaw, starts = _route(route_spec, heights)
+                gaps = _path_gaps(route_spec, heights, start, route_goal)
         target, target_name, extra = _target(request, spec, heights, start, goal, gaps, used_gaps)
         if target is None:
             notes.append(f"{request.kind.title()} not placed: {extra}.")
@@ -326,6 +340,24 @@ def place_structures(spec: SceneSpec, heights: np.ndarray) -> tuple[list[dict], 
             "distance_to_target_m": round(distance, 1),
             "dimensions": dimensions["record"],
         }
+        access_points = {}
+        if request.kind == "habitat":
+            run = float(dimensions["record"]["ramp"]["run_m"])
+            rise = float(dimensions["record"]["airlock_rise_m"])
+            airlock_xy = (module_center[0] + math.cos(yaw) *
+                          (dimensions["record"]["module_length_m"] / 2 + run),
+                          module_center[1] + math.sin(yaw) *
+                          (dimensions["record"]["module_length_m"] / 2 + run))
+            access_points["habitat_airlock"] = {"x": round(airlock_xy[0], 2), "y": round(airlock_xy[1], 2),
+                                                 "z": round(z + rise, 2)}
+        elif request.kind == "lander":
+            approach_offset = dimensions["record"]["footprint_m"] / 2 + 0.75
+            approach_xy = (module_center[0] - math.cos(yaw) * approach_offset,
+                           module_center[1] - math.sin(yaw) * approach_offset)
+            access_points["lander"] = {"x": round(approach_xy[0], 2), "y": round(approach_xy[1], 2),
+                                        "z": round(height_at(heights, size_m, *approach_xy), 2)}
+        if access_points:
+            record["access_points"] = access_points
         if bridge_gap:
             slot = bridge_gap["slot"]
             record["gap"] = {"obstacle": slot["ob"].kind,
@@ -344,6 +376,15 @@ def place_structures(spec: SceneSpec, heights: np.ndarray) -> tuple[list[dict], 
         placed.append(record)
 
     return placed, notes
+
+
+def structure_goal_xy(placements: list[dict], target: str) -> list[float]:
+    """Resolve a named structure goal to a navigable access point in placement metadata."""
+    for record in placements:
+        point = (record.get("access_points") or {}).get(target)
+        if point is not None:
+            return [float(point["x"]), float(point["y"])]
+    raise ValueError(f"No placed structure provides the requested goal {target!r}.")
 
 
 def structure_geoms(placements: list[dict]) -> str:

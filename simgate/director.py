@@ -111,6 +111,7 @@ class Director:
             plan = (_analysis_plan(text, world_state, state) or _finder_plan(text, world_state)
                     or _rule_plan_with_title(text, world_state))
         self.guard_notes = []
+        self.guard_notes.extend(_apply_text_guards(plan, text))
         _guard_follow_up(plan, follow, self.guard_notes)
         return _guard_duration(plan, text, world_state, self.guard_notes)
 
@@ -315,6 +316,9 @@ Guidance:
 - Use only robot, policy, and terrain-preset IDs listed below. Built-in kinds are rover and walker.
 - Use robot_id with its compatible policy_id for library robots such as the humanoid.
 - Put repeated identical robots in one robots entry with count (1–6); code expands the count.
+- Robot terrain scenes may include static structures in "structures": habitat, bridge or lander; placement is
+    near_start, near_goal, over_gap or a named place. A bridge over a trench needs a path gap obstacle; when the
+    terrain is real, note that the added trench is not part of the terrain data. Goals may target habitat_airlock or lander.
 - summary is a short name for the scene, used as its title: "Three rovers race on Mars hills", not an action
   such as "Create a rover scene on Mars hills".
 - Use named places rather than guessing coordinates. A shared goal can be set with goal.
@@ -339,6 +343,7 @@ Short examples:
 Named world plan: {{"workflow":"build","summary":"Rover on Moon craters","world":{{"body":"moon","terrain_kind":"craters"}},"robots":[{{"kind":"rover"}}],"run_now":false}}
 Course plan: {{"workflow":"build","summary":"Rover obstacle course","world":{{"terrain_kind":"flat"}},"robots":[{{"kind":"rover"}}],"obstacles":[{{"kind":"rock","size":"small","count":10,"placement":"path"}},{{"kind":"step","placement":"path"}},{{"kind":"gap","placement":"path"}}],"run_now":false}}
 Real place plan: {{"workflow":"build","summary":"Rover in Gale Crater","world":{{"preset":"real-gale"}},"robots":[{{"kind":"rover"}}],"run_now":false}}
+Mars base with rover: {{"workflow":"build","summary":"Mars base on Jezero","world":{{"preset":"real-jezero"}},"robots":[{{"kind":"rover"}}],"structures":[{{"kind":"habitat","size":"medium","material":"unspecified","placement":"near_goal"}},{{"kind":"lander","size":"medium","material":"unspecified","placement":"near_start"}},{{"kind":"bridge","size":"medium","material":"unspecified","placement":"over_gap"}}],"obstacles":[{{"kind":"gap","size":"medium","placement":"path"}}],"goal":{{"structure":"habitat_airlock"}},"run_now":false}}
 Race plan: {{"workflow":"race","summary":"Three rovers race to the east side","robots":[{{"kind":"rover","count":3}}],"goal":{{"place":"east"}},"run_now":false}}
 {library_examples}Compare plan: {{"workflow":"compare","summary":"Rover on Mars and Earth","robots":[{{"kind":"rover"}}],"variants":[{{"label":"Mars","gravity":3.71}},{{"label":"Earth","gravity":9.81}}],"run_now":false}}
 Stress plan: {{"workflow":"stress_test","summary":"Rover robustness test","question":"How robust is it?","run_now":false}}
@@ -409,6 +414,7 @@ def _plan_world_state(world_state: World | SceneSpec | dict[str, Any] | None) ->
             "environment": spec.environment.model_dump(mode="json"),
             "terrain": spec.terrain.model_dump(mode="json") if spec.terrain else None,
             "structure": spec.structure.model_dump(mode="json") if spec.structure else None,
+            "terrain_structures": [item.model_dump(mode="json") for item in spec.structures],
             "load": spec.load.model_dump(mode="json") if spec.load else None,
             "robots": [
                 {
@@ -416,11 +422,12 @@ def _plan_world_state(world_state: World | SceneSpec | dict[str, Any] | None) ->
                     "label": robot.label,
                     "robot": robot.robot.model_dump(mode="json"),
                     "start": robot.start_xy or robot.start_place,
-                    "goal": robot.goal_xy or robot.goal_place,
+                    "goal": robot.goal_xy or robot.goal_place or robot.goal_structure,
                 }
                 for robot in spec.robots
             ],
             "obstacles": [obstacle.model_dump(mode="json") for obstacle in spec.obstacles],
+            "terrain_structures": [item.model_dump(mode="json") for item in spec.structures],
         }
         return json.dumps(compact, separators=(",", ":"))
     return json.dumps(world_state, separators=(",", ":"), default=str)[:12000]
@@ -505,6 +512,9 @@ def _rule_plan(text: str, world_state: World | SceneSpec | dict[str, Any] | None
             goal = {"xy": mission.goal_xy}
         elif mission.goal_place is not None:
             goal = {"place": mission.goal_place}
+        elif mission.goal_structure is not None:
+            goal = {"structure": mission.goal_structure}
+    structures = [item.model_dump(mode="json") for item in planned.structures]
 
     if is_compare:
         body_names = [name for name in presets.GRAVITY if re.search(rf"\b{name}\b", source)]
@@ -535,6 +545,7 @@ def _rule_plan(text: str, world_state: World | SceneSpec | dict[str, Any] | None
             world=world,
             robots=robots,
             obstacles=[obstacle.model_dump(mode="json") for obstacle in planned.obstacles],
+            structures=structures,
             goal=goal,
             run_now=requested_run,
         )
@@ -574,6 +585,7 @@ def _rule_plan(text: str, world_state: World | SceneSpec | dict[str, Any] | None
         world=world,
         robots=robots,
         obstacles=[obstacle.model_dump(mode="json") for obstacle in planned.obstacles],
+        structures=structures,
         goal=goal,
         run_now=requested_run,
     )
@@ -773,6 +785,54 @@ def _apply_text_guards(plan: Plan, text: str) -> list[str]:
                     obstacle.placement, obstacle.place, moved = "path", None, True
         if moved:
             notes.append("Placed the obstacles along the path in the order given.")
+        if plan.workflow in ("build", "race"):
+            from .spec import Obstacle, TerrainStructure
+
+            asks_habitat = bool(re.search(r"\bhabitat\b|\b(?:mars|lunar) base\b", source))
+            asks_lander = bool(re.search(r"\blander\b", source))
+            asks_bridge = bool(re.search(r"\bbridge\b", source))
+            to_habitat = bool(re.search(r"\bto (?:the )?(?:habitat|airlock)\b", source))
+            to_lander = bool(re.search(r"\bto (?:the )?lander\b", source))
+            from_lander = bool(re.search(r"\b(?:from|beside|next to|at) (?:the )?lander\b", source))
+
+            requested = []
+            if asks_habitat:
+                placement = "near_goal" if to_habitat or asks_lander else "near_start"
+                requested.append(("habitat", placement))
+            if asks_lander:
+                requested.append(("lander", "near_goal" if to_lander else "near_start"))
+            if asks_bridge:
+                requested.append(("bridge", "over_gap"))
+
+            for kind, placement in requested:
+                existing = next((item for item in plan.structures if item.kind == kind), None)
+                if existing is None:
+                    plan.structures.append(TerrainStructure(kind=kind, placement=placement))
+                    notes.append(f"Added the {kind} named in your request.")
+                else:
+                    existing.placement = placement
+
+            bridge_requested = asks_bridge or any(item.kind == "bridge" for item in plan.structures)
+            if bridge_requested:
+                path_gap = next((item for item in plan.obstacles
+                                 if item.kind == "gap" and item.placement == "path"), None)
+                if path_gap is None:
+                    plan.obstacles.append(Obstacle(kind="gap", size="medium", placement="path"))
+                real_preset = plan.world.terrain_kind == "real" or bool(
+                    plan.world.preset and (plan.world.preset in list_presets()
+                                           or plan.world.preset.removeprefix("real-") in list_presets())
+                )
+                trench_note = ("Added trench, not in the terrain data." if real_preset else
+                               "Added a trench obstacle on the path for the requested bridge.")
+                if trench_note not in notes:
+                    notes.append(trench_note)
+
+            if plan.robots and from_lander:
+                plan.robots[0].start_place = "start_area"
+            goal_structure = ("habitat_airlock" if to_habitat else "lander" if to_lander else None)
+            if goal_structure and (plan.goal is None or plan.goal.structure != goal_structure):
+                plan.goal = GoalPlan(structure=goal_structure)
+                notes.append(f"Set the goal to the {goal_structure.replace('_', ' ')}.")
     if _ENDS_WITH_RUN.search(source) and not plan.run_now:
         plan.run_now = True
         notes.append("You asked to run it, so it runs now.")

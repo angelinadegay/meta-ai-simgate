@@ -376,6 +376,8 @@ def resolve_mission(spec: SceneSpec, H: np.ndarray) -> dict:
             goal = clamp(ms.goal_xy, "goal")
         elif ms.goal_place:
             goal = place_xy(H, size, ms.goal_place)
+        elif ms.goal_structure is not None:
+            goal = place_xy(H, size, "east")   # temporary anchor for placing near-goal structures
         if ms.start_heading_deg is not None:
             heading = float(ms.start_heading_deg)
         elif goal is not None:
@@ -1023,6 +1025,31 @@ class MuJoCoSimulator(Simulator):
         self.structure_placements: list[dict] = []
         self.structure_notes: list[str] = []
 
+    def _resolve_structure_goals(self, spec: SceneSpec) -> None:
+        targets = [entry for entry in spec.robots if entry.goal_structure is not None]
+        if not targets:
+            return
+        from ..structures import structure_goal_xy
+
+        for entry in targets:
+            xy = structure_goal_xy(self.structure_placements, entry.goal_structure)
+            entry.goal_xy, entry.goal_place = list(xy), None
+            mission = self.missions.get(entry.id)
+            if mission is None and spec.robots and entry.id == spec.robots[0].id:
+                mission = self.mission
+            if mission is None:
+                raise ValueError(f"No resolved mission for robot {entry.id!r}.")
+            start = mission["start"]
+            mission["goal"] = tuple(xy)
+            if entry.start_heading_deg is None:
+                mission["heading_deg"] = round(math.degrees(math.atan2(xy[1] - start[1], xy[0] - start[0])), 1)
+
+        if spec.robots:
+            spec.robot = spec.robots[0].robot.model_copy(deep=True)
+            spec.mission = spec.robots[0].mission()
+        _refresh_default_time_limit(spec)
+        self.mission = self.missions.get(spec.robots[0].id, self.mission) if spec.robots else self.mission
+
     def _multi_template(self, spec: SceneSpec) -> tuple[str, np.ndarray, float]:
         terrain = spec.terrain
         environment = spec.environment
@@ -1098,6 +1125,7 @@ class MuJoCoSimulator(Simulator):
         from ..structures import place_structures
 
         self.structure_placements, self.structure_notes = place_structures(spec, H)
+        self._resolve_structure_goals(spec)
         obstacle_xml, self.course, self.course_notes = "", [], []
         from ..structures import structure_geoms
 
@@ -1212,6 +1240,7 @@ class MuJoCoSimulator(Simulator):
         from ..structures import place_structures
 
         self.structure_placements, self.structure_notes = place_structures(spec, H)
+        self._resolve_structure_goals(spec)
         self.course, self.course_notes, obstacle_xml = [], [], ""
         from ..structures import structure_geoms
 

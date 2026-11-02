@@ -55,6 +55,7 @@ class Robot(BaseModel):
 
 
 Place = Literal["start_area", "center", "lowest", "highest", "north", "south", "east", "west"]
+StructureGoal = Literal["habitat_airlock", "lander"]
 
 
 class Mission(BaseModel):
@@ -66,10 +67,11 @@ class Mission(BaseModel):
     start_heading_deg: Optional[float] = None   # 0 = facing east (+x), 90 = north; default: facing the goal
     goal_xy: Optional[list[float]] = None
     goal_place: Optional[Place] = None
+    goal_structure: Optional[StructureGoal] = None
     goal_radius_m: float = Field(1.0, gt=0.1, le=5.0)
 
     def has_goal(self) -> bool:
-        return self.goal_xy is not None or self.goal_place is not None
+        return self.goal_xy is not None or self.goal_place is not None or self.goal_structure is not None
 
 
 class RobotEntry(BaseModel):
@@ -81,6 +83,7 @@ class RobotEntry(BaseModel):
     start_heading_deg: Optional[float] = None
     goal_xy: Optional[list[float]] = None
     goal_place: Optional[Place] = None
+    goal_structure: Optional[StructureGoal] = None
     goal_radius_m: float = Field(1.0, gt=0.1, le=5.0)
 
     def mission(self) -> Mission:
@@ -90,6 +93,7 @@ class RobotEntry(BaseModel):
             start_heading_deg=self.start_heading_deg,
             goal_xy=self.goal_xy,
             goal_place=self.goal_place,
+            goal_structure=self.goal_structure,
             goal_radius_m=self.goal_radius_m,
         )
 
@@ -222,6 +226,7 @@ class SceneSpec(BaseModel):
                         start_heading_deg=mission.start_heading_deg,
                         goal_xy=mission.goal_xy,
                         goal_place=mission.goal_place,
+                        goal_structure=mission.goal_structure,
                         goal_radius_m=mission.goal_radius_m,
                     )
                 ]
@@ -230,14 +235,16 @@ class SceneSpec(BaseModel):
                     (
                         entry for entry in self.robots
                         if entry.goal_xy is not None or entry.goal_place is not None
+                        or entry.goal_structure is not None
                     ),
                     None,
                 )
                 if shared_goal is not None:
                     for entry in self.robots:
-                        if entry.goal_xy is None and entry.goal_place is None:
+                        if entry.goal_xy is None and entry.goal_place is None and entry.goal_structure is None:
                             entry.goal_xy = shared_goal.goal_xy
                             entry.goal_place = shared_goal.goal_place
+                            entry.goal_structure = shared_goal.goal_structure
                             entry.goal_radius_m = shared_goal.goal_radius_m
                 self.robot = self.robots[0].robot.model_copy(deep=True)
                 self.mission = self.robots[0].mission()

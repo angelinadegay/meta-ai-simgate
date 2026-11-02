@@ -165,12 +165,19 @@ async def _prepare_robot_world(
             {"obstacles": [obstacle.model_dump(mode="json") for obstacle in plan.obstacles]},
             "Placing the requested obstacles.",
         )
-    if plan.goal is not None:
-        target = (
-            {"xy": plan.goal.xy}
-            if plan.goal.xy is not None
-            else {"place": plan.goal.place}
+    if plan.structures:
+        if current is not None:
+            world.spec.structures = []
+        await director._mock_call(
+            world,
+            "add_structures",
+            {"structures": [item.model_dump(mode="json") for item in plan.structures]},
+            "Placing the requested habitat, lander, and bridge metadata.",
         )
+    if plan.goal is not None:
+        target = ({"xy": plan.goal.xy} if plan.goal.xy is not None else
+                  {"structure": plan.goal.structure} if plan.goal.structure is not None else
+                  {"place": plan.goal.place})
         targets = [robot_id for robot_id, has_override in spawned if not has_override]
         if targets and len(targets) == len(spawned):
             await director._mock_call(

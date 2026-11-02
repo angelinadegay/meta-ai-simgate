@@ -7,7 +7,7 @@ from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, PrivateAttr,
 from . import presets
 from .batch import Variation
 from .library import LibraryRegistry
-from .spec import Load, Mission, Obstacle, Place, Robot, Structure
+from .spec import Load, Mission, Obstacle, Place, Robot, Structure, StructureGoal, TerrainStructure
 from .terrain_data import list_presets
 
 
@@ -153,11 +153,12 @@ class GoalPlan(BaseModel):
 
     place: PlanPlace | None = None
     xy: list[float] | None = None
+    structure: StructureGoal | None = None
 
     @model_validator(mode="after")
     def validate_target(self) -> "GoalPlan":
-        if (self.place is None) == (self.xy is None):
-            raise ValueError("Provide exactly one of place or xy for the shared goal.")
+        if sum(value is not None for value in (self.place, self.xy, self.structure)) != 1:
+            raise ValueError("Provide exactly one of place, xy, or structure for the shared goal.")
         if self.xy is not None and len(self.xy) != 2:
             raise ValueError("Goal coordinates must contain exactly two values.")
         return self
@@ -216,6 +217,7 @@ class Plan(BaseModel):
     structure: Structure | None = None
     load: Load | None = None
     obstacles: list[Obstacle] = Field(default_factory=list, max_length=30)
+    structures: list[TerrainStructure] = Field(default_factory=list, max_length=8)
     goal: GoalPlan | None = None
     variants: list[Variation] = Field(default_factory=list, max_length=23)
     question: str | None = Field(default=None, max_length=1000)
@@ -245,6 +247,8 @@ class Plan(BaseModel):
             raise ValueError("workflow 'stress_test' requires a question.")
         if self.workflow == "edit" and not self.changes.given():
             raise ValueError("workflow 'edit' requires at least one change.")
+        if self.structures and (self.domain != "robot_terrain" or self.workflow not in ("build", "race")):
+            raise ValueError("terrain structures are available when building or racing robot scenes.")
         if self.workflow == "custom" and not self.custom_request:
             raise ValueError("workflow 'custom' requires custom_request.")
         if self.workflow == "answer" and not self.reply:

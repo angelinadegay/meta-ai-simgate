@@ -101,9 +101,15 @@ design" applies the last redesign's winner through the typed edit path without a
 A typical race uses **one Director planning model call**. If it runs, a separate Explainer call may follow; a
 failed check can add up to three bounded Builder repair attempts. Mock mode uses rules and makes no model calls.
 
-The registered tools include `set_world`, `spawn_robot`, `remove_robot`, `list_library`, `add_obstacles`,
+The registered tools include `set_world`, `spawn_robot`, `remove_robot`, `list_library`, `add_obstacles`, `add_structures`,
 `clear_obstacles`, `set_start`, `set_goal`, `build_and_check`, `run`, `compare`, `build_custom`, `ask_user` and
 `explain`; workflows invoke them in code rather than asking the Director to select one at a time.
+
+Terrain structures can be requested directly, for example: "Build a Mars base on flat terrain with a habitat,
+lander, and bridge. Drive a rover from the lander to the habitat airlock." Both Mock and model planning preserve
+the structures; code fills omitted structures, starts the rover near the lander, and resolves its goal to the
+placed habitat access point. A bridge request adds a path trench if none exists. On real terrain, the Director
+discloses "Added trench, not in the terrain data." Structure goals also support the lander access point.
 
 ### Several robots
 

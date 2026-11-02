@@ -9,7 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from . import agents, config, llm, presets
 from .backends.base import BuildResult, Check, Simulator, blocking_failures
 from .library import LibraryRegistry
-from .spec import Mission, Obstacle, Robot, RobotEntry, SceneSpec, Terrain
+from .spec import Mission, Obstacle, Robot, RobotEntry, SceneSpec, StructureGoal, Terrain, TerrainStructure
 from .terrain_data import load_preset, resizable
 
 
@@ -70,15 +70,20 @@ class AddObstaclesArgs(ToolArgs):
     obstacles: list[Obstacle] = Field(min_length=1, max_length=30)
 
 
+class AddStructuresArgs(ToolArgs):
+    structures: list[TerrainStructure] = Field(min_length=1, max_length=8)
+
+
 class SetGoalArgs(ToolArgs):
     robot_id: str = "all"
     place: Place | None = None
     xy: list[float] | None = None
+    structure: StructureGoal | None = None
 
     @model_validator(mode="after")
     def validate_target(self) -> "SetGoalArgs":
-        if (self.place is None) == (self.xy is None):
-            raise ValueError("Provide exactly one of place or xy.")
+        if sum(value is not None for value in (self.place, self.xy, self.structure)) != 1:
+            raise ValueError("Provide exactly one of place, xy, or structure.")
         if self.xy is not None and len(self.xy) != 2:
             raise ValueError("Goal coordinates must contain exactly two values.")
         return self
@@ -302,6 +307,19 @@ def add_obstacles(world: World, args: dict[str, Any]) -> ToolResult:
     return _result(f"Added {len(parsed.obstacles)} obstacle entries.", obstacles=[o.model_dump() for o in spec.obstacles])
 
 
+def add_structures(world: World, args: dict[str, Any]) -> ToolResult:
+    parsed = _validate(AddStructuresArgs, args)
+    assert isinstance(parsed, AddStructuresArgs)
+    spec = world.spec.model_copy(deep=True)
+    if spec.domain != "robot_terrain":
+        raise ValueError("Terrain structures can only be added to robot scenes.")
+    spec.structures.extend(item.model_copy(deep=True) for item in parsed.structures)
+    _refresh_spec(spec)
+    world.spec = spec
+    return _result(f"Added {len(parsed.structures)} terrain structure entries.",
+                   structures=[item.model_dump(mode="json") for item in spec.structures])
+
+
 def clear_obstacles(world: World, args: dict[str, Any] | None = None) -> ToolResult:
     if args:
         raise ValueError("clear_obstacles takes no arguments.")
@@ -323,12 +341,18 @@ def set_goal(world: World, args: dict[str, Any]) -> ToolResult:
         raise ValueError(f"Unknown robot id: {parsed.robot_id}")
     target: Place | list[float] = parsed.place if parsed.place is not None else parsed.xy
     for entry in entries:
-        _apply_place(entry, "goal", target)
+        if parsed.structure is not None:
+            entry.goal_xy, entry.goal_place = None, None
+            entry.goal_structure = parsed.structure
+        else:
+            entry.goal_structure = None
+            _apply_place(entry, "goal", target)
     _refresh_spec(spec)
     world.spec = spec
     return _result(
         f"Set the goal for {len(entries)} robot(s).",
-        goals={entry.id: {"goal_xy": entry.goal_xy, "goal_place": entry.goal_place} for entry in entries},
+        goals={entry.id: {"goal_xy": entry.goal_xy, "goal_place": entry.goal_place,
+                  "goal_structure": entry.goal_structure} for entry in entries},
     )
 
 
@@ -563,6 +587,7 @@ TOOL_FUNCTIONS = {
     "remove_robot": remove_robot,
     "list_library": list_library,
     "add_obstacles": add_obstacles,
+    "add_structures": add_structures,
     "clear_obstacles": clear_obstacles,
     "set_goal": set_goal,
     "set_start": set_start,

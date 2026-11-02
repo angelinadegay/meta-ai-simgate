@@ -1,6 +1,7 @@
 import math
 
 import numpy as np
+import pytest
 
 from simgate.spec import (Mission, Obstacle, Robot, RobotEntry, SceneSpec, Terrain,
                           TerrainStructure)
@@ -213,3 +214,93 @@ def test_structure_colliders_do_not_overlap_robot_at_initial_spawn():
     ]
 
     assert not overlaps, overlaps
+
+
+@pytest.mark.parametrize("mock", [True, False])
+def test_mars_base_planning_builds_structures_and_resolves_airlock_goal(monkeypatch, mock):
+    import asyncio
+    import json
+
+    from simgate import config, llm
+    from simgate.backends.mujoco_backend import MuJoCoSimulator, make_heights
+    from simgate.backends.obstacles import plan_course
+    from simgate.director import Director
+    from simgate.structures import structure_goal_xy
+    from simgate.workflows import _prepare_robot_world
+
+    monkeypatch.setattr(config, "MOCK_MODE", mock)
+    monkeypatch.setattr(llm, "chat", lambda *args, **kwargs: json.dumps({
+        "workflow": "build", "summary": "Mars base rover mission",
+        "world": {"body": "mars", "terrain_kind": "flat", "roughness": 0},
+        "robots": [{"kind": "rover"}],
+        "structures": [{"kind": "habitat", "placement": "near_goal"}],
+        "goal": {"place": "east"},
+    }))
+    director = Director()
+    plan = director.plan("Build a Mars base on flat terrain with a habitat, lander, and bridge. "
+                         "Drive a rover from the lander to the habitat airlock.")
+
+    assert not director.used_rule_planner
+    assert {item.kind: item.placement for item in plan.structures} == {
+        "habitat": "near_goal", "lander": "near_start", "bridge": "over_gap"}
+    assert plan.goal.structure == "habitat_airlock"
+    assert plan.robots[0].start_place == "start_area"
+    assert sum(item.kind == "gap" and item.placement == "path" for item in plan.obstacles) == 1
+
+    world = asyncio.run(_prepare_robot_world(plan, None, director))
+    spec = world.spec.fill_defaults()
+    assert spec.robots[0].goal_structure == "habitat_airlock"
+    sim = MuJoCoSimulator()
+    build = sim.build(spec)
+    assert {item["kind"] for item in build.scene["structures"]} == {"habitat", "lander", "bridge"}
+    assert list(sim.mission["goal"]) == structure_goal_xy(build.scene["structures"], "habitat_airlock")
+    assert spec.mission.goal_xy == list(sim.mission["goal"])
+    lander = next(item for item in build.scene["structures"] if item["kind"] == "lander")
+    assert math.dist(sim.mission["start"], lander["footprint"]["center_xy"]) <= 6.1
+
+    heights = make_heights(spec)[0]
+    slots, _ = plan_course(spec, heights, sim.mission["start"], sim.mission["goal"], spec.terrain.seed)
+    gap = next(item for item in slots if item["ob"].kind == "gap")
+    bridge = next(item for item in build.scene["structures"] if item["kind"] == "bridge")
+    assert bridge["gap"]["center"] == [round(value, 2) for value in gap["centre"]]
+
+
+def test_bridge_guard_discloses_real_terrain_trench_and_keeps_existing_gap(monkeypatch):
+    from simgate import director, plan as plan_module
+
+    presets = {"test-mars": {"label": "Test Mars", "body": "mars"}}
+    monkeypatch.setattr(director, "list_presets", lambda: presets)
+    monkeypatch.setattr(plan_module, "list_presets", lambda: presets)
+    plan = plan_module.Plan(
+        workflow="build", summary="Bridge on real terrain", robots=[{"kind": "rover"}],
+        world={"terrain_kind": "real", "preset": "test-mars"},
+    )
+    notes = director._apply_text_guards(plan, "Build a rover and bridge on Test Mars real terrain.")
+    assert "Added trench, not in the terrain data." in notes
+    assert len(plan.obstacles) == 1 and plan.obstacles[0].kind == "gap"
+    plan.obstacles[0].size = "small"
+    director._apply_text_guards(plan, "Build a rover and bridge on Test Mars real terrain.")
+    assert len(plan.obstacles) == 1 and plan.obstacles[0].size == "small"
+    assert len(plan.structures) == 1
+
+
+@pytest.mark.parametrize("count", [1, 2])
+@pytest.mark.parametrize("target,kind", [("habitat_airlock", "habitat"), ("lander", "lander")])
+def test_structure_goal_resolves_for_single_robot_and_race(count, target, kind):
+    from simgate.backends.mujoco_backend import MuJoCoSimulator
+    from simgate.structures import structure_goal_xy
+
+    spec = SceneSpec(
+        domain="robot_terrain", terrain=Terrain(kind="flat", roughness=0, size_m=40),
+        robots=[RobotEntry(id=f"r{index}", label=f"Rover {index}", robot=Robot(kind="rover"),
+                           start_xy=[-12, index * 3], goal_structure=target) for index in range(count)],
+        structures=[TerrainStructure(kind=kind, placement="near_goal")],
+    ).fill_defaults()
+    sim = MuJoCoSimulator()
+    build = sim.build(spec)
+    point = structure_goal_xy(build.scene["structures"], target)
+    assert all(entry.goal_xy == point for entry in spec.robots)
+    assert list(sim.mission["goal"]) == point
+    assert all(list(mission["goal"]) == point for mission in sim.missions.values())
+    rebuilt = MuJoCoSimulator().build(spec)
+    assert rebuilt.scene["structures"] == build.scene["structures"]
