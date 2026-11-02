@@ -42,7 +42,7 @@ class Member:
 class Truss:
     nodes: dict[int, tuple[float, float]]
     members: list[Member]
-    supports: tuple[int, int]
+    supports: tuple[int, ...]
 
 
 @dataclass(frozen=True)
@@ -98,7 +98,7 @@ def build_warren_truss(span_m: float = 6.0, depth_m: float = 2.0, panels: int = 
 def solve_truss(span_m: float = 6.0, depth_m: float = 2.0, panels: int = 3,
                 point_loads: Mapping[int, tuple[float, float]] | None = None,
                 gravity_m_s2: float = 9.81, chord_section: str = "SHS60x60x4",
-                web_section: str | None = None) -> TrussResult:
+                web_section: str | None = None, mid_support: bool = False) -> TrussResult:
     """Solve statics for nodal (Fx, Fy) loads in newtons plus member self-weight.
 
     Gravity is a nonnegative downward acceleration; use zero to omit self-weight.
@@ -108,6 +108,10 @@ def solve_truss(span_m: float = 6.0, depth_m: float = 2.0, panels: int = 3,
     The model is wiped on entry and exit, including when analysis fails.
     """
     truss = build_warren_truss(span_m, depth_m, panels, chord_section, web_section)
+    if mid_support:
+        if panels % 2:
+            raise ValueError("A mid support requires an even panel count.")
+        truss = Truss(truss.nodes, truss.members, (1, panels // 2 + 1, panels + 1))
     if not math.isfinite(gravity_m_s2) or gravity_m_s2 < 0:
         raise ValueError("gravity_m_s2 must be finite and nonnegative.")
     loads = {tag: [0.0, 0.0] for tag in truss.nodes}
@@ -130,7 +134,8 @@ def solve_truss(span_m: float = 6.0, depth_m: float = 2.0, panels: int = 3,
         for tag, coordinates in truss.nodes.items():
             ops.node(tag, *coordinates)
         ops.fix(truss.supports[0], 1, 1)
-        ops.fix(truss.supports[1], 0, 1)
+        for support in truss.supports[1:]:
+            ops.fix(support, 0, 1)
         ops.uniaxialMaterial("Elastic", 1, E_STEEL_PA)
         for member in truss.members:
             ops.element("truss", member.tag, member.start, member.end, member.area_m2, 1)

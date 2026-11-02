@@ -6,7 +6,8 @@ from .truss import E_STEEL_PA, STEEL_SECOND_MOMENTS_M4, STEEL_YIELD_PA, solve_tr
 
 
 def check_bridge(span_m: float, robot_mass_kg: float, gravity_m_s2: float = 9.81,
-                 section: str = "SHS40x40x3", robot_label: str = "rover") -> dict[str, Any]:
+                 section: str = "SHS40x40x3", robot_label: str = "rover",
+                 mid_support: bool = False) -> dict[str, Any]:
     """Envelope self-weight plus one robot at every lower-chord panel point.
 
     A single truss carries the full robot weight, with no load-sharing credit.
@@ -24,6 +25,8 @@ def check_bridge(span_m: float, robot_mass_kg: float, gravity_m_s2: float = 9.81
     if section not in STEEL_SECOND_MOMENTS_M4:
         raise ValueError(f"Unknown steel section {section!r}.")
     panels = max(2, math.ceil(span_m / 1.5))
+    if mid_support:
+        panels += panels % 2
     depth = span_m / 8
     allowable_stress = STEEL_YIELD_PA / 1.5
     allowable_sag = span_m / 360
@@ -33,7 +36,7 @@ def check_bridge(span_m: float, robot_mass_kg: float, gravity_m_s2: float = 9.81
     for node in range(1, panels + 2):
         result = solve_truss(span_m=span_m, depth_m=depth, panels=panels,
                              point_loads={node: (0.0, -robot_mass_kg * gravity_m_s2)},
-                             gravity_m_s2=gravity_m_s2, chord_section=section)
+                             gravity_m_s2=gravity_m_s2, chord_section=section, mid_support=mid_support)
         position = result.truss.nodes[node][0]
         base = {"load_node": node, "position_m": position}
         per_case = {}
@@ -72,11 +75,12 @@ def check_bridge(span_m: float, robot_mass_kg: float, gravity_m_s2: float = 9.81
         "checks": {mode: {**item, "passed": item["utilisation_pct"] <= 100} for mode, item in envelopes.items()},
         "summary": f"{utilisation:.0f}% with the {robot_label} at {location} ({governing['mode']}{member_text}).",
         "honesty": (f"2D steel truss, {len(result.truss.members)} members, pinned joints; "
-                    "the visual model isn't analysed"),
+                    "the visual model isn't analysed" + ("; central support included" if mid_support else "")),
         "assumptions": ("S235 nominal SHS; yield / 1.5; Euler K=1 with panel-point restraint in both planes; "
                         "sag limit span/360. One truss carries full robot weight. Truss self-weight only; "
-                        "no deck, impact, connections or lateral-system analysis. Screening, not certification."),
-        "span_m": span_m, "depth_m": depth, "panels": panels, "section": section,
+                        "no deck, impact, connections or lateral-system analysis. Screening, not certification."
+                        + (" Mid-support foundation capacity is assumed, not checked." if mid_support else "")),
+        "span_m": span_m, "depth_m": depth, "panels": panels, "section": section, "mid_support": mid_support,
         "robot_mass_kg": robot_mass_kg, "robot_label": robot_label, "gravity_m_s2": gravity_m_s2,
         "truss_mass_kg": result.total_mass_kg, "load_cases": cases,
     }

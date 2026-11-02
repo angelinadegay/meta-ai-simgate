@@ -294,9 +294,9 @@ def place_structures(spec: SceneSpec, heights: np.ndarray) -> tuple[list[dict], 
     used_gaps: set[tuple[float, float]] = set()
     occupied: list[tuple[tuple[float, float], float]] = []
 
-    requests = sorted(spec.structures, key=lambda request: request.kind == "bridge")
+    requests = sorted(enumerate(spec.structures), key=lambda item: item[1].kind == "bridge")
     resolved_bridge_route = False
-    for request in requests:
+    for request_index, request in requests:
         if request.kind == "bridge" and not resolved_bridge_route:
             resolved_bridge_route = True
             primary = spec.robots[0]
@@ -409,7 +409,10 @@ def place_structures(spec: SceneSpec, heights: np.ndarray) -> tuple[list[dict], 
         else:
             bearing_points, bearing_heights, pitch = [], [], 0.0
         record = {
+            "request_index": request_index,
             "kind": request.kind, "size": request.size, "material": request.material,
+            "section": request.section, "mid_support": request.mid_support,
+            "shielding_thickness_m": request.shielding_thickness_m,
             "placement": request.placement,
             "position": {"x": round(module_center[0], 2), "y": round(module_center[1], 2), "z": round(z, 2)},
             "orientation": {"yaw_deg": round(math.degrees(yaw), 1), "pitch_deg": round(pitch, 2)},
@@ -561,6 +564,9 @@ def structure_geoms(placements: list[dict]) -> str:
             deck_center = (x, y, base_z - thickness / 2 + 0.03)
             box(f"{prefix}_deck", (span / 2, deck_width / 2, thickness / 2), deck_center, yaw, pitch)
             rail_width, rail_height = 0.12, 0.25
+            if record.get("mid_support"):
+                box(f"{prefix}_mid_support", (0.15, 0.15, 0.22),
+                    (x, y, base_z - 0.38), yaw)
             for side, sign in (("left", -1), ("right", 1)):
                 across = sign * (deck_width / 2 - rail_width / 2)
                 rail_center = (x - sine * across,

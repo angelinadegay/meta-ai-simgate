@@ -191,6 +191,9 @@ function bridgeSkin(record, group) {
   const report = record.structural_check, panels = report?.panels || Math.max(2, Math.ceil(span / 1.5));
   const depth = report?.depth_m || span / 8, alloy = metal(0x9caeae), deck = metal(0x627775, 0.8);
   const geometry = bridgeNodes(panels, span, depth);
+  if (record.mid_support) {
+    box(group, [0.3, 0.3, 0.44], metal(0x89928c, 0.85), [0, 0, -0.38], "bridge_mid_support");
+  }
   const plates = Math.max(4, Math.ceil(span / 0.5));
   for (let index = 0; index < plates; index++) {
     const start = -span / 2 + index * span / plates + (index ? 0.009 : 0);

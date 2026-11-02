@@ -446,6 +446,10 @@
   #structureCards p { margin: 5px 0; font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
   #structureCards .structure-honesty { color: #64676c; font-size: 11px; }
   #structureCards a { color: #28725c; }
+  #structureCards .structure-pass { color: #24764f; font-weight: 600; }
+  #structureCards .structure-fail { color: #b34338; font-weight: 600; }
+  #structureCards .card-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+  #structureCards .structure-shaking { margin-top: 12px; padding-top: 10px; border-top: 1px solid #dedde3; }
   .member-legend { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; font-size: 11px; padding: 8px 0; }
   .member-swatch { display: inline-block; width: 10px; height: 10px; border-radius: 2px; }
 </style>
@@ -907,10 +911,13 @@ function chips(container, items, primary) {
     if (!option?.label) continue;
     const isPrimary = option.label === primary || option.primary;
     const b = document.createElement("button"); b.type = "button"; b.className = "chip" + (isPrimary ? " primary" : ""); b.textContent = option.label;
-    if (/^run(?: again| anyway)?$/i.test(option.label)) b.classList.add("run");
+    if (/^run(?: again| anyway| the mission)?$/i.test(option.label)) b.classList.add("run");
+    if (option.note) b.title = option.note;
     b.onclick = () => {
       if (b.classList.contains("run")) disableRunButtons();
-      if (option.action?.type === "show_design") {
+      if (option.action?.type === "structure_action") {
+        sendEvent(option.action); addMsg(option.label, "user");
+      } else if (option.action?.type === "show_design") {
         sendWorkflowAction("show_design", option.action.robot_id, option.label);
       } else if (option.action?.type === "workflow_action") {
         sendWorkflowAction(option.action.workflow, option.action.robot_id, option.label);
@@ -1567,6 +1574,7 @@ ws.onmessage = (m) => {
       else { setStatus("Ready"); setRequestProgress("Scene checks passed; ready for your next step.", "done"); }
       if (detailsMode) showPanel("scene");
       break;
+    case "structure_shaking": renderStructureShaking(ev.report); showPanel("scene"); break;
     case "question": {
       setStatus("Needs your input", "input"); setRequestProgress("Waiting for your input.", "done");
       const d = addMsg(ev.message);
@@ -2572,10 +2580,30 @@ function addGoalFlags(sceneData) {
   });
 }
 
+function renderStructureShaking(report) {
+  for (const result of report.structures || []) {
+    const article = document.querySelector(`#structureCards article[data-request-index="${result.request_index}"]`);
+    if (!article) continue;
+    article.querySelector(".structure-shaking")?.remove();
+    const section = document.createElement("div"); section.className = "structure-shaking";
+    const heading = document.createElement("strong"); heading.textContent = report.label; section.appendChild(heading);
+    const status = document.createElement("p"); status.textContent = `${result.passed ? "Pass" : "Fail"} · ${result.utilisation_pct.toFixed(1)}% utilisation`;
+    section.appendChild(status);
+    if (result.governing) {
+      const governing = document.createElement("p"), check = result.governing;
+      governing.textContent = `Governing: ${check.mode} · ${check.member != null ? `member ${check.member}` : `joint ${check.node || check.deflected_node || "at peak sag"}`}${check.time_s != null ? ` · ${check.time_s.toFixed(2)} s` : ""}`;
+      section.appendChild(governing);
+    }
+    const honesty = document.createElement("p"); honesty.className = "structure-honesty"; honesty.textContent = report.honesty;
+    section.appendChild(honesty); article.appendChild(section);
+  }
+}
+
 function renderStructureCards(structures) {
   $("structureCards").replaceChildren(); $("structuresPanel").hidden = !structures.length;
   structures.forEach((record, index) => {
     const article = document.createElement("article"); article.dataset.structureIndex = index;
+    article.dataset.requestIndex = record.request_index ?? index;
     const heading = document.createElement("h4"); heading.textContent = `${record.kind[0].toUpperCase() + record.kind.slice(1)} ${index + 1}`;
     const focus = document.createElement("button"); focus.type = "button"; focus.className = "chip";
     focus.textContent = "View"; focus.title = `Focus on ${record.kind}`; focus.style.float = "right";
@@ -2589,14 +2617,42 @@ function renderStructureCards(structures) {
     article.appendChild(size);
     const measured = document.createElement("p"); measured.id = `structureMeasured${index}`;
     measured.className = "structure-honesty"; article.appendChild(measured);
+    const source = document.createElement("p"); source.id = `structureSource${index}`;
+    source.className = "structure-honesty"; source.textContent = `Visual model: Procedural ${record.kind}`;
+    article.appendChild(source);
     if (record.structural_check) {
       const report = record.structural_check;
+      const status = document.createElement("p"); status.className = report.passed ? "structure-pass" : "structure-fail";
+      status.textContent = `${report.passed ? "Pass" : "Fail"} · ${report.utilisation_pct.toFixed(1)}% utilisation`;
+      article.appendChild(status);
+      const section = report.section || report.frame?.section || report.cases?.static?.frame?.section;
+      if (section) {
+        const memberSize = document.createElement("p"); memberSize.textContent = `Member section: ${section}`;
+        article.appendChild(memberSize);
+      }
+      if (record.kind === "habitat") {
+        const shielding = document.createElement("p"); shielding.className = "structure-honesty";
+        shielding.textContent = `Shielding: ${report.shielding_thickness_m} m. Thinner shielding lowers load but reduces radiation shielding; radiation protection is not analysed.`;
+        article.appendChild(shielding);
+      }
+      const governing = report.governing;
+      const member = document.createElement("p");
+      member.textContent = `Governing: ${governing.mode} · ${governing.member !== null ? `member ${governing.member}` : `joint ${governing.node || governing.deflected_node}`}${governing.case ? ` · ${governing.case.replaceAll("_", " ")}` : ""}`;
+      article.appendChild(member);
       const result = document.createElement("p"); result.textContent = report.summary; article.appendChild(result);
       const honesty = document.createElement("p"); honesty.className = "structure-honesty";
       honesty.textContent = report.honesty;
       if (record.kind === "bridge") honesty.textContent += ". Colours show reported governing members only.";
       if (record.kind === "lander") honesty.textContent += ". Member colours: normal-gravity case.";
       article.appendChild(honesty);
+      if (record.next_actions?.length) {
+        const actions = document.createElement("div"); actions.className = "card-actions";
+        chips(actions, record.next_actions); article.appendChild(actions);
+        for (const action of record.next_actions) if (action.note) {
+          const tradeoff = document.createElement("p"); tradeoff.className = "structure-honesty";
+          tradeoff.textContent = action.note; article.appendChild(tradeoff);
+        }
+      }
     }
     const credit = document.createElement("a"); credit.id = `structureCredit${index}`; credit.hidden = true;
     credit.href = "https://science.nasa.gov/3d-resources/"; credit.target = "_blank"; credit.rel = "noopener noreferrer";
@@ -2636,7 +2692,7 @@ function loadScene(s) {
       isCurrent: () => token === structureSceneToken,
       onCredit: (index, credit) => {
         if (token !== structureSceneToken) return;
-        const label = $(`structureCredit${index}`); if (label) { label.textContent = credit; label.hidden = false; }
+        const label = $(`structureCredit${index}`); if (label) { label.textContent = `Visual model: ${credit} InSight`; label.hidden = false; $(`structureSource${index}`).hidden = true; }
       } });
     structureVisualRoot = visuals.root; world.add(structureVisualRoot);
     setStructureDetails(structureVisualRoot, detailsMode);

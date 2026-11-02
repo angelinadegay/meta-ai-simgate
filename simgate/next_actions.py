@@ -216,6 +216,27 @@ def _first_sentence(text: str, fallback: str) -> str:
     return first if first.endswith((".", "!", "?")) else first + "."
 
 
+def structure_actions(record: dict[str, Any]) -> list[dict[str, Any]]:
+    from .structural.checks import stronger_section
+
+    report = record.get("structural_check")
+    if not report or report["passed"]:
+        return []
+    index = record["request_index"]
+    actions = []
+    if stronger_section(record) is not None:
+        actions.append(_action("Use stronger members", action={"type": "structure_action",
+                        "operation": "stronger_members", "structure_index": index}))
+    if record["kind"] == "bridge" and not record.get("mid_support"):
+        actions.append(_action("Add a mid support", action={"type": "structure_action",
+                        "operation": "mid_support", "structure_index": index}))
+    if record["kind"] == "habitat" and record.get("shielding_thickness_m", 0.5) > 0:
+        actions.append(_action("Thinner shielding", action={"type": "structure_action",
+                        "operation": "thinner_shielding", "structure_index": index}))
+        actions[-1]["note"] = "Lower structural load, but reduced radiation shielding; radiation protection is not analysed."
+    return actions
+
+
 def next_actions(workflow: str, outcome: dict[str, Any] | str, facts: dict[str, Any] | None,
                  scene: SceneSpec | None) -> dict[str, Any]:
     """Return one plain-language reason and 2–4 labeled actions for a completed or blocked outcome.
@@ -227,6 +248,21 @@ def next_actions(workflow: str, outcome: dict[str, Any] | str, facts: dict[str, 
     facts = facts or {}
     kind = str(data.get("kind") or data.get("status") or "").lower().replace(" ", "_")
     report = data.get("report") or data
+
+    structures = data.get("structures") or []
+    if structures and workflow in {"scene", "build", "checks", "check_failed"}:
+        failing = [record for record in structures if record.get("structural_check") and not record["structural_check"]["passed"]]
+        if failing:
+            record = max(failing, key=lambda item: item["structural_check"]["utilisation_pct"])
+            return {"reason": f"{record['kind'].title()} screening failed: {record['structural_check']['summary']}",
+                    "actions": structure_actions(record)}
+        if all(record.get("structural_check", {}).get("passed") for record in structures) and kind not in {"check_failed", "checks_failed"}:
+            robot_id = _target_robot_id(scene)
+            return {"reason": "All structures passed their screening checks. The mission is ready to run.", "actions": [
+                _workflow_action("Run the mission", "run", robot_id),
+                _workflow_action("Find where it breaks", "find_failures", robot_id),
+                _action("What if a marsquake hits?", action={"type": "structure_action", "operation": "marsquake"}),
+            ]}
 
     if workflow in {"scene", "build"} and kind in {"ready", "scene_ready", ""}:
         return {"reason": "The scene passed its physics checks and is ready to run.", "actions": [

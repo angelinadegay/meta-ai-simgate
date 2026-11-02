@@ -183,6 +183,8 @@ async def ws(socket: WebSocket):
                 await emit({"type": "reset"})
             elif msg.get("type") == "workflow_action":
                 await session.handle_workflow_action(msg.get("workflow", ""), msg.get("robot_id"))
+            elif msg.get("type") == "structure_action":
+                await session.handle_structure_action(msg.get("operation", ""), msg.get("structure_index"))
             elif msg.get("type") in ("set_start", "set_goal"):
                 await session.set_point(msg["type"][4:], float(msg["x"]), float(msg["y"]))
             elif msg.get("type") == "show_design":

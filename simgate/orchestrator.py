@@ -259,9 +259,11 @@ class Session:
         elif blocking_failures(self.checks):
             guidance = next_actions("checks", {
                 "kind": "check_failed", "checks": [check.__dict__ for check in self.checks],
+                "structures": self.build.scene.get("structures", []) if self.build else [],
             }, scene_facts(spec, world.results or {}), spec)
         else:
-            guidance = next_actions("scene", {"kind": "ready"}, scene_facts(spec, world.results or {}), spec)
+            guidance = next_actions("scene", {"kind": "ready", "structures": self.build.scene.get("structures", [])
+                                    if self.build else []}, scene_facts(spec, world.results or {}), spec)
         await self.emit({
             "type": "question",
             "message": guidance["reason"],
@@ -323,6 +325,68 @@ class Session:
         if selected is None or not any(entry.id == selected for entry in self.spec.robots):
             raise ValueError("Choose a robot from this scene before running that action.")
         return selected
+
+    async def _structure_marsquake(self) -> None:
+        from concurrent.futures import ProcessPoolExecutor
+        from .structural.shaking import synthetic_marsquake
+
+        await self.agent("Checker", "working", "Running a synthetic marsquake what-if, not measured seismic data.")
+        records = self.build.scene.get("structures", [])
+        if not records:
+            raise ValueError("No placed structures are available for a shaking check.")
+        with ProcessPoolExecutor(max_workers=1) as executor:
+            report = await asyncio.get_running_loop().run_in_executor(
+                executor, synthetic_marsquake, records, self.spec.environment.gravity)
+        await self.emit({"type": "structure_shaking", "report": report})
+        await self.emit({"type": "explanation", "message": report["honesty"]})
+        await self.agent("Checker", "done", "Synthetic structural shaking complete; the baseline scene is unchanged.")
+
+    async def handle_structure_action(self, operation: str, structure_index: int | None = None) -> None:
+        """Apply one code-selected structural change and rebuild/re-check, never replan it."""
+        try:
+            if self.spec is None or self.build is None or not self.spec.structures:
+                raise ValueError("Build a structure scene before using a structure action.")
+            if operation == "marsquake":
+                await self._structure_marsquake()
+                return
+            if isinstance(structure_index, bool) or not isinstance(structure_index, int) \
+                    or not 0 <= structure_index < len(self.spec.structures):
+                raise ValueError("That structure action has an invalid or stale target.")
+            record = next((item for item in self.build.scene.get("structures", [])
+                           if item.get("request_index") == structure_index), None)
+            if record is None:
+                raise ValueError("The selected structure was not placed in this scene.")
+            updated = self.spec.model_copy(deep=True)
+            structure = updated.structures[structure_index]
+            if operation == "stronger_members":
+                from .structural.checks import stronger_section
+
+                section = stronger_section(record)
+                if section is None:
+                    raise ValueError("This structure already uses the largest installed catalogue section.")
+                structure.section = section
+                note = f"Changed only {structure.kind} {structure_index + 1} members to {section}; re-checking."
+            elif operation == "mid_support" and structure.kind == "bridge":
+                if structure.mid_support:
+                    raise ValueError("This bridge already has a mid support.")
+                structure.mid_support = True
+                note = "Added one central bridge support; re-checking. Support foundation capacity is not analysed."
+            elif operation == "thinner_shielding" and structure.kind == "habitat":
+                if structure.shielding_thickness_m <= 0:
+                    raise ValueError("This habitat has no shielding to reduce.")
+                previous = structure.shielding_thickness_m
+                structure.shielding_thickness_m = previous / 2
+                note = (f"Reduced only habitat shielding from {previous:g} m to {structure.shielding_thickness_m:g} m; "
+                        "lower structural load, but reduced radiation shielding. Radiation protection is not analysed.")
+            else:
+                raise ValueError(f"Unsupported structure action {operation!r} for {structure.kind}.")
+            updated.assumptions.append(note)
+            await self.agent("Director", "working", note)
+            await self.build_and_check(updated)
+            await self.emit({"type": "explanation", "message": note})
+            await self.agent("Director", "done", "The selected structure change has been re-checked.")
+        except Exception as error:
+            await self.emit({"type": "error", "message": f"{type(error).__name__}: {error}"})
 
     async def handle_workflow_action(self, workflow: str, robot_id: str | None) -> None:
         """Run an explicit result-card action against its selected scene robot, without replanning its target."""
@@ -656,6 +720,7 @@ class Session:
         blocked = blocking_failures(checks)
         guidance = next_actions("checks" if blocked else "scene", {
             "kind": "check_failed" if blocked else "ready", "checks": [check.__dict__ for check in checks],
+            "structures": self.build.scene.get("structures", []),
         }, scene_facts(spec, {}), spec)
         await self.emit({"type": "question", "message": guidance["reason"], "actions": guidance["actions"],
                          "stress_test_available": spec.domain == "robot_terrain"})

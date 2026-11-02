@@ -1355,7 +1355,7 @@ class MuJoCoSimulator(Simulator):
         scene["structure_notes"] = self.structure_notes
         bridges = [item for item in self.structure_placements if item["kind"] == "bridge"]
         if bridges:
-            from ..structural.bridge import check_bridge
+            from ..structural.checks import evaluate_structure
 
             robot_loads = []
             for entry in spec.robots:
@@ -1366,29 +1366,24 @@ class MuJoCoSimulator(Simulator):
                 mass = float(model.body_mass[model.body_rootid == root].sum())
                 robot_loads.append((mass, entry.label))
             mass, label = max(robot_loads, key=lambda item: item[0])
-            sections = {"small": "SHS40x40x3", "medium": "SHS60x60x4", "large": "SHS80x80x4"}
             for bridge in bridges:
-                bridge["structural_check"] = check_bridge(
-                    span_m=bridge["dimensions"]["span_m"], robot_mass_kg=mass,
+                bridge["structural_check"] = evaluate_structure(
+                    bridge, robot_mass_kg=mass,
                     gravity_m_s2=float(np.linalg.norm(model.opt.gravity)),
-                    section=sections[bridge["size"]], robot_label=label,
+                    robot_label=label,
                 )
         frames = [item for item in self.structure_placements if item["kind"] in ("habitat", "lander")]
         if frames:
-            from ..structural.frames import check_habitat, check_lander
+            from ..structural.checks import evaluate_structure
 
             gravity = float(np.linalg.norm(model.opt.gravity))
             for structure in frames:
-                dimensions = structure["dimensions"]
-                if structure["kind"] == "habitat":
-                    structure["structural_check"] = check_habitat(
-                        module_length_m=dimensions["module_length_m"], diameter_m=dimensions["module_diameter_m"],
-                        height_m=dimensions["module_height_m"], gravity_m_s2=gravity,
-                    )
-                else:
-                    structure["structural_check"] = check_lander(
-                        footprint_m=dimensions["footprint_m"], height_m=dimensions["height_m"], gravity_m_s2=gravity,
-                    )
+                structure["structural_check"] = evaluate_structure(structure, gravity_m_s2=gravity)
+        if self.structure_placements:
+            from ..next_actions import structure_actions
+
+            for structure in self.structure_placements:
+                structure["next_actions"] = structure_actions(structure)
         if len(spec.robots) > 1:
             for robot_id, info in self.robot_entries.items():
                 root_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, info["root_body_name"])

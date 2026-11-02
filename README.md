@@ -270,6 +270,24 @@ The headless Edge tests produce desktop/mobile captures in `tests/screenshots/ma
 orbit interaction and framing, and save a verification report. The real Jezero crop check needs its local
 preset and access to the recorded source GeoTIFF. NASA credit appears only after a successful local GLB load.
 
+#### Structure results and next steps
+
+The Scene panel lists structure pass/fail, utilisation, the governing member/joint, selected member section,
+honesty line and visual provenance, including "Visual model: NASA InSight" only after a successful load.
+Failure actions target one structure without a planning-model call: **Use stronger members** advances one
+installed catalogue section, **Add a mid support** adds one central bridge support, and **Thinner shielding**
+halves habitat shielding thickness. Each edit persists its own parameter and rebuilds/re-checks without
+resizing the structure or changing the robot, terrain or world gravity. Mid-support foundation capacity is
+assumed, not checked. Thinner shielding reduces load but also radiation shielding; radiation protection is
+not analysed. No larger-section action is offered at the catalogue maximum.
+
+If all structure screenings pass, next steps are **Run the mission**, **Find where it breaks**, and
+**What if a marsquake hits?** The what-if runs a separate OpenSees transient in an isolated process: synthetic
+1.5 Hz sinusoidal base acceleration, peak 0.2 times local gravity, over 4 seconds, with 5% first-mode mass
+damping. It is not measured Mars seismic data. Results use the current linear-elastic 2D models and relative
+structural displacement, with the bridge robot held at its governing static load point. Baseline mission
+settings, checks and MuJoCo physics remain unchanged. The labelled result appears separately on each card.
+
 ### 4. Real terrain from NASA Mars data
 
 - `scripts/hirise_to_simgate.py` converts NASA HiRISE elevation models into SimGate terrain. These are about

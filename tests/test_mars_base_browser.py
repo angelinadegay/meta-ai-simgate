@@ -173,7 +173,7 @@ def test_jezero_base_desktop_mobile_screenshots_and_interaction(browser_page, mo
     folder.mkdir(parents=True, exist_ok=True)
     nasa = (Path(__file__).resolve().parents[1] / "assets/nasa/insight_lander.glb").is_file()
     if nasa:
-        page.wait_for_function("Array.from(document.querySelectorAll('#structureCards a')).some(a=>a.textContent==='NASA')")
+        page.wait_for_function("Array.from(document.querySelectorAll('#structureCards a')).some(a=>a.textContent.includes('NASA InSight'))")
     page.locator("#view").screenshot(path=str(folder / "base-desktop.png"))
     for kind in ("habitat", "lander", "bridge"):
         page.locator("#detailsToggle").click()

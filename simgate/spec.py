@@ -126,6 +126,9 @@ class TerrainStructure(BaseModel):
     size: Literal["small", "medium", "large"] = "medium"
     material: str = Field("unspecified", min_length=1, max_length=80)
     placement: StructurePlacement
+    section: Optional[str] = None
+    mid_support: bool = False
+    shielding_thickness_m: float = Field(0.5, ge=0.0, le=5.0)
 
 
 class Structure(BaseModel):
