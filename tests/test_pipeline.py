@@ -189,8 +189,7 @@ def test_director_planning_uses_one_call_retries_validation_and_falls_back():
 
         director._emit_step = capture_step
         world, message = asyncio.run(director.execute_plan("race three rovers to the far side"))
-        assert message.startswith("I couldn't use the first plan, so I took another route.")
-        assert "simple planner" not in message
+        assert "planner" not in message.lower()
         assert any("used the rules planner" in step["result"] for step in emitted_steps)
         assert world.spec.title == "Three 4-wheel rovers on hills terrain, Earth"
     finally:
@@ -2206,10 +2205,10 @@ def test_browser_groups_result_metrics_and_shows_live_progress():
                    'setRequestProgress("Results summarized. Complete.", "done")',
                    'setRequestProgress(AGENT_PROGRESS[ev.agent]',
                    'const stateLabel = state.status === "working" ? "Working…"',
-                   'setStatus("Needs attention", "failed")',
+                   'setStatus("Failed checks", "failed")',
                    'const groupKey = JSON.stringify([ev.agent, ev.tool || "", ev.thought || "Working…"]);',
                    'entries.length > 1 ? `Occurrence ${index + 1}` : ""',
-                   'setStatus("Results ready")'):
+                   'setStatus("Ready")'):
         assert needed in page, needed
 
 

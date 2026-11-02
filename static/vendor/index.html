@@ -369,6 +369,7 @@
   .status.running { background: #f0edfb; color: var(--violet); }
   .status.failed { background: var(--bad-bg); color: var(--bad); }
   .status.finding { background: var(--warn-bg); color: var(--warn); }
+  .status.input { background: var(--warn-bg); color: var(--warn); }
   .presentation .side { display: none; }
   .presentation #workbench { grid-template-columns: minmax(0, 1fr); }
   .presentation .stage-top { height: 56px; }
@@ -560,7 +561,7 @@
     <div class="stage-top">
       <div><span class="stage-title" id="sceneTitle">Your simulation</span><span class="stage-subtitle" id="sceneRobot"></span></div>
       <div class="stage-actions">
-        <span class="status" id="stageStatus"><span class="dot"></span><span id="statusText">Scene ready</span></span>
+        <span class="status" id="stageStatus"><span class="dot"></span><span id="statusText">Ready</span></span>
         <button type="button" id="saveWorld">Save world</button>
         <button type="button" id="presentationToggle" title="Presentation mode (P)" aria-label="Toggle presentation mode">⛶</button>
         <button type="button" id="detailsToggle" aria-pressed="false">Show details</button>
@@ -744,7 +745,7 @@ function renderAgentBar() {
     if (index) { const connector = document.createElement("span"); connector.className = "connector"; container.appendChild(connector); }
     const button = document.createElement("button"); button.type = "button"; button.className = `agent-card ${state.status}`; button.title = `Meet ${name}`;
     const icon = document.createElement("span"); icon.className = "agent-icon"; icon.textContent = AGENT_ICONS[name] || "✳";
-    const stateLabel = state.status === "working" ? "Working…" : state.status === "done" ? "Done"
+    const stateLabel = state.status === "working" ? "Working…" : state.status === "done" ? "done"
       : state.status === "warning" ? "Review" : state.status === "error" ? "Attention" : "Ready";
     button.append(icon, textEl("b", name), textEl("small", stateLabel));
     button.onclick = () => showAgentDetail(name); container.appendChild(button);
@@ -846,10 +847,12 @@ function renderStep(ev) {
   row.className = `step-row ${ev.status || "done"}`;
   const summary = row.querySelector("summary"), detail = row.querySelector(".step-meta");
   const entries = [...row.stepEntries.values()];
-  summary.textContent = `${ev.agent}${ev.tool ? ` · ${ev.tool}` : ""}: ${ev.thought || "Working…"}`
-    + (entries.length > 1 ? ` · repeated ${entries.length} times` : "");
+  summary.textContent = `${ev.thought || "Working…"}${entries.length > 1 ? ` ×${entries.length}` : ""}`;
   detail.textContent = entries.map((entry, index) => [
     entries.length > 1 ? `Occurrence ${index + 1}` : "",
+    `Agent: ${entry.agent}`,
+    entry.tool ? `Tool: ${entry.tool}` : "",
+    entry.thought ? `Step: ${entry.thought}` : "",
     entry.args && Object.keys(entry.args).length ? `Args: ${JSON.stringify(entry.args)}` : "",
     entry.result ? `Result: ${entry.result}` : "",
     entry.model ? `Model: ${entry.model}` : "",
@@ -986,6 +989,10 @@ function showHome(tab = "explore") {
 function showPanel(tab = "scene") {
   activeDetailsTab = tab; detailsMode = true; document.body.classList.add("show-details");
   $("topright").hidden = false; $("topright").classList.add("open");
+  if (activeStepDetails && log.contains(activeStepDetails)) {
+    activeStepDetails.hidden = false; activeStepDetails.open = true;
+    for (const step of activeStepList.querySelectorAll(".step-row")) step.open = true;
+  }
   $("detailsToggle").setAttribute("aria-pressed", "true");
   $("detailsToggle").textContent = "Hide details";
   $("codeBtn").hidden = !current;
@@ -1005,6 +1012,12 @@ function hidePanel() {
 }
 function setStatus(text, kind = "ready") {
   const status = $("stageStatus"); status.className = `status ${kind}`; $("statusText").textContent = text;
+}
+function checkFailureSummary(checks) {
+  const cannotStand = checks.some((check) => check.name.toLowerCase().includes("stands"));
+  const summary = cannotStand ? "The robot cannot stay upright at its starting point."
+    : "The scene isn't ready to run.";
+  return `${summary} Open Show details for the measurements.`;
 }
 function updateSceneContext(spec = currentSpec) {
   if (!spec) return;
@@ -1512,25 +1525,25 @@ ws.onmessage = (m) => {
       selectedWorldId = libraryData.worlds.find((world) => world.id === "earth-rock")?.id || libraryData.worlds[0]?.id || "";
       renderLibrary(); renderHome(); renderHomeExamples();
       break;
-    case "agent": addAgent(ev); break;
+    case "agent":
+      addAgent(ev);
+      if (ev.status === "working") setStatus("Analysing", "finding");
+      break;
     case "step": renderStep(ev); break;
     case "spec": currentSpec = ev.spec; updateSceneContext(ev.spec); break;
     case "scene": setRequestProgress("Scene built; checking the physics…"); showWorkbench(); currentMetrics = null; latestInsight = null; loadScene(ev.scene); updateSceneContext(); $("code").textContent = ev.code; $("codeBtn").hidden = !detailsMode;
-      $("startBtn").hidden = $("goalBtn").hidden = ev.scene.kind !== "mujoco"; setStatus("Scene ready"); break;
+      $("startBtn").hidden = $("goalBtn").hidden = ev.scene.kind !== "mujoco"; setStatus("Analysing", "finding"); break;
     case "checks":
       renderChecks(ev.checks);
       const failedChecks = (ev.checks || []).filter((check) => !check.passed && !check.advisory);
       if (failedChecks.length) {
-        const first = failedChecks[0];
-        const summary = failedChecks.length === 1 ? `${first.name}: ${first.detail}`
-          : `${failedChecks.length} physics checks need attention. ${first.name}: ${first.detail}`;
-        setStatus("Needs attention", "failed"); setRequestProgress(summary, "error");
+        setStatus("Failed checks", "failed"); setRequestProgress(checkFailureSummary(failedChecks), "error");
       }
-      else { setStatus("Scene ready"); setRequestProgress("Scene checks passed; ready for your next step.", "done"); }
+      else { setStatus("Ready"); setRequestProgress("Scene checks passed; ready for your next step.", "done"); }
       if (detailsMode) showPanel("scene");
       break;
     case "question": {
-      setRequestProgress("Scene ready; waiting for your next step.", "done");
+      setStatus("Needs your input", "input"); setRequestProgress("Waiting for your input.", "done");
       const d = addMsg(ev.message);
       if (ev.note) d.appendChild(textEl("span", ev.note, "cost-note"));
       const q = document.createElement("div"); q.className = "quick";
@@ -1544,29 +1557,30 @@ ws.onmessage = (m) => {
     case "frames": for (const f of ev.frames) { frames.push(f); addTrailPoint(f); } $("scrub").max = frames.length - 1; break;
     case "metrics": {
       setRequestProgress("Simulation complete. Results are ready.", "done");
-      currentMetrics = ev.metrics; renderMetrics(ev.metrics); streaming = false; setStatus("Results ready");
+      currentMetrics = ev.metrics; renderMetrics(ev.metrics); streaming = false; setStatus("Ready");
       const [headline, detail] = metricInsight(ev.metrics); addInsight(headline, detail, "results");
       if (detailsMode) showPanel("results"); break;
     }
-    case "diagnosis": setRequestProgress("Diagnosis complete. Findings are ready.", "done"); renderDiagnosis(ev.report); addInsight("Diagnosis complete", detailForReport(ev.report), "analysis"); break;
+    case "diagnosis": setStatus("Ready"); setRequestProgress("Diagnosis complete. Findings are ready.", "done"); renderDiagnosis(ev.report); addInsight("Diagnosis complete", detailForReport(ev.report), "analysis"); break;
     case "envelope": {
+      setStatus("Ready");
       setRequestProgress("Operating limits found. Analysis is complete.", "done");
       renderEnvelope(ev.report);
       const insight = addInsight("Operating limits found", detailForReport(ev.report), "analysis");
       const retry = document.createElement("button"); retry.type = "button"; retry.className = "chip"; retry.textContent = "Re-check the limits";
       retry.onclick = () => send("Find where it breaks again"); insight.querySelector(".card-actions")?.appendChild(retry); break;
     }
-    case "redesign": setRequestProgress("Design search complete. Results are ready.", "done"); renderRedesign(ev.report); addInsight("Design search complete", detailForReport(ev.report), "analysis"); break;
+    case "redesign": setStatus("Ready"); setRequestProgress("Design search complete. Results are ready.", "done"); renderRedesign(ev.report); addInsight("Design search complete", detailForReport(ev.report), "analysis"); break;
     case "batch_start":
       setRequestProgress("Testing scene conditions…");
       batchIsActive = true; batchResults.clear(); batchDecodeTasks = []; clearGhosts();
       frames = []; idx = 0; streaming = false; $("player").hidden = true;
       $("reportCard").hidden = true; $("metricsCard").hidden = true;
-      setStatus(lastRequestText.toLowerCase().includes("break") || lastRequestText.toLowerCase().includes("limit") ? `Finding limits · 0/${ev.total}` : `Stress test · 0/${ev.total}`, "finding");
+      setStatus("Analysing", "finding");
       if (current?.kind === "mujoco") { resetTrail(); applyFrame({ t: 0, poses: current.poses }); }
       break;
     case "batch_result": receiveBatchResult(ev.result); break;
-    case "batch_done": setRequestProgress(`Condition tests complete · ${ev.passed}/${ev.total} passed.`, "done"); setStatus(`Analysis complete · ${ev.passed}/${ev.total} pass`, ev.passed === ev.total ? "ready" : "finding"); break;
+    case "batch_done": setRequestProgress(`Condition tests complete · ${ev.passed}/${ev.total} passed.`, "done"); setStatus("Ready"); break;
     case "report":
       renderReport(ev);
       Promise.all([...batchDecodeTasks]).then(() => setupGhostView(ev));
@@ -1587,7 +1601,7 @@ ws.onmessage = (m) => {
       }
       break;
     }
-    case "error": setRequestProgress("Request stopped. See the error below.", "error"); addMsg(ev.message, "err"); setStatus("Something needs attention", "failed"); break;
+    case "error": setRequestProgress("Request stopped. See the error below.", "error"); addMsg(ev.message, "err"); setStatus("Failed", "failed"); break;
     case "cost": {   // the request's total: on the card it produced, and under the last reply
       if (costLine) { costLine.textContent = ev.cost.text; costLine = null; }
       const last = [...log.querySelectorAll(".msg.bot")].pop();
