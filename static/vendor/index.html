@@ -1573,7 +1573,9 @@ ws.onmessage = (m) => {
       currentRedesignRobotId = ev.report.robot_id || currentSpec?.robots?.[0]?.id || null;
       setRequestProgress("Operating limits found. Analysis is complete.", "done");
       renderEnvelope(ev.report);
-      const insight = addInsight("Operating limits found", detailForReport(ev.report), "analysis");
+      const insight = addInsight(ev.report.headline || "Operating limits found",
+        ev.report.surprising_failure_line || "", "analysis");
+      if (ev.report.honesty) insight.appendChild(textEl("span", ev.report.honesty, "cost-note"));
       const retry = document.createElement("button"); retry.type = "button"; retry.className = "chip"; retry.textContent = "Re-check the limits";
       retry.onclick = () => sendWorkflowAction("find_failures", currentRedesignRobotId, retry.textContent);
       insight.querySelector(".card-actions")?.appendChild(retry); break;

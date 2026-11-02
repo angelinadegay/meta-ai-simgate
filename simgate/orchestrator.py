@@ -267,6 +267,9 @@ class Session:
             "message": guidance["reason"],
             "actions": guidance["actions"],
             "stress_test_available": spec.domain == "robot_terrain",
+            **({"note": world.report["honesty"]}
+               if world.report is not None and world.report.get("type") == "envelope" and world.report.get("honesty")
+               else {}),
         })
 
     async def _follow_up(self, workflow: str, text: str) -> None:

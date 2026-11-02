@@ -1217,6 +1217,60 @@ def limit_sentences(report: dict) -> str:
     return " ".join(sentences)
 
 
+def _headline_limit(limit: dict) -> str:
+    knob = limit["knob"]
+    shown = limit["shown"]
+    name = limit["name"].lower()
+    if limit["never_broke"]:
+        return f"{name} never failed up to {shown['harsh']}"
+
+    reliable = reliable_ok_point(limit)
+    bands = limit.get("bands") or limit_bands(limit)
+    value = reliable["shown"] if reliable is not None else limit["shown"]["last_ok"]
+    if knob == "slope_deg":
+        okay = f"reliably OK on slopes up to {value}" if reliable else f"OK on slopes up to {value}"
+    elif knob == "push_n":
+        okay = f"sideways push OK up to {value}"
+    else:
+        direction = "down to" if knob in ("friction", "gravity") else "up to"
+        qualifier = "reliably " if reliable else ""
+        okay = f"{name} {qualifier}OK {direction} {value}"
+    if bands["unreliable"] != "—":
+        direction = "below" if knob in ("friction", "gravity") else "above"
+        okay += f" (unreliable {direction})"
+
+    fail = limit.get("confirm", {}).get("fails_at")
+    if fail is None or fail.get("label") == "didn't reproduce":
+        failure = f"possible failure at {shown['first_fail']}"
+    else:
+        kind = (limit.get("failure") or "").lower()
+        verb = ("falls" if kind == "fell" else "tips" if kind.startswith("tilted") else
+                "gets stuck" if kind == "got stuck" else "runs out of time" if kind == "ran out of time" else
+                "goes off the edge" if kind == "left the edge" else "misses the goal")
+        failure = f"{verb} at {shown['first_fail']}"
+    return f"{okay}, {failure}"
+
+
+def answer_headline(report: dict) -> str:
+    """Code-built first answer sentence: named robot, condition limits and units, without run-count details."""
+    robot = report.get("robot_label") or "The robot"
+    limits = report.get("limits") or []
+    if limits:
+        return f"{robot}: " + "; ".join(_headline_limit(limit) for limit in limits) + "."
+    stopped = str(report.get("stopped") or "No breaking point was found in the tested conditions.").strip()
+    return f"{robot}: {stopped.rstrip('.')} .".replace(" .", ".")
+
+
+def surprising_failure_line(report: dict) -> str:
+    """One code-built line for the closest-to-normal confirmed combined failure, if any."""
+    robot = report.get("robot_label") or "The robot"
+    failure = next((item for item in report.get("failures", []) if item.get("surprising")), None)
+    if failure is None:
+        return ""
+    return (f"Most surprising confirmed failure: {robot} {failure['failure']} when "
+            f"{failure['text']} were combined.")
+
+
 def facts_text(report: dict) -> str:
     lines = [f"- robot: {report['robot_label']}; failure counted: {FAILURES[report['failure']]}; runs: {report['runs']}"]
     for limit in report["limits"]:
@@ -1461,6 +1515,8 @@ def _find(spec: SceneSpec, robot_id: str | None, failure: str, budget: str, name
         _emit(on_step, "Batch runner", "baseline", "Running the scene as it is.", message, "warning")
         report.update(evidence=runner.evidence, runs=len(runner.evidence), stopped=message, explanation=message)
         report["honesty"] = f"{report['runs']} run, simulation only."
+        report["headline"] = answer_headline(report)
+        report["surprising_failure_line"] = surprising_failure_line(report)
         return report
     _emit(on_step, "Batch runner", "baseline", "Running the scene as it is.", "It passes as it is (run r1).")
 
@@ -1479,11 +1535,13 @@ def _find(spec: SceneSpec, robot_id: str | None, failure: str, budget: str, name
     finish("confirm")
     report["evidence"], report["runs"] = runner.evidence, len(runner.evidence)
     report["honesty"] = honesty(report)
+    report["headline"] = answer_headline(report)
+    report["surprising_failure_line"] = surprising_failure_line(report)
     report["explanation"] = explain(report, report["model_calls"])
     _emit(on_step, "Explainer", "envelope", "Explaining the limits from the measured envelope only.", report["explanation"])
     return report
 
 
 def describe(report: dict) -> str:
-    """The chat reply: the explanation, then the honesty line."""
-    return f"{report['explanation']} {report.get('honesty', '')}".strip()
+    """The first chat answer is code-built; supporting certainty details remain separate report data."""
+    return " ".join(part for part in (report.get("headline"), report.get("surprising_failure_line")) if part).strip()

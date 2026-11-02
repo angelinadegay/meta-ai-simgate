@@ -329,6 +329,9 @@ def next_actions(workflow: str, outcome: dict[str, Any] | str, facts: dict[str, 
         else:
             reason = _first_sentence(report.get("stopped") or report.get("explanation"),
                                      "The condition search is complete; its measured results are ready to review.")
+        reason = report.get("headline") or reason
+        if report.get("surprising_failure_line"):
+            reason += " " + report["surprising_failure_line"]
         robot_id = _target_robot_id(scene, report.get("robot_id"))
         return {"reason": reason, "actions": [
             _action("Replay the weakest spot", action={"type": "replay_weakest_spot", "robot_id": robot_id}),
