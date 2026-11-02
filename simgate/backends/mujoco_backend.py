@@ -982,6 +982,14 @@ class CourseTracker:
         }
 
 
+def support_height_offset(robot) -> float:
+    if robot.kind == "rover":
+        return robot.wheel_radius
+    if robot.kind == "walker":
+        return walker_stand_height(robot)
+    return LibraryRegistry().robot(robot.robot_id).standing_height_m
+
+
 class Navigator:
     """Steers toward the goal: compares the robot's heading with the direction to the goal."""
 
@@ -993,14 +1001,17 @@ class Navigator:
     def __init__(self, mission: dict | None, robot_kind: str) -> None:
         self.goal = np.array(mission["goal"]) if mission and mission.get("goal") is not None else None
         self.radius = float(mission.get("radius", 1.0)) if mission else 1.0
+        self.goal_z = mission.get("goal_z") if mission and mission.get("goal_structure") else None
         self.reached_at: float | None = None
         self.max_turn = self.MAX_TURN if robot_kind == "rover" else self.WALKER_MAX_TURN   # walkers wobble when one side steps backward
 
-    def command(self, pos_xy: np.ndarray, heading: np.ndarray, t: float) -> tuple[float, float]:
+    def command(self, pos_xy: np.ndarray, heading: np.ndarray, t: float,
+                surface_z: float | None = None) -> tuple[float, float]:
         """(turn, go) for this instant."""
         if self.goal is None:
             return 0.0, 1.0
-        if self.reached_at is None and float(np.linalg.norm(self.goal - pos_xy)) <= self.radius:
+        at_height = self.goal_z is None or (surface_z is not None and abs(surface_z - self.goal_z) <= 0.15)
+        if self.reached_at is None and float(np.linalg.norm(self.goal - pos_xy)) <= self.radius and at_height:
             self.reached_at = t
         if self.reached_at is not None:
             return 0.0, float(np.clip(1 - (t - self.reached_at) / self.STOP_FADE_S, 0.0, 1.0))
@@ -1581,7 +1592,10 @@ class MuJoCoSimulator(Simulator):
             xmat = data.xmat[root]
             if xmat[8] > 0.8:
                 state["heading"] = heading_of(xmat)
-            turn, go = nav.command(data.xpos[root][:2].copy(), state["heading"], max(active_time, 0.0))
+            if "support_offset" not in state:
+                state["support_offset"] = support_height_offset(state["robot"])
+            turn, go = nav.command(data.xpos[root][:2].copy(), state["heading"], max(active_time, 0.0),
+                                   float(data.xpos[root][2]) - state["support_offset"])
             policy = state["policy"]
             if policy is not None:
                 if active_time <= 0.0:
@@ -2133,6 +2147,7 @@ class MuJoCoSimulator(Simulator):
         steepest_point = None
 
         nav = Navigator(build.scene.get("mission"), spec.robot.kind)
+        support_offset = support_height_offset(spec.robot)
         track = CourseTracker(model, build.scene, rover)
         nav_heading = np.array([1.0, 0.0])
         dist_log: list[tuple[float, float, np.ndarray]] = []    # (time, distance to goal, position) once per frame
@@ -2147,7 +2162,8 @@ class MuJoCoSimulator(Simulator):
                     xm = data.xmat[rover]
                     if xm[8] > 0.8:                      # only trust the heading while roughly upright
                         nav_heading = heading_of(xm)
-                    turn, go = nav.command(data.xpos[rover][:2].copy(), nav_heading, data.time - settle_s)
+                    turn, go = nav.command(data.xpos[rover][:2].copy(), nav_heading, data.time - settle_s,
+                                           float(data.xpos[rover][2]) - support_offset)
                 if policy_runner is not None:
                     if data.time <= settle_s:
                         policy_runner.hold_default()

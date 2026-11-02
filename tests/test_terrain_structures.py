@@ -532,3 +532,17 @@ def test_exact_jezero_mars_base_prompt_has_top_airlock_start_and_bridge(monkeypa
     model = mujoco.MjModel.from_xml_string(build.code)
     marker = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, "goal_zone")
     assert model.geom_pos[marker][2] == pytest.approx(airlock["z"] + 0.02, abs=0.02)
+
+
+def test_raised_airlock_goal_requires_ramp_height_but_flat_goals_do_not():
+    from simgate.backends.mujoco_backend import Navigator
+
+    raised = Navigator({"goal": [0, 0], "radius": 1, "goal_structure": "habitat_airlock", "goal_z": 5}, "rover")
+    position, heading = np.array([0.5, 0]), np.array([-1, 0])
+    assert raised.command(position, heading, 1, surface_z=3)[1] == 1
+    assert raised.reached_at is None
+    raised.command(position, heading, 2, surface_z=4.9)
+    assert raised.reached_at == 2
+    flat = Navigator({"goal": [0, 0], "radius": 1}, "rover")
+    flat.command(position, heading, 1)
+    assert flat.reached_at == 1
