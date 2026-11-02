@@ -171,10 +171,13 @@ class DesignSpace:
             if name in CHOICES or name == "policy_id":
                 continue
             lo, hi = self.bounds[name]
-            if value >= hi - 1e-9:
-                limits.append(f"{NAMES[name]} already at the {hi:g}{UNITS.get(name, '')} maximum")
-            elif value <= lo + 1e-9:
-                limits.append(f"{NAMES[name]} already at the {lo:g}{UNITS.get(name, '')} minimum")
+            original = getattr(self.robot, name)
+            if value >= hi - 1e-9 and value > original:
+                limits.append(f"{NAMES[name]} tried up to {value:g}{UNITS.get(name, '')}; "
+                              f"the maximum allowed is {hi:g}{UNITS.get(name, '')}")
+            elif value <= lo + 1e-9 and value < original:
+                limits.append(f"{NAMES[name]} tried down to {value:g}{UNITS.get(name, '')}; "
+                              f"the minimum allowed is {lo:g}{UNITS.get(name, '')}")
         return limits
 
 
@@ -635,28 +638,56 @@ def _pick_winner(world: SceneSpec, space: DesignSpace, passing: list[dict], robo
 def _message(report: dict, space: DesignSpace) -> str:
     winner = report["winner"]
     tried = report["tried_count"]
+    diagnosis = ((report.get("diagnosis") or {}).get("conclusion") or "").strip()
+    diagnosis_text = f" Diagnosis used: {diagnosis}" if diagnosis else ""
+    candidate_budget = MAX_ROUNDS * CANDIDATES_PER_ROUND
+
+    def early_stop(reason: str | None = None) -> str:
+        if tried >= candidate_budget:
+            return ""
+        if space.kind == "library":
+            changeable = [NAMES.get(name, name) for name in space.knobs]
+            if len(changeable) == 1:
+                return (f" The search stopped after {tried} of up to {candidate_budget} candidate designs because only "
+                        f"{changeable[0]} can change for this trained policy; its body is fixed.")
+            if not changeable:
+                return " The search stopped because this trained robot has no design settings available to change."
+        if reason:
+            return f" The search stopped early: {reason.rstrip('.')}."
+        return (f" The search stopped after {tried} of up to {candidate_budget} candidate designs because "
+                "no untried changes remained within the allowed ranges.")
+
     if winner is not None:
         robust = winner.get("robustness") or {}
         held = f" Robustness: {ci_text(robust['passed'], robust['total'])}" + (
             f" (failed: {', '.join(robust['failed'])})." if robust.get("failed") else ".") if robust else ""
         held += f" {robust['crashed']}, not counted." if robust.get("crashed") else ""
         gait = " Untested gait: outside the tuned 2.0 Hz / 15° settings." if winner.get("label") == "untested gait" else ""
-        return (f"Smallest change that passes: {winner['description']}.{held}{gait} Tried {tried} designs. "
+        stopped = early_stop("a design passed the required robustness checks")
+        return (f"Smallest change that passes: {winner['description']}.{diagnosis_text}{held}{gait} "
+                f"Tried {tried} designs.{stopped} "
                 "Say \"use this design\" to apply it.")
     if (fragile := report.get("fragile")) is not None:
         robust = fragile.get("robustness") or {}
         score = f" ({robust['passed']}/{robust['total']})" if robust else ""
         return (f"Found a design that passed once but isn't reliable{score}: {fragile['description']}. It's shown as "
-                f"fragile, not as a winner. Tried {tried} designs. Say \"use fragile design\" to apply it anyway.")
+                f"fragile, not as a winner.{diagnosis_text} Tried {tried} designs."
+                f"{early_stop('no design held up to the required robustness checks')} "
+                "Say \"use fragile design\" to apply it anyway.")
     scored = [c for r in report["rounds"] for c in r["candidates"] if c.get("closeness") is not None]
     if not scored:
         if report.get("crashed"):
-            return f"{report['crashed']}. {SYSTEM_PROBLEM}, so no design could be judged."
-        return report.get("message") or f"No design passed in {tried} runs."
+            return f"{report['crashed']}. {SYSTEM_PROBLEM}, so no design could be judged.{diagnosis_text}"
+        message = report.get("message") or f"No design passed after {tried} candidate designs."
+        return f"{message.rstrip('.')}.{diagnosis_text}{early_stop(report.get('message'))}"
     best = max(scored, key=lambda c: c["closeness"])
     limits = [limit for c in sorted(scored, key=lambda c: -c["closeness"]) for limit in space.at_bound(c["changes"])]
     report["best_attempt"] = {"changes": best["changes"], "summary": best["result"],
                               "description": describe_design(best["changes"], space.original())}
-    report["limit"] = limits[0] if limits else "no design within the allowed ranges got it through"
-    return (f"No design passed in {tried} runs. Best attempt: {report['best_attempt']['description']} "
-            f"({best['result']}). Limit: {report['limit']}.")
+    report["limit"] = limits[0] if limits else None
+    diagnosis_part = f" Diagnosis used: {diagnosis.rstrip('.')}." if diagnosis else ""
+    bound_part = f" {limits[0]}." if limits else " No tried design reached a permitted setting limit."
+    stop_reason = next((decision.get("reason") for decision in reversed(report["decisions"])
+                        if decision.get("decision") == "stop"), None)
+    return (f"No design passed after {tried} candidate designs. Best attempt: {report['best_attempt']['description']} "
+            f"({best['result']}).{diagnosis_part}{bound_part}{early_stop(stop_reason)}")

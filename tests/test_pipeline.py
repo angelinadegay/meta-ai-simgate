@@ -1687,7 +1687,8 @@ def test_redesign_reports_the_limit_when_nothing_passes():
     spec = step_course(1.0, "wall")
     report = redesign(spec, failed_run(spec))
     assert report["winner"] is None and report["tried_count"] <= 12 and len(report["rounds"]) <= 3
-    assert report["message"].startswith("No design passed") and report["limit"] == "wheel radius already at the 0.35 m maximum"
+    assert report["message"].startswith("No design passed")
+    assert report["limit"] == "wheel radius tried up to 0.35 m; the maximum allowed is 0.35 m"
     assert report["best_attempt"]["changes"]
 
 
