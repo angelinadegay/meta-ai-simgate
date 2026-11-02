@@ -135,6 +135,18 @@ def test_habitat_has_visible_hardware_dust_and_optional_shielding(browser_page):
         assert result["lower"] < result["upper"] and result["physicsUnchanged"]
 
 
+def test_follow_transition_survives_a_long_browser_frame(browser_page):
+        result = browser_page.evaluate("""async () => {
+            const THREE=await import('three');const {advanceFollowTransition}=await import('/static/vendor/base-camera.js');
+            const camera=new THREE.PerspectiveCamera();camera.position.set(50,20,40);
+            const controls={target:new THREE.Vector3()},robot=new THREE.Vector3();
+            const before=camera.position.clone();const remaining=advanceFollowTransition(camera,controls,robot,10,2.2);
+            return {remaining,moved:camera.position.distanceTo(before),distance:before.length()};
+        }""")
+        assert result["remaining"] == pytest.approx(2.1)
+        assert 0 < result["moved"] < result["distance"] * 0.2
+
+
 def test_jezero_base_desktop_mobile_screenshots_and_interaction(browser_page, monkeypatch):
     import asyncio
     from concurrent.futures import ThreadPoolExecutor

@@ -666,7 +666,7 @@ import * as THREE from "three";
 import { OrbitControls } from "/static/vendor/OrbitControls.js";
 import { buildStructureVisuals, setStructureDetails, measureStructureVisuals } from "/static/vendor/structures.js";
 import { buildTerrainHorizon } from "/static/vendor/terrain-horizon.js";
-import { frameBase, easeIntoFollow } from "/static/vendor/base-camera.js";
+import { frameBase, advanceFollowTransition } from "/static/vendor/base-camera.js";
 
 const $ = (id) => document.getElementById(id);
 const AGENT_COLORS = { Director: "--director", Planner: "--planner", Router: "--router", Builder: "--builder", Checker: "--checker", Simulator: "--simulator", Explainer: "--explainer", "Stress planner": "--planner", "Batch runner": "--simulator" };
@@ -2935,8 +2935,8 @@ function tick() {
   if (followCam && followTransitionRemaining > 0) {
     const target = meshes[cameraGeom()];
     if (target) {
-      easeIntoFollow(camera, controls, target.getWorldPosition(new THREE.Vector3()), Math.min(dt, 0.1));
-      followTransitionRemaining = Math.max(0, followTransitionRemaining - dt);
+      followTransitionRemaining = advanceFollowTransition(camera, controls,
+        target.getWorldPosition(new THREE.Vector3()), dt, followTransitionRemaining);
     }
   }
   if (flagCloths.length) {

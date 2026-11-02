@@ -36,3 +36,9 @@ export function easeIntoFollow(camera, controls, robotPosition, dt) {
   const desired = robotPosition.clone().add(new THREE.Vector3(-3.2, 2.2, 2.6));
   camera.position.lerp(desired, blend);
 }
+
+export function advanceFollowTransition(camera, controls, robotPosition, dt, remaining) {
+  const step = Math.min(Math.max(0, dt), 0.1, remaining);
+  easeIntoFollow(camera, controls, robotPosition, step);
+  return Math.max(0, remaining - step);
+}
