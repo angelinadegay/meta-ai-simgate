@@ -10,7 +10,7 @@ from typing import Awaitable, Callable
 from . import agents, cost
 from .backends.base import BuildResult, Check, Simulator, blocking_failures
 from .batch import crash_report, measured
-from .director import FOLLOW_UP_WORDS, Director, follow_up_plan
+from .director import FOLLOW_UP_WORDS, Director, follow_up_plan, real_terrain_body_change
 from .facts import facts as scene_facts
 from .next_actions import next_actions
 from .workflows import SessionState
@@ -33,6 +33,7 @@ class Session:
         self.last_diagnosis: dict | None = None
         self.last_redesign: dict | None = None
         self._view_shows_other_scene = False   # set after "Show runs" loads the winning design's scene
+        self.pending_real_terrain_change: dict[str, str] | None = None
 
     async def agent(self, name: str, status: str, message: str) -> None:
         await self.emit({"type": "agent", "agent": name, "status": status, "message": message})
@@ -46,7 +47,13 @@ class Session:
 
     async def _handle(self, text: str) -> None:
         try:
-            if self.spec is not None and re.search(r"\bstart on flatter ground\b", text, re.I):
+            if self.pending_real_terrain_change is not None:
+                await self._handle_real_terrain_choice(text)
+                return
+            elif (change := real_terrain_body_change(text, self.spec)) is not None:
+                self.pending_real_terrain_change = change
+                await self._ask_real_terrain_choice()
+            elif self.spec is not None and re.search(r"\bstart on flatter ground\b", text, re.I):
                 await self._start_on_flatter_ground()
             elif self.spec is not None and re.search(r"\bfind a gentler route\b", text, re.I):
                 await self._find_a_gentler_route()
@@ -82,6 +89,81 @@ class Session:
                 await self.make(text, editing=False)
         except Exception as e:  # noqa: BLE001 - show any failure to the user
             await self.emit({"type": "error", "message": f"{type(e).__name__}: {e}"})
+
+    async def _ask_real_terrain_choice(self) -> None:
+        assert self.pending_real_terrain_change is not None and self.spec is not None
+        pending = self.pending_real_terrain_change
+        reason = (f"{pending['label']} is real {pending['current_body'].title()} terrain. Do you want "
+                  f"{pending['target_body'].title()} gravity on this same terrain as a what-if, "
+                  f"{pending['target_body'].title()} terrain instead, or Keep {pending['current_body'].title()}?")
+        target = pending["target_body"].title()
+        current = pending["current_body"].title()
+        options = [
+            {"label": f"{target} gravity on this same terrain (a what-if)",
+             "message": f"{target} gravity on this same terrain"},
+            {"label": f"{target} terrain instead", "message": f"{target} terrain instead"},
+            {"label": f"Keep {current}", "message": f"Keep {current}"},
+        ]
+        guidance = next_actions("ambiguous", {"reason": reason, "options": options},
+                                scene_facts(self.spec, self.last_summary or {}), self.spec)
+        await self.emit({"type": "question", "message": guidance["reason"], "actions": guidance["actions"],
+                         "stress_test_available": False})
+
+    async def _handle_real_terrain_choice(self, text: str) -> None:
+        assert self.pending_real_terrain_change is not None and self.spec is not None
+        source = " ".join(text.lower().split())
+        pending = self.pending_real_terrain_change
+        target = pending["target_body"]
+        if source == f"keep {pending['current_body']}" or source == f"keep {pending['current_body']} terrain":
+            self.pending_real_terrain_change = None
+            await self.emit({"type": "explanation",
+                             "message": f"Kept {pending['label']} as real {pending['current_body'].title()} terrain."})
+            guidance = next_actions("scene", {"kind": "ready"}, scene_facts(self.spec, {}), self.spec)
+            await self.emit({"type": "question", "message": guidance["reason"], "actions": guidance["actions"],
+                             "stress_test_available": self.spec.domain == "robot_terrain"})
+            return
+
+        spec = self.spec.model_copy(deep=True)
+        spec.assumptions = []
+        spec.environment.body = target
+        if source == f"{target} gravity on this same terrain":
+            from . import presets
+
+            spec.environment.gravity = presets.gravity_for(target)
+            note = (f"Used {target.title()} gravity on {pending['label']}'s real "
+                    f"{pending['current_body'].title()} terrain as a what-if.")
+        elif source == f"{target} terrain instead":
+            from . import presets
+            from .spec import Terrain
+            from .terrain_data import list_presets
+
+            earth_presets = [(name, meta) for name, meta in list_presets().items()
+                             if meta.get("body") == target and not meta.get("uploaded")]
+            if earth_presets:
+                name, meta = earth_presets[0]
+                spec.terrain = Terrain(kind="real", preset=name, size_m=spec.terrain.size_m,
+                                       seed=spec.terrain.seed)
+                spec.environment.surface = meta.get("surface", "rock")
+                spec.environment.friction = presets.friction_for(spec.environment.surface) or 0.9
+                note = f"Replaced {pending['label']}'s real elevation with the installed Earth terrain {meta['label']}."
+            else:
+                spec.terrain = Terrain(kind="hills", size_m=spec.terrain.size_m, roughness=0.3,
+                                       seed=spec.terrain.seed)
+                spec.environment.surface = "rock"
+                spec.environment.friction = presets.friction_for("rock")
+                note = f"Replaced {pending['label']}'s real elevation with generated Earth hills."
+            spec.environment.gravity = presets.gravity_for(target)
+        else:
+            await self._ask_real_terrain_choice()
+            return
+
+        spec.fill_defaults()
+        if note not in spec.assumptions:
+            spec.assumptions.append(note)
+        self.pending_real_terrain_change = None
+        await self.agent("Director", "working", "Applying your terrain choice and rebuilding the scene…")
+        await self.build_and_check(spec)
+        await self.agent("Director", "done", note)
 
     async def make(self, text: str, editing: bool, plan=None) -> None:
         """Plan and carry out one request (``plan``: a follow-up already planned, e.g. after a build)."""

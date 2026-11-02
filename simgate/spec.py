@@ -172,7 +172,7 @@ class SceneSpec(BaseModel):
                                  "measurements and can't be changed.")
             t.size_m = float(t.preset_size_m or meta["size_m"])
             relief = float(meta["relief_m"] if t.preset_relief_m is None else t.preset_relief_m)
-            if env.body != meta.get("body", env.body):   # the data decides which world this is
+            if env.body != meta.get("body", env.body) and env.gravity is None:   # data sets the default world
                 env.body, env.gravity, env.surface, env.friction = meta["body"], None, meta.get("surface", env.surface), None
             elif "surface" not in env.model_fields_set and env.friction is None:
                 env.surface = meta.get("surface", env.surface)   # nobody chose a surface: use the site's own

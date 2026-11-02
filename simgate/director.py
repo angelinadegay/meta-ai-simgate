@@ -31,6 +31,14 @@ class Director:
              state: Any = None) -> Plan:
         """Create a complete validated plan, retry once, then use the deterministic planner.
         ``state`` is the session's workflows.SessionState (last run, diagnosis, redesign), if any."""
+        if (real_change := real_terrain_body_change(text, world_state)) is not None:
+            return Plan(
+                workflow="answer",
+                summary="Clarify a real-terrain world change",
+                reply=(f"{real_change['label']} is real {real_change['current_body'].title()} terrain. "
+                       f"Do you want {real_change['target_body'].title()} gravity on this same terrain as a what-if, "
+                      f"{real_change['target_body'].title()} terrain instead, or Keep {real_change['current_body'].title()}?"),
+            )
         if (design := _use_design_plan(text, state)) is not None:
             return design
         if (resize := _resize_plan(text, world_state)) is not None:
@@ -317,6 +325,9 @@ Guidance:
 - A question about capabilities or facts with no requested world change uses workflow answer.
 - Compare variants must each change a small number of valid conditions. Stress tests state the question.
 - A planet or moon named in the request goes in world.body ("martian" is mars, "lunar" is moon).
+- If the current scene uses real terrain and the user asks to change its world body, do not silently change the
+    measured terrain's body. Ask whether they want the new body's gravity on the same terrain as a what-if, generated
+    (or installed real) terrain for the new body, or to keep the original real terrain.
 - Obstacles for a course use placement "path", listed in the order the user gave them.
 - Only use a preset when the user asks for a real place (a named site such as Gale Crater, "real terrain", NASA
   or HiRISE). For "Mars hills" or "a crater" use terrain_kind and body, with no preset.
@@ -684,6 +695,32 @@ _WORLD_WORDS = {
     "earth": "earth", "moon": "moon", "lunar": "moon", "mars": "mars", "martian": "mars",
     "titan": "titan", "europa": "europa", "enceladus": "enceladus",
 }
+_REAL_TERRAIN_BODY_CHANGE = re.compile(r"\b(?:change|switch|move|set|make|use)\b[^.!?]*\b(?:terrain|world|planet|body)\b", re.I)
+def real_terrain_body_change(text: str, world_state: World | SceneSpec | dict[str, Any] | None) -> dict[str, str] | None:
+    """Detect a body change on real terrain before a planner can conflate it with new elevation data."""
+    spec = _current_spec(world_state)
+    if spec is None or spec.domain != "robot_terrain" or spec.terrain is None or spec.terrain.kind != "real":
+        return None
+    source = text.lower()
+    if not _REAL_TERRAIN_BODY_CHANGE.search(source):
+        return None
+    bodies = {body for word, body in _WORLD_WORDS.items() if re.search(rf"\b{word}\b", source)}
+    if len(bodies) != 1:
+        return None
+    target_body = bodies.pop()
+    if target_body == spec.environment.body:
+        return None
+    from .terrain_data import load_preset
+
+    label = spec.terrain.preset or "Real terrain"
+    try:
+        label = load_preset(spec.terrain.preset)[1]["label"]
+    except Exception:  # noqa: BLE001 - a missing preset still gets a useful body-change guard
+        pass
+    label = re.sub(rf",\s*{re.escape(spec.environment.body)}$", "", label, flags=re.I)
+    return {"current_body": spec.environment.body, "target_body": target_body, "label": label}
+
+
 _REAL_TERRAIN_WORDS = re.compile(r"\breal (?:terrain|place|mars|data|ground|world)\b|\bnasa\b|\bhirise\b")
 _SCATTER_WORDS = re.compile(r"\b(scatter(?:ed)?|around|everywhere)\b")
 _ENDS_WITH_RUN = re.compile(r"\b(go|start|run it|race them)\s*[.!]*\s*$")
