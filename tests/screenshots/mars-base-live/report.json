@@ -1,0 +1,1277 @@
+{
+  "prompt": "Build a Mars base on Jezero: a habitat, a lander, and a bridge over a trench. Can the rover drive from the lander to the habitat?",
+  "requests": [
+    "Build a Mars base on Jezero: a habitat, a lander, and a bridge over a trench. Can the rover drive from the lander to the habitat?",
+    "run"
+  ],
+  "mock_mode": false,
+  "planner_model": "muse-spark-1.3",
+  "builder_mode": "template",
+  "configured_builder_model": "muse-wonder-1.0",
+  "wall_s": 55.29,
+  "costs": [
+    {
+      "runs": 0,
+      "wall_s": 27.4,
+      "model_calls": 1,
+      "text": "0 runs \u00b7 27 s \u00b7 1 model call"
+    },
+    {
+      "runs": 1,
+      "wall_s": 27.9,
+      "model_calls": 1,
+      "text": "1 run \u00b7 28 s \u00b7 1 model call"
+    }
+  ],
+  "model_calls": 2,
+  "runs": 1,
+  "checks": [
+    {
+      "name": "Model compiles",
+      "passed": true,
+      "detail": "MuJoCo accepted the scene.",
+      "advisory": false
+    },
+    {
+      "name": "Habitat 1 structural screening",
+      "passed": true,
+      "detail": "66% under habitat gravity loads (deflection, joint 7). 2D aluminium portal rib, 10 frame elements, fixed bases; the visual model isn't analysed. 6061-T6 nominal SHS, E=69 GPa, assumed yield 240 MPa; yield / 1.5; axial plus bending stress; displacement limit diameter/360. One portal rib approximates an arch; equipment and projected-roof shielding shared by tributary length. Nodal gravity loads; no pressure shell, skin mass, joints, buckling, lateral stability or foundation analysis. Screening, not certification.",
+      "advisory": false
+    },
+    {
+      "name": "Lander 2 local-gravity weight",
+      "passed": true,
+      "detail": "1% under local-gravity weight (stress, member 2). 2D aluminium frame, 2 opposite legs + body, pinned feet; the visual model isn't analysed. Assumed body mass 2000 kg. 6061-T6 nominal SHS, E=69 GPa, assumed yield 240 MPa; yield / 1.5; combined axial/bending leg stress; Euler K=1 with leg-length restraint in both planes. One opposite pair carries half the assumed body mass plus its own frame weight. No body strength, propellant, impact dynamics, joints, terrain compliance or lateral-system analysis. Screening, not certification.",
+      "advisory": false
+    },
+    {
+      "name": "Lander 2 landing what-if: 3 x local gravity (static equivalent)",
+      "passed": true,
+      "detail": "2% under landing what-if: 3 x local gravity (static equivalent) (stress, member 1). 2D aluminium frame, 2 opposite legs + body, pinned feet; the visual model isn't analysed. Assumed body mass 2000 kg. 6061-T6 nominal SHS, E=69 GPa, assumed yield 240 MPa; yield / 1.5; combined axial/bending leg stress; Euler K=1 with leg-length restraint in both planes. One opposite pair carries half the assumed body mass plus its own frame weight. No body strength, propellant, impact dynamics, joints, terrain compliance or lateral-system analysis. Screening, not certification.",
+      "advisory": true
+    },
+    {
+      "name": "Bridge 3 structural screening",
+      "passed": true,
+      "detail": "0% with the Rover at mid-span (yield, member 3). 2D steel truss, 7 members, pinned joints; the visual model isn't analysed. S235 nominal SHS; yield / 1.5; Euler K=1 with panel-point restraint in both planes; sag limit span/360. One truss carries full robot weight. Truss self-weight only; no deck, impact, connections or lateral-system analysis. Screening, not certification.",
+      "advisory": false
+    },
+    {
+      "name": "Gravity matches reference",
+      "passed": true,
+      "detail": "3.710 m/s\u00b2 in model vs 3.71 m/s\u00b2 for mars.",
+      "advisory": false
+    },
+    {
+      "name": "Friction is plausible",
+      "passed": true,
+      "detail": "0.70 (expected 0.02\u20132.0).",
+      "advisory": false
+    },
+    {
+      "name": "Real terrain matches source data",
+      "passed": true,
+      "detail": "Jezero Crater, Mars: 80 m square, relief 30.8 m in model vs 30.8 m in the data, typical slope 18.2\u00b0.",
+      "advisory": false
+    },
+    {
+      "name": "Start and goal are on the terrain",
+      "passed": true,
+      "detail": "Start (-30.4, 20.2), goal (-12.6, 22.2) m.",
+      "advisory": false
+    },
+    {
+      "name": "Goal is a real distance away",
+      "passed": true,
+      "detail": "18.0 m apart; the goal counts as reached within 1.0 m.",
+      "advisory": false
+    },
+    {
+      "name": "Obstacles placed clear of start and goal",
+      "passed": true,
+      "detail": "Placed: 1 gap.",
+      "advisory": false
+    },
+    {
+      "name": "Course looks passable for this robot",
+      "passed": false,
+      "detail": "Probably too much for it: medium gap (1.79 m wide). Rough limits: climbs about 0.09 m, crosses gaps up to about 0.24 m. A warning, not a ban: run it to find out.",
+      "advisory": true
+    },
+    {
+      "name": "Simulation is stable",
+      "passed": true,
+      "detail": "No NaN or blow-up in a 1 s settle test.",
+      "advisory": false
+    },
+    {
+      "name": "Robot rests on terrain",
+      "passed": true,
+      "detail": "Up to 3 wheel/ground contacts in the last 0.3 s of settling.",
+      "advisory": false
+    }
+  ],
+  "structures": [
+    {
+      "request_index": 0,
+      "kind": "habitat",
+      "size": "medium",
+      "material": "unspecified",
+      "section": null,
+      "mid_support": false,
+      "shielding_thickness_m": 0.5,
+      "placement": "near_goal",
+      "position": {
+        "x": -9.36,
+        "y": 22.22,
+        "z": 29.03
+      },
+      "orientation": {
+        "yaw_deg": 180.0,
+        "pitch_deg": 0.0
+      },
+      "footprint": {
+        "center_xy": [
+          -12.71,
+          22.22
+        ],
+        "length_m": 12.71,
+        "width_m": 4.0
+      },
+      "ground_slope_deg": 5.0,
+      "distance_to_target_m": 47.9,
+      "dimensions": {
+        "module_length_m": 6.0,
+        "module_diameter_m": 4.0,
+        "module_height_m": 4.0,
+        "airlock_rise_m": 1.0,
+        "ramp": {
+          "run_m": 6.71,
+          "width_m": 1.5,
+          "slope_deg": 11.986,
+          "top_z": 30.035,
+          "toe_z": 28.61
+        }
+      },
+      "access_points": {
+        "habitat_airlock": {
+          "x": -12.56,
+          "y": 22.22,
+          "z": 30.03
+        }
+      },
+      "structural_check": {
+        "passed": true,
+        "utilisation_pct": 66.29641716291083,
+        "governing": {
+          "member": null,
+          "node": 7,
+          "deflection_m": 0.007366268573656759,
+          "limit_m": 0.011111111111111112,
+          "utilisation_pct": 66.29641716291083,
+          "mode": "deflection",
+          "passed": true
+        },
+        "checks": {
+          "stress": {
+            "member": 7,
+            "stress_pa": 27690134.194962446,
+            "allowable_pa": 160000000.0,
+            "utilisation_pct": 17.30633387185153,
+            "mode": "stress",
+            "passed": true
+          },
+          "deflection": {
+            "member": null,
+            "node": 7,
+            "deflection_m": 0.007366268573656759,
+            "limit_m": 0.011111111111111112,
+            "utilisation_pct": 66.29641716291083,
+            "mode": "deflection",
+            "passed": true
+          }
+        },
+        "summary": "66% under habitat gravity loads (deflection, joint 7).",
+        "honesty": "2D aluminium portal rib, 10 frame elements, fixed bases; the visual model isn't analysed",
+        "assumptions": "6061-T6 nominal SHS, E=69 GPa, assumed yield 240 MPa; yield / 1.5; axial plus bending stress; displacement limit diameter/360. One portal rib approximates an arch; equipment and projected-roof shielding shared by tributary length. Nodal gravity loads; no pressure shell, skin mass, joints, buckling, lateral stability or foundation analysis. Screening, not certification.",
+        "frame": {
+          "nodes": {
+            "1": [
+              0.0,
+              0.0
+            ],
+            "2": [
+              4.0,
+              0.0
+            ],
+            "3": [
+              0.0,
+              4.0
+            ],
+            "4": [
+              0.5,
+              4.0
+            ],
+            "5": [
+              1.0,
+              4.0
+            ],
+            "6": [
+              1.5,
+              4.0
+            ],
+            "7": [
+              2.0,
+              4.0
+            ],
+            "8": [
+              2.5,
+              4.0
+            ],
+            "9": [
+              3.0,
+              4.0
+            ],
+            "10": [
+              3.5,
+              4.0
+            ],
+            "11": [
+              4.0,
+              4.0
+            ]
+          },
+          "members": [
+            {
+              "tag": 1,
+              "nodes": [
+                1,
+                3
+              ],
+              "group": "column",
+              "length_m": 4.0,
+              "local_forces": [
+                10013.568991999891,
+                -1626.8874195399158,
+                -2167.812031106471,
+                -10013.568991999891,
+                1626.8874195399158,
+                -4339.737647053193
+              ],
+              "axial_force_n": -10013.568991999891,
+              "max_moment_nm": 4339.737647053193,
+              "stress_pa": 23450059.449303813
+            },
+            {
+              "tag": 2,
+              "nodes": [
+                2,
+                11
+              ],
+              "group": "column",
+              "length_m": 4.0,
+              "local_forces": [
+                10013.56899199998,
+                1626.8874195398694,
+                2167.8120311063717,
+                -10013.56899199998,
+                -1626.8874195398694,
+                4339.737647053106
+              ],
+              "axial_force_n": -10013.56899199998,
+              "max_moment_nm": 4339.737647053106,
+              "stress_pa": 23450059.44930341
+            },
+            {
+              "tag": 3,
+              "nodes": [
+                3,
+                4
+              ],
+              "group": "roof",
+              "length_m": 0.5,
+              "local_forces": [
+                1626.887419539916,
+                8682.217683999872,
+                4339.737647053183,
+                -1626.887419539916,
+                -8682.217683999872,
+                1.3711949467528939
+              ],
+              "axial_force_n": -1626.887419539916,
+              "max_moment_nm": 4339.737647053183,
+              "stress_pa": 21604398.891984228
+            },
+            {
+              "tag": 4,
+              "nodes": [
+                4,
+                5
+              ],
+              "group": "roof",
+              "length_m": 0.5,
+              "local_forces": [
+                1626.887419539916,
+                6201.584059999964,
+                -1.371194946734704,
+                -1626.887419539916,
+                -6201.584059999964,
+                3102.1632249467166
+              ],
+              "axial_force_n": -1626.887419539916,
+              "max_moment_nm": 3102.1632249467166,
+              "stress_pa": 15545515.824143462
+            },
+            {
+              "tag": 5,
+              "nodes": [
+                5,
+                6
+              ],
+              "group": "roof",
+              "length_m": 0.5,
+              "local_forces": [
+                1626.8874195399173,
+                3720.9504359999555,
+                -3102.1632249466784,
+                -1626.8874195399173,
+                -3720.9504359999555,
+                4962.638442946656
+              ],
+              "axial_force_n": -1626.8874195399173,
+              "max_moment_nm": 4962.638442946656,
+              "stress_pa": 24653979.602257527
+            },
+            {
+              "tag": 6,
+              "nodes": [
+                6,
+                7
+              ],
+              "group": "roof",
+              "length_m": 0.5,
+              "local_forces": [
+                1626.8874195399173,
+                1240.3168120000682,
+                -4962.638442946627,
+                -1626.8874195399173,
+                -1240.3168120000682,
+                5582.796848946661
+              ],
+              "axial_force_n": -1626.8874195399173,
+              "max_moment_nm": 5582.796848946661,
+              "stress_pa": 27690134.194962338
+            },
+            {
+              "tag": 7,
+              "nodes": [
+                7,
+                8
+              ],
+              "group": "roof",
+              "length_m": 0.5,
+              "local_forces": [
+                1626.8874195399014,
+                -1240.3168120000573,
+                -5582.796848946684,
+                -1626.8874195399014,
+                1240.3168120000573,
+                4962.638442946655
+              ],
+              "axial_force_n": -1626.8874195399014,
+              "max_moment_nm": 5582.796848946684,
+              "stress_pa": 27690134.194962446
+            },
+            {
+              "tag": 8,
+              "nodes": [
+                8,
+                9
+              ],
+              "group": "roof",
+              "length_m": 0.5,
+              "local_forces": [
+                1626.8874195398737,
+                -3720.9504360000174,
+                -4962.638442946813,
+                -1626.8874195398737,
+                3720.9504360000174,
+                3102.163224946804
+              ],
+              "axial_force_n": -1626.8874195398737,
+              "max_moment_nm": 4962.638442946813,
+              "stress_pa": 24653979.60225828
+            },
+            {
+              "tag": 9,
+              "nodes": [
+                9,
+                10
+              ],
+              "group": "roof",
+              "length_m": 0.5,
+              "local_forces": [
+                1626.8874195398682,
+                -6201.58406000003,
+                -3102.1632249467716,
+                -1626.8874195398682,
+                6201.58406000003,
+                1.3711949467565319
+              ],
+              "axial_force_n": -1626.8874195398682,
+              "max_moment_nm": 3102.1632249467716,
+              "stress_pa": 15545515.824143719
+            },
+            {
+              "tag": 10,
+              "nodes": [
+                10,
+                11
+              ],
+              "group": "roof",
+              "length_m": 0.5,
+              "local_forces": [
+                1626.8874195398691,
+                -8682.217684,
+                -1.3711949467592603,
+                -1626.8874195398691,
+                8682.217684,
+                -4339.737647053241
+              ],
+              "axial_force_n": -1626.8874195398691,
+              "max_moment_nm": 4339.737647053241,
+              "stress_pa": 21604398.8919845
+            }
+          ],
+          "displacements_m": {
+            "1": [
+              0.0,
+              0.0
+            ],
+            "2": [
+              0.0,
+              0.0
+            ],
+            "3": [
+              1.0377675415375644e-05,
+              -0.0001277501657481106
+            ],
+            "4": [
+              7.783256561496157e-06,
+              -0.0025245627609134557
+            ],
+            "5": [
+              5.18883770761667e-06,
+              -0.004969942432026494
+            ],
+            "6": [
+              2.5944188537371814e-06,
+              -0.0067305185045208665
+            ],
+            "7": [
+              -1.4230738187242192e-16,
+              -0.007366268573656759
+            ],
+            "8": [
+              -2.594418854021771e-06,
+              -0.006730518504520893
+            ],
+            "9": [
+              -5.18883770790119e-06,
+              -0.004969942432026527
+            ],
+            "10": [
+              -7.783256561780601e-06,
+              -0.0025245627609134734
+            ],
+            "11": [
+              -1.0377675415660013e-05,
+              -0.00012775016574811173
+            ]
+          },
+          "applied_loads_n": {
+            "1": [
+              0.0,
+              -91.03449599999992
+            ],
+            "2": [
+              0.0,
+              -91.03449599999992
+            ],
+            "3": [
+              0.0,
+              -1331.351308
+            ],
+            "4": [
+              0.0,
+              -2480.633624
+            ],
+            "5": [
+              0.0,
+              -2480.633624
+            ],
+            "6": [
+              0.0,
+              -2480.633624
+            ],
+            "7": [
+              0.0,
+              -2480.633624
+            ],
+            "8": [
+              0.0,
+              -2480.633624
+            ],
+            "9": [
+              0.0,
+              -2480.633624
+            ],
+            "10": [
+              0.0,
+              -2480.633624
+            ],
+            "11": [
+              0.0,
+              -1331.351308
+            ]
+          },
+          "reactions": {
+            "1": [
+              1626.8874195399158,
+              10104.603487999892,
+              -2167.812031106471
+            ],
+            "2": [
+              -1626.8874195398694,
+              10104.60348799998,
+              2167.8120311063717
+            ]
+          },
+          "section": "SHS150x150x8",
+          "area_m2": 0.004543999999999996,
+          "inertia_m4": 1.5319338666666658e-05,
+          "section_modulus_m3": 0.00020425784888888877,
+          "frame_mass_kg": 147.2255999999999,
+          "gravity_m_s2": 3.71
+        },
+        "rib_count": 4,
+        "tributary_length_m": 1.5,
+        "equipment_mass_kg": 2000.0,
+        "equipment_mass_per_rib_kg": 500.0,
+        "shielding_mass_per_rib_kg": 4800.0,
+        "shielding_thickness_m": 0.5,
+        "shielding_density_kg_m3": 1600.0
+      },
+      "next_actions": []
+    },
+    {
+      "request_index": 1,
+      "kind": "lander",
+      "size": "medium",
+      "material": "unspecified",
+      "section": null,
+      "mid_support": false,
+      "shielding_thickness_m": 0.5,
+      "placement": "near_start",
+      "position": {
+        "x": -34.17,
+        "y": 20.2,
+        "z": 28.45
+      },
+      "orientation": {
+        "yaw_deg": 0.0,
+        "pitch_deg": 0.0
+      },
+      "footprint": {
+        "center_xy": [
+          -34.17,
+          20.2
+        ],
+        "length_m": 6.0,
+        "width_m": 6.0
+      },
+      "ground_slope_deg": 3.8,
+      "distance_to_target_m": 21.1,
+      "dimensions": {
+        "height_m": 2.25,
+        "footprint_m": 6.0,
+        "deck_span_m": 1.5,
+        "deck_height_m": 1.0,
+        "body_height_m": 0.35,
+        "leg_footprint_m": 2.5,
+        "legs": 3,
+        "visual_model": "nasa_insight"
+      },
+      "access_points": {
+        "lander": {
+          "x": -30.42,
+          "y": 20.2,
+          "z": 28.22
+        }
+      },
+      "structural_check": {
+        "passed": true,
+        "utilisation_pct": 2.4791286110041937,
+        "governing": {
+          "member": 1,
+          "stress_pa": 3966605.7776067094,
+          "allowable_pa": 160000000.0,
+          "utilisation_pct": 2.4791286110041937,
+          "mode": "stress",
+          "passed": true,
+          "case": "landing_what_if"
+        },
+        "summary": "2% under landing what-if: 3 x local gravity (static equivalent) (stress, member 1).",
+        "honesty": "2D aluminium frame, 2 opposite legs + body, pinned feet; the visual model isn't analysed",
+        "assumptions": "Assumed body mass 2000 kg. 6061-T6 nominal SHS, E=69 GPa, assumed yield 240 MPa; yield / 1.5; combined axial/bending leg stress; Euler K=1 with leg-length restraint in both planes. One opposite pair carries half the assumed body mass plus its own frame weight. No body strength, propellant, impact dynamics, joints, terrain compliance or lateral-system analysis. Screening, not certification.",
+        "body_mass_kg": 2000.0,
+        "pair_body_mass_kg": 1000.0,
+        "gravity_m_s2": 3.71,
+        "cases": {
+          "static": {
+            "passed": true,
+            "utilisation_pct": 0.8263762036680649,
+            "governing": {
+              "member": 2,
+              "stress_pa": 1322201.9258689038,
+              "allowable_pa": 160000000.0,
+              "utilisation_pct": 0.8263762036680649,
+              "mode": "stress",
+              "passed": true
+            },
+            "checks": {
+              "stress": {
+                "member": 2,
+                "stress_pa": 1322201.9258689038,
+                "allowable_pa": 160000000.0,
+                "utilisation_pct": 0.8263762036680649,
+                "mode": "stress",
+                "passed": true
+              },
+              "buckling": {
+                "member": 1,
+                "compression_n": 2855.6267166874754,
+                "capacity_n": 557823.9045093388,
+                "effective_length_m": 2.0180436070610566,
+                "utilisation_pct": 0.5119226145748059,
+                "mode": "buckling",
+                "passed": true
+              }
+            },
+            "summary": "1% under local-gravity weight (stress, member 2).",
+            "honesty": "2D aluminium frame, 2 opposite legs + body, pinned feet; the visual model isn't analysed",
+            "assumptions": "Assumed body mass 2000 kg. 6061-T6 nominal SHS, E=69 GPa, assumed yield 240 MPa; yield / 1.5; combined axial/bending leg stress; Euler K=1 with leg-length restraint in both planes. One opposite pair carries half the assumed body mass plus its own frame weight. No body strength, propellant, impact dynamics, joints, terrain compliance or lateral-system analysis. Screening, not certification.",
+            "frame": {
+              "nodes": {
+                "1": [
+                  -3.0,
+                  0.0
+                ],
+                "2": [
+                  3.0,
+                  0.0
+                ],
+                "3": [
+                  -1.5,
+                  1.3499999999999999
+                ],
+                "4": [
+                  1.5,
+                  1.3499999999999999
+                ]
+              },
+              "members": [
+                {
+                  "tag": 1,
+                  "nodes": [
+                    1,
+                    3
+                  ],
+                  "group": "leg",
+                  "length_m": 2.0180436070610566,
+                  "local_forces": [
+                    2855.6267166874754,
+                    1.8649383371615789,
+                    8.43769498715119e-15,
+                    -2855.6267166874754,
+                    -1.8649383371615789,
+                    3.763526888871993
+                  ],
+                  "axial_force_n": -2855.6267166874754,
+                  "max_moment_nm": 3.763526888871993,
+                  "stress_pa": 1322201.9258689021
+                },
+                {
+                  "tag": 2,
+                  "nodes": [
+                    2,
+                    4
+                  ],
+                  "group": "leg",
+                  "length_m": 2.0180436070610566,
+                  "local_forces": [
+                    2855.6267166874754,
+                    -1.8649383371616275,
+                    1.3322676295501878e-15,
+                    -2855.6267166874754,
+                    1.8649383371616275,
+                    -3.763526888872101
+                  ],
+                  "axial_force_n": -2855.6267166874754,
+                  "max_moment_nm": 3.763526888872101,
+                  "stress_pa": 1322201.9258689038
+                },
+                {
+                  "tag": 3,
+                  "nodes": [
+                    3,
+                    4
+                  ],
+                  "group": "body",
+                  "length_m": 3.0,
+                  "local_forces": [
+                    2121.323044406604,
+                    3.952393967665557e-14,
+                    -3.7635268888719837,
+                    -2121.323044406604,
+                    -3.952393967665557e-14,
+                    3.7635268888721023
+                  ],
+                  "axial_force_n": -2121.323044406604,
+                  "max_moment_nm": 3.7635268888721023,
+                  "stress_pa": 996712.7094323472
+                }
+              ],
+              "displacements_m": {
+                "1": [
+                  0.0,
+                  0.0
+                ],
+                "2": [
+                  0.0,
+                  0.0
+                ],
+                "3": [
+                  2.0441364519798253e-05,
+                  -7.805280820239869e-05
+                ],
+                "4": [
+                  -2.044136451979864e-05,
+                  -7.805280820239912e-05
+                ]
+              },
+              "applied_loads_n": {
+                "1": [
+                  0.0,
+                  -22.80222989185772
+                ],
+                "2": [
+                  0.0,
+                  -22.80222989185772
+                ],
+                "3": [
+                  0.0,
+                  -1911.6997578918576
+                ],
+                "4": [
+                  0.0,
+                  -1911.6997578918576
+                ]
+              },
+              "reactions": {
+                "1": [
+                  2121.323044406604,
+                  1934.501987783716,
+                  8.43769498715119e-15
+                ],
+                "2": [
+                  -2121.323044406604,
+                  1934.501987783716,
+                  1.3322676295501878e-15
+                ]
+              },
+              "section": "SHS100x100x6",
+              "area_m2": 0.002256,
+              "inertia_m4": 3.3358719999999998e-06,
+              "section_modulus_m3": 6.671744e-05,
+              "frame_mass_kg": 42.85821443866062,
+              "gravity_m_s2": 3.71
+            },
+            "label": "local-gravity weight",
+            "what_if": false,
+            "gravity_multiplier": 1.0
+          },
+          "landing_what_if": {
+            "passed": true,
+            "utilisation_pct": 2.4791286110041937,
+            "governing": {
+              "member": 1,
+              "stress_pa": 3966605.7776067094,
+              "allowable_pa": 160000000.0,
+              "utilisation_pct": 2.4791286110041937,
+              "mode": "stress",
+              "passed": true
+            },
+            "checks": {
+              "stress": {
+                "member": 1,
+                "stress_pa": 3966605.7776067094,
+                "allowable_pa": 160000000.0,
+                "utilisation_pct": 2.4791286110041937,
+                "mode": "stress",
+                "passed": true
+              },
+              "buckling": {
+                "member": 2,
+                "compression_n": 8566.880150062429,
+                "capacity_n": 557823.9045093388,
+                "effective_length_m": 2.0180436070610566,
+                "utilisation_pct": 1.535767843724418,
+                "mode": "buckling",
+                "passed": true
+              }
+            },
+            "summary": "2% under landing what-if: 3 x local gravity (static equivalent) (stress, member 1).",
+            "honesty": "2D aluminium frame, 2 opposite legs + body, pinned feet; the visual model isn't analysed",
+            "assumptions": "Assumed body mass 2000 kg. 6061-T6 nominal SHS, E=69 GPa, assumed yield 240 MPa; yield / 1.5; combined axial/bending leg stress; Euler K=1 with leg-length restraint in both planes. One opposite pair carries half the assumed body mass plus its own frame weight. No body strength, propellant, impact dynamics, joints, terrain compliance or lateral-system analysis. Screening, not certification.",
+            "frame": {
+              "nodes": {
+                "1": [
+                  -3.0,
+                  0.0
+                ],
+                "2": [
+                  3.0,
+                  0.0
+                ],
+                "3": [
+                  -1.5,
+                  1.3499999999999999
+                ],
+                "4": [
+                  1.5,
+                  1.3499999999999999
+                ]
+              },
+              "members": [
+                {
+                  "tag": 1,
+                  "nodes": [
+                    1,
+                    3
+                  ],
+                  "group": "leg",
+                  "length_m": 2.0180436070610566,
+                  "local_forces": [
+                    8566.880150062425,
+                    5.594815011484855,
+                    1.509903313490213e-14,
+                    -8566.880150062425,
+                    -5.594815011484855,
+                    11.290580666616227
+                  ],
+                  "axial_force_n": -8566.880150062425,
+                  "max_moment_nm": 11.290580666616227,
+                  "stress_pa": 3966605.7776067094
+                },
+                {
+                  "tag": 2,
+                  "nodes": [
+                    2,
+                    4
+                  ],
+                  "group": "leg",
+                  "length_m": 2.0180436070610566,
+                  "local_forces": [
+                    8566.880150062429,
+                    -5.594815011484751,
+                    8.881784197001252e-15,
+                    -8566.880150062429,
+                    5.594815011484751,
+                    -11.29058066661604
+                  ],
+                  "axial_force_n": -8566.880150062429,
+                  "max_moment_nm": 11.29058066661604,
+                  "stress_pa": 3966605.777606708
+                },
+                {
+                  "tag": 3,
+                  "nodes": [
+                    3,
+                    4
+                  ],
+                  "group": "body",
+                  "length_m": 3.0,
+                  "local_forces": [
+                    6363.969133219812,
+                    -6.039613253960852e-14,
+                    -11.29058066661622,
+                    -6363.969133219812,
+                    6.039613253960852e-14,
+                    11.290580666616039
+                  ],
+                  "axial_force_n": -6363.969133219812,
+                  "max_moment_nm": 11.29058066661622,
+                  "stress_pa": 2990138.1282970402
+                }
+              ],
+              "displacements_m": {
+                "1": [
+                  0.0,
+                  0.0
+                ],
+                "2": [
+                  0.0,
+                  0.0
+                ],
+                "3": [
+                  6.132409355939565e-05,
+                  -0.00023415842460719702
+                ],
+                "4": [
+                  -6.132409355939502e-05,
+                  -0.00023415842460719637
+                ]
+              },
+              "applied_loads_n": {
+                "1": [
+                  0.0,
+                  -68.40668967557316
+                ],
+                "2": [
+                  0.0,
+                  -68.40668967557316
+                ],
+                "3": [
+                  0.0,
+                  -5735.0992736755725
+                ],
+                "4": [
+                  0.0,
+                  -5735.0992736755725
+                ]
+              },
+              "reactions": {
+                "1": [
+                  6363.969133219811,
+                  5803.505963351146,
+                  1.509903313490213e-14
+                ],
+                "2": [
+                  -6363.969133219814,
+                  5803.505963351149,
+                  8.881784197001252e-15
+                ]
+              },
+              "section": "SHS100x100x6",
+              "area_m2": 0.002256,
+              "inertia_m4": 3.3358719999999998e-06,
+              "section_modulus_m3": 6.671744e-05,
+              "frame_mass_kg": 42.85821443866062,
+              "gravity_m_s2": 11.129999999999999
+            },
+            "label": "landing what-if: 3 x local gravity (static equivalent)",
+            "what_if": true,
+            "gravity_multiplier": 3.0
+          }
+        }
+      },
+      "next_actions": []
+    },
+    {
+      "request_index": 2,
+      "kind": "bridge",
+      "size": "medium",
+      "material": "unspecified",
+      "section": null,
+      "mid_support": false,
+      "shielding_thickness_m": 0.5,
+      "placement": "over_gap",
+      "position": {
+        "x": -23.28,
+        "y": 21.01,
+        "z": 28.38
+      },
+      "orientation": {
+        "yaw_deg": 6.5,
+        "pitch_deg": -2.12
+      },
+      "footprint": {
+        "center_xy": [
+          -23.28,
+          21.01
+        ],
+        "length_m": 2.79,
+        "width_m": 0.94
+      },
+      "ground_slope_deg": 4.1,
+      "distance_to_target_m": 0.0,
+      "dimensions": {
+        "deck_width_m": 0.94,
+        "bearing_each_m": 0.5,
+        "gap_opening_m": 1.79,
+        "span_m": 2.79
+      },
+      "gap": {
+        "obstacle": "gap",
+        "center": [
+          -23.28,
+          21.01
+        ],
+        "opening_m": 1.79,
+        "bearings_each_m": 0.5,
+        "bearings": [
+          {
+            "x": -24.42,
+            "y": 20.88,
+            "z": 28.329
+          },
+          {
+            "x": -22.14,
+            "y": 21.14,
+            "z": 28.433
+          }
+        ]
+      },
+      "structural_check": {
+        "passed": true,
+        "utilisation_pct": 0.18869522898580038,
+        "governing": {
+          "load_node": 2,
+          "position_m": 1.395,
+          "mode": "yield",
+          "member": 3,
+          "member_nodes": [
+            4,
+            5
+          ],
+          "force_n": -264.87778276833416,
+          "demand_n": 264.87778276833416,
+          "capacity_n": 140373.3333333333,
+          "stress_pa": -295622.5254110872,
+          "utilisation_pct": 0.18869522898580038
+        },
+        "checks": {
+          "yield": {
+            "load_node": 2,
+            "position_m": 1.395,
+            "mode": "yield",
+            "member": 3,
+            "member_nodes": [
+              4,
+              5
+            ],
+            "force_n": -264.87778276833416,
+            "demand_n": 264.87778276833416,
+            "capacity_n": 140373.3333333333,
+            "stress_pa": -295622.5254110872,
+            "utilisation_pct": 0.18869522898580038,
+            "passed": true
+          },
+          "buckling": {
+            "load_node": 2,
+            "position_m": 1.395,
+            "mode": "buckling",
+            "member": 3,
+            "member_nodes": [
+              4,
+              5
+            ],
+            "force_n": -264.87778276833416,
+            "demand_n": 264.87778276833416,
+            "capacity_n": 477446.03816705587,
+            "stress_pa": -295622.5254110872,
+            "utilisation_pct": 0.055478056490994444,
+            "passed": true
+          },
+          "sag": {
+            "load_node": 2,
+            "position_m": 1.395,
+            "mode": "sag",
+            "member": null,
+            "deflected_node": 2,
+            "sag_m": 9.667786498993773e-06,
+            "limit_m": 0.00775,
+            "utilisation_pct": 0.12474563224508095,
+            "passed": true
+          }
+        },
+        "summary": "0% with the Rover at mid-span (yield, member 3).",
+        "honesty": "2D steel truss, 7 members, pinned joints; the visual model isn't analysed",
+        "assumptions": "S235 nominal SHS; yield / 1.5; Euler K=1 with panel-point restraint in both planes; sag limit span/360. One truss carries full robot weight. Truss self-weight only; no deck, impact, connections or lateral-system analysis. Screening, not certification.",
+        "span_m": 2.79,
+        "depth_m": 0.34875,
+        "panels": 2,
+        "section": "SHS60x60x4",
+        "mid_support": false,
+        "robot_mass_kg": 10.010000000000002,
+        "robot_label": "Rover",
+        "gravity_m_s2": 3.71,
+        "truss_mass_kg": 51.37562877852682,
+        "load_cases": [
+          {
+            "load_node": 1,
+            "position_m": 0.0,
+            "utilisation_pct": 0.13578332739005566
+          },
+          {
+            "load_node": 2,
+            "position_m": 1.395,
+            "utilisation_pct": 0.18869522898580038
+          },
+          {
+            "load_node": 3,
+            "position_m": 2.79,
+            "utilisation_pct": 0.13578332739005566
+          }
+        ]
+      },
+      "next_actions": []
+    }
+  ],
+  "metrics": {
+    "simulator": "MuJoCo",
+    "duration_s": 51,
+    "distance_m": 17.64,
+    "forward_progress_m": 17.52,
+    "lateral_drift_m": 0.05,
+    "climbed_m": 1.76,
+    "max_tilt_deg": 19.4,
+    "flipped": false,
+    "flipped_at_s": null,
+    "fall_started_at_s": null,
+    "fall_direction": null,
+    "ground_measured_at": "end of run",
+    "local_slope_deg": 4.0,
+    "slope_along_heading_deg": 0.3,
+    "cross_slope_deg": 4.0,
+    "downhill_side": "right",
+    "max_slope_on_path_deg": 36.8,
+    "steepest_point_xy": [
+      -23.0,
+      21.0
+    ],
+    "slip_ratio": 0.11,
+    "slip_ratio_last_1s_before_fall": null,
+    "typical_contact_slide_speed_m_s": 0.0,
+    "unstable": false,
+    "left_terrain": false,
+    "stopped_early": {
+      "reason": "reached",
+      "at_s": 27.2,
+      "planned_s": 51
+    },
+    "tilt_trace": [
+      [
+        0.5,
+        3.7
+      ],
+      [
+        3.3,
+        3.7
+      ],
+      [
+        6.1,
+        4.2
+      ],
+      [
+        8.9,
+        2.1
+      ],
+      [
+        11.7,
+        3.9
+      ],
+      [
+        14.5,
+        4.6
+      ],
+      [
+        17.3,
+        3.5
+      ],
+      [
+        20.1,
+        12.1
+      ],
+      [
+        22.9,
+        12.0
+      ],
+      [
+        25.7,
+        12.0
+      ],
+      [
+        28.7,
+        12.0
+      ]
+    ],
+    "goal_reached": true,
+    "outcome": "reached",
+    "time_to_goal_s": 27.2,
+    "start_distance_to_goal_m": 17.97,
+    "closest_distance_m": 0.33,
+    "final_distance_m": 0.34,
+    "progress_toward_goal_m": 17.63,
+    "path_length_m": 22.64,
+    "path_efficiency": 0.78,
+    "goal_xy": [
+      -12.56,
+      22.22
+    ],
+    "goal_radius_m": 1.0,
+    "obstacles": [
+      {
+        "name": "obs0_gap",
+        "kind": "gap",
+        "size": "medium",
+        "height_m": 0.6,
+        "width_m": 1.79,
+        "along_path_m": 7.19,
+        "on_path": true,
+        "touched_at_s": null,
+        "cleared": true
+      }
+    ],
+    "obstacles_total": 1,
+    "obstacles_cleared": 1,
+    "stopped_by": null,
+    "robot_rough_limits": {
+      "climb_m": 0.09,
+      "gap_m": 0.24
+    },
+    "gravity": 3.71,
+    "friction": 0.7,
+    "terrain": {
+      "kind": "real",
+      "preset": "jezero",
+      "slope_deg": 0.0,
+      "roughness": 0.3,
+      "size_m": 80.308,
+      "seed": 0,
+      "preset_size_m": null,
+      "preset_relief_m": null,
+      "structure_crop_size_m": 80.0
+    },
+    "robot": {
+      "kind": "rover",
+      "robot_id": null,
+      "policy_id": null,
+      "wheels": 4,
+      "wheel_radius": 0.15,
+      "wheel_width": 0.08,
+      "drive_speed": 6.0,
+      "legs": 4,
+      "leg_length": 0.22,
+      "gait_freq_hz": 2.0,
+      "stride_deg": 15.0,
+      "chassis_length": 0.6,
+      "chassis_width": 0.4,
+      "mass_kg": 10.0,
+      "command_speed_m_s": 0.6
+    }
+  },
+  "frame_count": 862,
+  "errors": []
+}

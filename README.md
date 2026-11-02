@@ -15,6 +15,51 @@ from other fields. They can test an idea against real physics without learning a
 
 ---
 
+## Structures in the world
+
+Build a measured Mars base, then run the rover mission:
+
+> Build a Mars base on Jezero: a habitat, a lander, and a bridge over a trench. Can the rover drive from the lander to the habitat?
+
+The scene keeps real Jezero elevations, selects a larger measured patch when needed, and places the habitat,
+lander and truss bridge inside the physics terrain. The rover starts beside the lander, crosses the bridge,
+aligns with the terrain-connected ramp, and targets the raised habitat airlock. Arrival requires both the
+goal's XY radius and its support-height tolerance; it does not mean entering an operable door or habitat.
+The Scene panel shows individual structural screening, assumptions, member utilisation and visual credit.
+
+**Configured-model validation, 2026-11-02:** planner/explainer `muse-spark-1.3`; configured builder
+`muse-wonder-1.0`, with `BUILDER_MODE=template` (no Builder model call). Mock mode was disabled.
+The final exact-prompt run used real Jezero, an 80.308 m measured patch, Mars gravity 3.71 m/s² and a 10 kg rover.
+
+| Structure | Screening result | Governing utilisation |
+| --- | --- | --- |
+| Habitat | Pass: stress and deflection | 66.30%, deflection at rib joint 7 (7.37 mm versus 11.11 mm limit) |
+| Lander | Pass: static legs and buckling | 0.83% static; 2.48% in the separately labelled 3× local-gravity landing what-if |
+| Bridge | Pass: yield, buckling and sag | 0.189%, yield in member 3 with the rover at mid-span |
+
+The rover cleared the trench and reached the airlock approach at **27.2 s**, finishing 0.34 m from the goal
+without flipping or leaving the terrain. Its budget was 51 simulated seconds; recorded playback ends at 28.7 s.
+The final request/build/run/explain sequence took **55.29 s wall time and 2 model calls** (1 planning, 1 explaining),
+with one mission simulation. Three live validation attempts used 6 model calls in total; diagnostic physics
+replays and screenshot capture made no model calls. A coarse gap-capability advisory remained visible;
+the bridge allowed the rover to cross. Screening is a linear-elastic 2D idealisation, not structural certification.
+
+![Measured Jezero base overview](tests/screenshots/mars-base-live/overview.png)
+![Recorded rover crossing the truss bridge at 9.167 s](tests/screenshots/mars-base-live/rover-on-bridge.png)
+![Recorded rover arriving at the raised airlock at 27.2 s](tests/screenshots/mars-base-live/arriving-at-airlock.png)
+
+Reproduce using your configured models (never prints credentials):
+
+```powershell
+.\.venv\Scripts\python.exe scripts/run_mars_base_example.py
+.\.venv\Scripts\python.exe scripts/run_mars_base_example.py --screenshots-only
+```
+
+The runner saves actual reports, cost events and replay frames under `tests/screenshots/mars-base-live/`.
+Screenshot-only mode uses those frames and refuses to fabricate a bridge pose or a raised-goal arrival.
+Browser capture uses the optional dependencies in `requirements-dev.txt` and locally installed Edge.
+The optional NASA InSight GLB remains local and uncommitted; it is credited only when loaded successfully.
+
 ## Project status
 
 This is a **prototype**. It was built before the hackathon building period started, to test the idea and
