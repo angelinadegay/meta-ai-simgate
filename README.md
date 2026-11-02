@@ -759,6 +759,26 @@ python tests/test_pipeline.py                          # offline tests
 uvicorn server:app --reload                            # then open http://localhost:8000
 ```
 
+## Docker
+
+Clone SimGate, prepare any missing runtime assets and Mars terrain, then start the container:
+
+```bash
+git clone https://github.com/angelinadegay/meta-ai-simgate.git
+cd meta-ai-simgate
+docker compose build
+docker compose run --rm simgate python scripts/bootstrap.py
+docker compose up
+```
+
+Open `http://localhost:8000`. The bootstrap script clones Unitree's `unitree_rl_gym` only if the required G1
+assets are missing. It imports Gale Crater, Jezero Crater and Ares 3 HiRISE terrain only when their files are
+missing; the normal checkout already includes both the model assets and terrain presets. To re-import all three
+Mars datasets, run `docker compose run --rm simgate python scripts/bootstrap.py --refresh-terrains`. Terrain
+and user-upload data persist in Docker volumes. Copy `.env.example` to `.env` and set your model configuration
+before starting Compose to enable a hosted model; otherwise the app runs in Mock mode. The API key is passed
+to the container as an environment variable and is not baked into the image.
+
 To use a model, copy `.env.example` to `.env` and fill in a base URL, key and model names. Then open
 `http://localhost:8000/health` to confirm which mode is active.
 

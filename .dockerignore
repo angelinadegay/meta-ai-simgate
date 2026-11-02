@@ -1,0 +1,11 @@
+.git/
+.venv/
+.pytest_cache/
+__pycache__/
+**/__pycache__/
+**/*.py[cod]
+.env
+unitree_rl_gym/
+tests/
+MUJOCO_LOG.TXT
+simgate/library/uploads/

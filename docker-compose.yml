@@ -1,0 +1,22 @@
+services:
+  simgate:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      LLM_BASE_URL: "${LLM_BASE_URL:-}"
+      LLM_API_KEY: "${LLM_API_KEY:-}"
+      PLANNER_MODEL: "${PLANNER_MODEL:-gpt-4o-mini}"
+      BUILDER_MODEL: "${BUILDER_MODEL:-${PLANNER_MODEL:-gpt-4o-mini}}"
+      BUILDER_MODE: "${BUILDER_MODE:-template}"
+      BUILDER_MAX_RETRIES: "${BUILDER_MAX_RETRIES:-3}"
+      SIMGATE_UPLOADS_DIR: /app/simgate/library/uploads
+    volumes:
+      - simgate-terrains:/app/simgate/terrains
+      - simgate-uploads:/app/simgate/library/uploads
+    init: true
+    restart: unless-stopped
+
+volumes:
+  simgate-terrains:
+  simgate-uploads:
