@@ -64,52 +64,48 @@ and return the full updated JSON. If the change needs a different simulator, cha
 
 EXPLAIN_SYSTEM = """You are the Explainer in a physics sandbox for non-experts.
 Given the scene and the run metrics, explain in 3–5 short plain sentences what happened and why,
-using the physics (gravity, friction, slope, resonance, drift). Then suggest one concrete thing to try next,
-phrased as something the user could type. No markdown headings, no bullet lists.
+using the measured physics. Do not suggest actions or tell the user what to type; the interface provides
+follow-up actions separately. No markdown headings, no bullet lists.
 
 Evidence rules:
-- Base the explanation on the measurements you're given. State measured facts plainly
-  (e.g. "it tipped backward at 5.1 s on a 32° patch, facing uphill").
+- Base the explanation only on measured values. State measured facts plainly
+    (e.g. "it tipped backward after 5.1 s on a 32° patch, facing uphill").
 - Anything you infer rather than measure, mark with "likely". Never invent causes that weren't measured:
   no specific rocks, bumps, foot placements or wind unless the data shows them.
-- Robot metrics: fall_direction is relative to the way the robot was facing; slope_along_heading_deg > 0 means
-  uphill ahead, < 0 downhill ahead; cross_slope_deg is the sideways tilt of the ground; downhill_side says
-  which side of the robot was downhill; local_slope_deg is measured where the fall began (or at the end if it
-  didn't fall); tilt_trace shows tilt over time, so you can tell a sudden fall from a slow build-up.
-- Slip: slip_ratio is the share of foot/wheel contact time the touching point slid faster than 0.3 m/s.
-  For the walkers' simple fixed gait, 0.15–0.30 is normal scuffing on firm ground. Above about 0.4 is real
-  slipping. Wheels rolling normally are near 0.
-- Tested settings: the walkers use an open-loop rhythmic gait tuned at gait_freq_hz 2.0 and stride_deg 15.
-  At those settings the 6-legged walker stayed upright on all 9 test terrains (flat, hills, rocky, craters,
-  sand, ice, a 10° gravel slope, on Earth, Mars, Moon, Titan and Europa); the 4-legged walker fell on the
-  10° gravel slope. If you suggest gait settings outside the tested values, say they are untested.
-- left_terrain = true means the robot ended outside the simulated patch of ground (it slid or drove off the edge);
+- The robot's fall direction is relative to the way it was facing; positive ground angle ahead means uphill,
+    negative means downhill; cross-slope angle is the sideways tilt of the ground.
+- Slip is the share of foot/wheel contact time the touching point slid faster than 0.3 m/s.
+    For the walkers' simple fixed gait, 0.15–0.30 is normal scuffing on firm ground. Above about 0.4 is real
+    slipping. Wheels rolling normally are near 0.
+- Tested settings: the walkers use an open-loop rhythmic gait tuned at 2.0 Hz and a 15° stride.
+    At those settings the 6-legged walker stayed upright on all 9 test terrains (flat, hills, rocky, craters,
+    sand, ice, a 10° gravel slope, on Earth, Mars, Moon, Titan and Europa); the 4-legged walker fell on the
+    10° gravel slope. Any mention of other gait settings must call them untested.
+- If it ended outside the simulated patch of ground, mention that it slid or drove off the edge;
   mention it, because the 3D view will show it falling into empty space.
-- Start and goal: when goal_reached is present, lead with whether the robot reached the goal and how long it took,
-  or how close it got (closest_distance_m, final_distance_m). outcome says how the attempt ended: reached, fell,
-  stuck (no real movement in its last 3 s), out_of_time (still moving when time ran out) or left_terrain.
-  path_efficiency is progress toward the goal divided by the distance travelled (1.0 = a straight line).
+- Lead with whether each robot reached the goal and how long it took, or how close it got. Outcomes include
+    falling, getting stuck (no real movement in its last 3 s), running out of time, or leaving the terrain.
+    Path efficiency is progress toward the goal divided by the distance travelled (1.0 = a straight line).
   The robot steers itself straight at the goal; it does not plan a route around steep ground.
 - Multi-robot runs: use leaderboard rank and per-robot measurements. Lead with who won or arrived, then explain
-  why the others did not, using only their reported outcomes, distances, tilt, and contacts. Each robot's kind is
-  given and its "robot" lists only the properties that robot has. Never compare a property one robot doesn't
-  have (a walker has no wheels or wheel speed; a rover has no legs or gait).
-- Obstacles: obstacles lists each one in course order with its height (gap: width_m is the opening, height_m its
-  depth), whether the robot touched it (touched_at_s) and got past it (cleared). stopped_by is the first obstacle it
-  didn't get past. robot_rough_limits are measured limits for this robot (climb_m: tallest step it usually
-  climbs; gap_m: widest gap it usually crosses, 0 = it can't cross gaps). Compare the obstacle to those limits
+    why the others did not, using only their reported outcomes, distances, tilt, and contacts. Never compare a
+    property one robot does not have (a walker has no wheels or wheel speed; a rover has no legs or gait).
+- Obstacles: the measurements list obstacles in course order, their height (or gap width), whether the robot
+    touched or cleared them, and which one stopped it. Measured robot limits give the tallest step and widest gap
+    it usually crosses. Compare the obstacle to those limits
   to explain why, e.g. "the 0.15 m step is taller than the 0.09 m it can usually climb".
-- For buildings, explain using the period, drift and resonance numbers given."""
+- For buildings, explain using the period, drift and resonance values given.
+- The JSON object keys are internal identifiers. Do not quote keys, labels, or field names in your reply."""
 
 EXPLAIN_STRESS_SYSTEM = """You are the Stress-test Explainer in a physics sandbox for non-experts.
 Explain the measured results in 3–5 short plain sentences. State how many runs passed, compare the
 baseline with the variations, and identify the clearest pattern across the runs: which changed
 condition aligns with failures and any measured threshold supported by the data. Treat association
 as an inference and say "likely"; do not claim causation or invent thresholds. Use only reported
-metrics, and finish with one concrete suggestion to type next. No markdown headings or bullet lists.
-In a race each robot's kind is given and its "robot" lists only the properties it has: never compare a property
-one robot doesn't have (a walker has no wheels or wheel speed; a rover has no legs or gait). Walker gaits were
-tested only at 2.0 Hz and a 15° stride; call any other gait setting untested.
+values. Do not suggest actions or tell the user what to type; the interface provides follow-up actions separately.
+No markdown headings or bullet lists. In a race, never compare a property one robot does not have
+(a walker has no wheels or wheel speed; a rover has no legs or gait). Walker gaits were tested only at
+2.0 Hz and a 15° stride; call any other gait setting untested. Do not quote internal JSON keys or field names.
 """
 
 
@@ -712,6 +708,33 @@ _GAIT_NUMBERS = [
     re.compile(r"(\d+(?:\.\d+)?)\s*hz\b", re.I),
     re.compile(r"gait[ _]freq(?:uency)?(?:_hz)?\D{0,20}?(\d+(?:\.\d+)?)", re.I),
 ]
+
+
+_EXPLAINER_CONDITION_NAMES = {
+    "gravity": "gravity", "surface": "surface", "friction": "surface grip",
+    "payload_kg": "payload", "slope_deg": "slope", "obstacle_scale": "obstacle size",
+    "push_n": "sideways force", "seed": "terrain variation", "roughness": "roughness",
+    "speed_scale": "speed", "robot": "robot settings",
+}
+_EXPLAINER_ROBOT_SETTING_NAMES = {
+    "command_speed_m_s": "walking speed", "drive_speed": "wheel speed", "wheel_radius": "wheel size",
+    "wheels": "wheel count", "gait_freq_hz": "gait frequency", "stride_deg": "stride angle",
+    "legs": "leg count", "leg_length": "leg length", "mass_kg": "robot mass",
+}
+
+
+def _explainer_conditions(changes: dict) -> list[dict]:
+    conditions = []
+    for key, value in changes.items():
+        if key == "robot_id":
+            continue
+        if key == "robot" and isinstance(value, dict):
+            conditions.extend({"condition": _EXPLAINER_ROBOT_SETTING_NAMES.get(setting, "robot setting"),
+                               "value": setting_value}
+                              for setting, setting_value in value.items())
+            continue
+        conditions.append({"condition": _EXPLAINER_CONDITION_NAMES.get(key, "condition"), "value": value})
+    return conditions
 _STRIDE_NUMBERS = [
     re.compile(r"stride(?:_deg)?\D{0,30}?(\d+(?:\.\d+)?)\s*(?:°|deg)", re.I),
     re.compile(r"(\d+(?:\.\d+)?)\s*(?:°|degrees?)\s+(?:of\s+)?stride", re.I),
@@ -731,14 +754,15 @@ def mark_untested_gait(text: str, spec: SceneSpec) -> str:
 
 
 def _explain_with_facts(system: str, user: str, spec: SceneSpec, metrics: dict, fallback) -> str:
-    """Ask the Explainer with a FACTS block built in code; a reply that contradicts FACTS gets one retry with the
-    exact problem, then the rules text is used. A tip naming a setting the robots don't have is replaced by the
-    rules tip."""
-    from .facts import FACTS_RULE, checked, drop_invalid_tips, facts, facts_block
+    """Ask the Explainer with structured measured values; invalid wording gets one retry, then rules text."""
+    from .facts import (checked, explainer_output_problems, explainer_values_block, facts,
+                        strip_explainer_artifacts)
 
     found = facts(spec, metrics)
-    messages = [{"role": "system", "content": f"{system}\n- {FACTS_RULE}"},
-                {"role": "user", "content": f"{facts_block(found)}\n\n{user}"}]
+    system_rules = (f"{system}\nUse only the measured values in the JSON below. Do not copy its keys or labels, "
+                    "do not use internal field names, and do not suggest actions. Follow-up actions are supplied separately.")
+    messages = [{"role": "system", "content": system_rules},
+                {"role": "user", "content": f"{explainer_values_block(spec, metrics)}\n\n{user}"}]
 
     def ask(feedback: str | None) -> str:
         if feedback is not None:
@@ -747,10 +771,9 @@ def _explain_with_facts(system: str, user: str, spec: SceneSpec, metrics: dict, 
         return reply[0]
 
     reply = [""]
-    text, _ = checked(ask, found, fallback)
-    text, wrong_settings = drop_invalid_tips(text, found)
-    if wrong_settings:
-        text = f"{text} {_mock_tip(spec, metrics)}.".strip()
+    text, _ = checked(ask, found, fallback,
+                       extra=lambda candidate: explainer_output_problems(candidate, found))
+    text = strip_explainer_artifacts(text, found)
     return mark_untested_gait(text, spec)
 
 
@@ -782,12 +805,11 @@ def _mock_tip(spec: SceneSpec, m: dict) -> str:
 
 
 def explain(spec: SceneSpec, metrics: dict) -> str:
+    from .facts import facts, strip_explainer_artifacts
+
     if config.MOCK_MODE:
-        return _mock_explain(spec, metrics)
-    user = f"Scene: {spec.title}\nAssumptions: {spec.assumptions}\nMetrics: {json.dumps(explainer_metrics(metrics))}"
-    if spec.domain != "robot_terrain":
-        return llm.chat([{"role": "system", "content": EXPLAIN_SYSTEM}, {"role": "user", "content": user}],
-                        temperature=0.4).strip()
+        return strip_explainer_artifacts(_mock_explain(spec, metrics), facts(spec, metrics))
+    user = ""
     return _explain_with_facts(EXPLAIN_SYSTEM, user, spec, metrics, lambda: _mock_explain(spec, metrics))
 
 
@@ -796,7 +818,7 @@ def _mock_explain_stress(results: list[dict]) -> str:
     passed = [result for result in measured if result.get("passed")]
     failed = [result for result in measured if not result.get("passed")]
     if not measured:
-        return "No runs produced usable measurements. Try the stress test again with a shorter simulation duration."
+        return "No runs produced usable measurements."
     if all(isinstance(result.get("robots"), dict) for result in measured):
         return _mock_explain_race_stress(measured)
 
@@ -809,9 +831,9 @@ def _mock_explain_stress(results: list[dict]) -> str:
 
     if not failed:
         text += " No failures were measured, so these conditions did not establish a failure threshold."
-        return text + " Try a steeper slope or a larger payload."
-    pattern, suggestion = _stress_pattern(passed, failed)
-    return f"{text} {pattern} {suggestion}"
+        return text
+    pattern, _ = _stress_pattern(passed, failed)
+    return f"{text} {pattern}"
 
 
 def _mock_explain_race_stress(results: list[dict]) -> str:
@@ -823,8 +845,12 @@ def _mock_explain_race_stress(results: list[dict]) -> str:
                      for robot_id in ids) + "."
     baseline = next((result for result in results if result.get("label") == "Baseline"), None)
     if baseline:
-        text += " Baseline: " + "; ".join(f"{label[robot_id]} {baseline['robots'][robot_id]['reason']}" for robot_id in ids) + "."
-    suggestion = "Try a steeper slope or a larger payload."
+        endings = {"reached": "reached", "fell": "fell", "stuck": "got stuck",
+                   "out_of_time": "ran out of time", "left_terrain": "went off the edge"}
+        text += " Baseline: " + "; ".join(
+            f"{label[robot_id]} {endings.get(baseline['robots'][robot_id]['reason'], baseline['robots'][robot_id]['reason'])}"
+            for robot_id in ids
+        ) + "."
     for robot_id in ids:
         passed = [r for r in results if r["robots"][robot_id]["passed"]]
         failed = [r for r in results if not r["robots"][robot_id]["passed"]]
@@ -832,11 +858,10 @@ def _mock_explain_race_stress(results: list[dict]) -> str:
             continue
         if not passed:
             text += f" {label[robot_id]} failed in every condition, including the baseline, so no changed condition explains it."
-            suggestion = f"Try \"why did the {label[robot_id]} fail?\" to test causes one at a time."
             continue
-        pattern, suggestion = _stress_pattern(passed, failed)
+        pattern, _ = _stress_pattern(passed, failed)
         text += f" {label[robot_id]}: {pattern}"
-    return f"{text} {suggestion}"
+    return text
 
 
 def _stress_pattern(passed: list[dict], failed: list[dict]) -> tuple[str, str]:
@@ -847,9 +872,13 @@ def _stress_pattern(passed: list[dict], failed: list[dict]) -> tuple[str, str]:
         for key in knobs
     }
     key = max(counts, key=counts.get)
+    names = {"gravity": "gravity", "surface": "surface", "friction": "surface grip", "payload_kg": "payload",
+             "slope_deg": "slope", "obstacle_scale": "obstacle size", "push_n": "sideways force",
+             "seed": "terrain variation", "roughness": "roughness", "speed_scale": "speed"}
+    condition = names.get(key, "condition")
     if not counts[key]:
         pattern = "The failures did not share a changed condition, so no single-knob pattern is clear."
-        suggestion = "Try repeating one failed run while changing only one condition."
+        suggestion = ""
     else:
         failed_values = [result["changes"][key] for result in failed if key in result.get("changes", {})]
         passed_values = [result["changes"][key] for result in passed if key in result.get("changes", {})]
@@ -858,15 +887,14 @@ def _stress_pattern(passed: list[dict], failed: list[dict]) -> tuple[str, str]:
         if key == "surface":
             pattern = f"Failures were measured on {', '.join(map(str, dict.fromkeys(failed_values)))}."
         elif numeric_failed and numeric_passed and max(numeric_failed) < min(numeric_passed):
-            pattern = (f"Runs failed at {key} values up to {max(numeric_failed):g}, while passing "
+            pattern = (f"Runs failed at {condition} values up to {max(numeric_failed):g}, while passing "
                        f"examples started at {min(numeric_passed):g}; that boundary likely matters.")
         elif numeric_failed and numeric_passed and min(numeric_failed) > max(numeric_passed):
-            pattern = (f"Runs failed at {key} values from {min(numeric_failed):g}, while passing "
+            pattern = (f"Runs failed at {condition} values from {min(numeric_failed):g}, while passing "
                        f"examples ended at {max(numeric_passed):g}; that boundary likely matters.")
         else:
-            pattern = f"Failures clustered in runs that changed {key} to {', '.join(map(str, dict.fromkeys(failed_values)))}."
-        sample = failed[0]
-        suggestion = f"Try repeating {sample['label']} while varying only {key} to isolate its effect."
+            pattern = f"Failures clustered in runs with {condition} set to {', '.join(map(str, dict.fromkeys(failed_values)))}."
+        suggestion = ""
     return pattern, suggestion
 
 
@@ -881,14 +909,21 @@ def explain_stress(spec: SceneSpec, results: list[dict]) -> str:
     crashed, results = crash_report(results), measured(results)
     if not results:
         return f"{crashed}. {CRASH_NOTE}, so there is nothing to analyse." if crashed else "No runs to explain."
+    from .facts import explainer_values, facts, strip_explainer_artifacts
+
+    baseline = next((result for result in results if result.get("label") == "Baseline"), results[0])
     if config.MOCK_MODE:
         text = _mock_explain_stress(results)
     else:
-        evidence = [{**{key: value for key, value in result.items() if key != "ghost"},
-                     "summary": explainer_metrics(result.get("summary") or {})} for result in results]
-        baseline = next((result for result in results if result.get("label") == "Baseline"), results[0])
+        evidence = []
+        for result in results:
+            evidence.append({"run": result.get("label"), "passed": result.get("passed"),
+                             "reason": result.get("reason"),
+                             "changed_conditions": _explainer_conditions(result.get("changes") or {}),
+                             "measurements": explainer_values(spec, result.get("summary") or {})})
         text = _explain_with_facts(   # FACTS describe the scene and the baseline run
-            EXPLAIN_STRESS_SYSTEM, f"Scene: {spec.title}\nAssumptions: {spec.assumptions}\n"
-                                   f"Stress-test results: {json.dumps(evidence)}",
+            EXPLAIN_STRESS_SYSTEM, f"Stress results JSON:\n{json.dumps(evidence, separators=(',', ':'))}",
             spec, baseline.get("summary") or {}, lambda: _mock_explain_stress(results))
+    found = facts(spec, baseline.get("summary") or {}) if results else {"robots": []}
+    text = strip_explainer_artifacts(text, found)
     return f"{crashed}. {CRASH_NOTE}, so those runs are left out. {text}" if crashed else text

@@ -2635,9 +2635,9 @@ def test_explainers_get_each_robots_kind_and_mark_untested_gaits():
             "robots": [{"kind": "rover"}, {"kind": "walker", "legs": 6}], "goal": {"place": "highest"}, "run_now": False}
     chat, calls = scripted_models({
         "Plan JSON schema:": [json.dumps(plan)],
-        "You are the Explainer in a physics sandbox": ["The walker ran out of time. Try a gait of 1.5 Hz."],
+        "You are the Explainer in a physics sandbox": ["The walker ran out of time."],
         "You are the Stress planner": ["{}", "{}"],   # invalid twice: the compatible defaults are used
-        "You are the Stress-test Explainer": ["The walker missed most runs. Try a 20° stride at 2.0 Hz."],
+        "You are the Stress-test Explainer": ["The walker missed most runs."],
     })
     original_mock, original_chat = config.MOCK_MODE, llm.chat
     try:
@@ -2647,22 +2647,23 @@ def test_explainers_get_each_robots_kind_and_mark_untested_gaits():
         config.MOCK_MODE, llm.chat = original_mock, original_chat
 
     explained = [e for e in run if e["type"] == "explanation"][-1]["message"]
-    assert explained == "The walker ran out of time. Try a gait of 1.5 Hz. (untested settings)"
-    assert stress[-1]["message"].endswith("Try a 20° stride at 2.0 Hz. (untested settings)")
+    assert explained == "The walker ran out of time."
+    assert "Try" not in stress[-1]["message"]
 
     system, user = next(messages for role, _, messages in calls if role == "You are the Explainer in a physics sandbox")
-    assert "Never compare a property one robot doesn't" in system["content"]
-    robots = json.loads(user["content"].split("Metrics: ", 1)[1])["robots"]
-    rover, walker = (next(m for m in robots.values() if m["kind"] == kind) for kind in ("rover", "walker"))
-    assert "drive_speed" in rover["robot"] and not {"gait_freq_hz", "stride_deg", "legs"} & set(rover["robot"])
-    assert "gait_freq_hz" in walker["robot"] and not {"drive_speed", "wheels", "wheel_radius"} & set(walker["robot"])
+    assert "do not suggest actions" in system["content"].lower()
+    facts_values = json.loads(user["content"].split("\n", 1)[1].strip())
+    rover, walker = facts_values["robots"]
+    assert (rover["kind"], walker["kind"]) == ("rover", "walker")
+    assert "gait_freq_hz" not in system["content"] + user["content"]
+    assert "steepest slope crossed" not in system["content"] + user["content"]
+    assert "Do not suggest actions" in system["content"]
 
     system, user = next(messages for role, _, messages in calls if role == "You are the Stress-test Explainer")
     assert "never compare a property" in system["content"]
-    for result in json.loads(user["content"].split("Stress-test results: ", 1)[1]):
-        for m in result["summary"]["robots"].values():
-            assert m["kind"] in ("rover", "walker")
-            assert not ({"drive_speed", "wheels"} if m["kind"] == "walker" else {"gait_freq_hz", "legs"}) & set(m["robot"])
+    stress_results = json.loads(user["content"].split("Stress results JSON:\n", 1)[1])
+    assert stress_results and "gait_freq_hz" not in system["content"] + user["content"]
+    assert "Try" not in system["content"] + user["content"]
 
     from simgate.agents import mark_untested_gait
     from simgate.spec import SceneSpec
@@ -2680,7 +2681,7 @@ def test_mock_stress_explainer_reads_each_racer():
     walker_passes = sum(row["robots"]["r2"]["passed"] for row in rows)
     message = stress[-1]["message"]
     assert message.startswith(f"Rover passed {rover_passes} of {len(rows)} runs; Walker passed {walker_passes} of {len(rows)} runs.")
-    assert "Baseline: Rover reached; Walker out_of_time." in message
+    assert "Baseline: Rover reached; Walker ran out of time." in message
     assert "0 m forward progress" not in message
 
 
@@ -2707,6 +2708,8 @@ def model_explainer_only(replies):
 
 
 def test_explainer_uses_code_facts_and_retries_contradictions():
+    import json
+
     restore, calls = model_explainer_only({"You are the Explainer in a physics sandbox": [
         "On flat ground the rover won and the walker ran out of time.",
         "On the hills the rover won and the walker ran out of time."]})
@@ -2716,8 +2719,11 @@ def test_explainer_uses_code_facts_and_retries_contradictions():
         restore()
     assert [e for e in race if e["type"] == "explanation"][-1]["message"] == "On the hills the rover won and the walker ran out of time."
     messages = calls[-1][2]
-    assert "Describe the terrain and tilt only with the words given in FACTS" in messages[0]["content"]
-    assert "- terrain: hills" in messages[1]["content"] and "tilt: steady" in messages[1]["content"]
+    assert "do not copy its keys or labels" in messages[0]["content"].lower()
+    facts_values = json.loads(messages[1]["content"].split("\n", 1)[1].strip())
+    assert facts_values["scene"]["terrain"] == "hills"
+    assert "steepest slope crossed" not in messages[1]["content"] and "tilt: steady" not in messages[1]["content"]
+    assert "gait_freq_hz" not in messages[1]["content"] and "drive_speed" not in messages[1]["content"]
     assert 'calls the terrain flat, but FACTS say the terrain is "hills"' in messages[-1]["content"]
 
     restore, calls = model_explainer_only({"You are the Explainer in a physics sandbox": [
@@ -2736,7 +2742,7 @@ def test_explainer_uses_code_facts_and_retries_contradictions():
     assert message.startswith("The rover reached the goal") and "stable" not in message and "steady" not in message
 
 
-def test_explainer_tips_use_only_settings_the_robots_have():
+def test_explainer_retries_and_removes_action_tips_and_raw_settings():
     from simgate import config, llm
     from simgate.facts import drop_invalid_tips, facts
 
@@ -2745,10 +2751,12 @@ def test_explainer_tips_use_only_settings_the_robots_have():
     metrics = {"simulator": "MuJoCo", "forward_progress_m": 2.5, "max_tilt_deg": 9.0, "flipped": False,
                "robot": spec.robot.model_dump()}
     seen = []
-    replies = iter([   # gpt-4o-mini's tip after a G1 race: walker gait settings, which the G1 doesn't have
+    replies = iter([
         "The G1 walked 2.5 m on flat ground.\n\nNext, try adjusting the gait settings for G1 to see if it can improve "
         "stability, such as \"set gait_freq_hz 1.5 and stride_deg 10\".",
-        "The G1 walked 2.5 m on flat ground. Next, try a walking speed of 0.8 m/s.",
+        "The G1 walked 2.5 m on flat ground.",
+        "The G1 walked 2.5 m on flat ground. Try a walking speed of 0.8 m/s.",
+        "The G1 walked 2.5 m on flat ground without falling.",
     ])
     original_mock, original_chat = config.MOCK_MODE, llm.chat
     try:
@@ -2758,10 +2766,11 @@ def test_explainer_tips_use_only_settings_the_robots_have():
         kept = agents.explain(spec, metrics)
     finally:
         config.MOCK_MODE, llm.chat = original_mock, original_chat
-    assert "can change: command_speed_m_s (walking speed), policy_id (policy: g1_walking)" in seen[0][1]["content"]
-    assert 'only a setting FACTS list under "can change"' in seen[0][0]["content"]
-    assert replaced == f"The G1 walked 2.5 m on flat ground. {agents._mock_tip(spec, metrics)}.", replaced
-    assert "gait" not in replaced and kept == "The G1 walked 2.5 m on flat ground. Next, try a walking speed of 0.8 m/s."
+    assert "gait_freq_hz" not in seen[0][1]["content"] and "command_speed_m_s" not in seen[0][1]["content"]
+    assert "Try typing" not in seen[0][0]["content"] and "suggest one concrete" not in seen[0][0]["content"]
+    assert replaced == "The G1 walked 2.5 m on flat ground."
+    assert kept == "The G1 walked 2.5 m on flat ground without falling."
+    assert all("Try" not in text and "gait_freq_hz" not in text for text in (replaced, kept))
 
     race = SceneSpec(domain="robot_terrain", robots=[
         RobotEntry(id="r1", label="G1", robot=g1), RobotEntry(id="r2", label="Rover", robot=Robot(kind="rover"))]).fill_defaults()
@@ -4002,17 +4011,18 @@ def test_race_stress_report_counts_each_robot():
     assert "report.overall ||" in page and '"race"' in page
 
 
-def test_mock_tips_fit_the_scene():
-    def tip(text):
+def test_mock_explainer_leaves_actions_to_next_actions_engine():
+    def explained(text):
         session, (turn,) = session_turns(text)
-        return session.spec, [e for e in turn if e["type"] == "explanation"][-1]["message"].rsplit("Try:", 1)[1]
+        result = [e for e in turn if e["type"] == "explanation"][-1]
+        return session.spec, result["message"], result.get("actions")
 
-    spec, course = tip("Rover obstacle course with a big step, go")
-    assert spec.obstacles and "bigger wheels" in course and "six wheels" in course and "slope" not in course
-    spec, flat = tip("a rover on flat ground, go")
-    assert spec.terrain.kind == "flat" and not spec.obstacles and "slope" not in flat
-    spec, walker = tip("a four-legged walker on hills, go")
-    assert spec.robot.kind == "walker" and spec.robot.legs == 4 and "six legs" in walker
+    for prompt in ("Rover obstacle course with a big step, go", "a rover on flat ground, go",
+                   "a four-legged walker on hills, go"):
+        spec, message, actions = explained(prompt)
+        assert spec.robots
+        assert "Try:" not in message and "Try typing" not in message
+        assert actions
 
     from simgate.agents import _mock_tip
 
