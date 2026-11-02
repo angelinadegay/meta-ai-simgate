@@ -677,6 +677,7 @@ let selectedHomeWorld = null;
 let selectedHomeRobot = null;
 let currentSpec = null;
 let currentMetrics = null;
+let currentRedesignRobotId = null;
 let activeDetailsTab = "scene";
 let presentationMode = false;
 let detailsMode = false;
@@ -896,11 +897,13 @@ function chips(container, items, primary) {
     b.onclick = () => {
       if (b.classList.contains("run")) disableRunButtons();
       if (option.action?.type === "show_design") {
-        if (sendEvent({ type: "show_design" })) addMsg("Show runs", "user");
+        sendWorkflowAction("show_design", option.action.robot_id, option.label);
+      } else if (option.action?.type === "workflow_action") {
+        sendWorkflowAction(option.action.workflow, option.action.robot_id, option.label);
       } else if (option.action?.type === "open_upload") {
         showWorkbench(); openUpload(option.action.kind || "policy");
       } else if (option.action?.type === "replay_weakest_spot") {
-        sendEvent({ type: "replay_weakest_spot" });
+        sendWorkflowAction("replay_weakest_spot", option.action.robot_id, option.label);
       } else send(option.message || option.label);
     };
     container.appendChild(b);
@@ -911,6 +914,9 @@ function appendActionChips(parent, actions) {
   const row = document.createElement("div"); row.className = "quick"; chips(row, actions, null);
   const actionsSlot = parent.querySelector(".card-actions");
   if (actionsSlot) actionsSlot.appendChild(row); else parent.appendChild(row);
+}
+function sendWorkflowAction(workflow, robotId, label) {
+  if (sendEvent({ type: "workflow_action", workflow, robot_id: robotId })) addMsg(label, "user");
 }
 renderHomeExamples();
 
@@ -1564,11 +1570,13 @@ ws.onmessage = (m) => {
     case "diagnosis": setStatus("Ready"); setRequestProgress("Diagnosis complete. Findings are ready.", "done"); renderDiagnosis(ev.report); addInsight("Diagnosis complete", detailForReport(ev.report), "analysis"); break;
     case "envelope": {
       setStatus("Ready");
+      currentRedesignRobotId = ev.report.robot_id || currentSpec?.robots?.[0]?.id || null;
       setRequestProgress("Operating limits found. Analysis is complete.", "done");
       renderEnvelope(ev.report);
       const insight = addInsight("Operating limits found", detailForReport(ev.report), "analysis");
       const retry = document.createElement("button"); retry.type = "button"; retry.className = "chip"; retry.textContent = "Re-check the limits";
-      retry.onclick = () => send("Find where it breaks again"); insight.querySelector(".card-actions")?.appendChild(retry); break;
+      retry.onclick = () => sendWorkflowAction("find_failures", currentRedesignRobotId, retry.textContent);
+      insight.querySelector(".card-actions")?.appendChild(retry); break;
     }
     case "redesign": setStatus("Ready"); setRequestProgress("Design search complete. Results are ready.", "done"); renderRedesign(ev.report); addInsight("Design search complete", detailForReport(ev.report), "analysis"); break;
     case "batch_start":
@@ -1614,7 +1622,7 @@ ws.onmessage = (m) => {
       preserveLaunchMessage = false;
       stepRows.clear(); stepGroups.clear(); countedSteps.clear(); agentNodes.clear(); initAgentGraph();
       agentActivity = new Map(); agentStepHistory = new Map(); renderAgentBar(); currentSpec = null; currentMetrics = null;
-      current = null; frames = []; $("empty").hidden = false; $("checksCard").hidden = true; $("metricsCard").hidden = true;
+      currentRedesignRobotId = null; current = null; frames = []; $("empty").hidden = false; $("checksCard").hidden = true; $("metricsCard").hidden = true;
       $("diagnosisCard").hidden = true; $("redesignCard").hidden = true; $("envelopeCard").hidden = true;
       break;
     case "library_selected":
@@ -1739,6 +1747,7 @@ function seedsCell(confirm) {
   return td;
 }
 function renderRedesign(r) {
+  currentRedesignRobotId = r.robot_id || currentSpec?.robots?.[0]?.id || null;
   $("redesignCard").hidden = false; $("diagnosisCard").hidden = true;
   const body = $("redesignBody"); body.replaceChildren();
   const w = r.winner || r.fragile;   // a fragile design passed once but not 2 of 3 robustness checks
@@ -1768,8 +1777,8 @@ function renderRedesign(r) {
   $("useDesign").textContent = w && w.fragile ? "Use fragile design" : "Use this design";
   showCost("redesignCost", r.cost);
 }
-$("useDesign").onclick = () => send($("useDesign").textContent.toLowerCase());
-$("showRuns").onclick = () => { if (sendEvent({ type: "show_design" })) addMsg("Show runs", "user"); };
+$("useDesign").onclick = () => sendWorkflowAction("apply_design", currentRedesignRobotId, $("useDesign").textContent);
+$("showRuns").onclick = () => sendWorkflowAction("show_design", currentRedesignRobotId, "Show runs");
 
 function renderChecks(checks) {
   $("checksCard").hidden = false;

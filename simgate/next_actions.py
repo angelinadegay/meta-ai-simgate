@@ -23,13 +23,40 @@ def _entries(scene: SceneSpec | None) -> list[Any]:
     if scene.robots:
         return scene.robots
     if scene.robot is not None:
-        return [type("RobotEntryView", (), {"label": "Robot", "robot": scene.robot})()]
+        return [type("RobotEntryView", (), {"id": "r1", "label": "Robot", "robot": scene.robot})()]
     return []
 
 
 def _robot(scene: SceneSpec | None) -> Any | None:
     entries = _entries(scene)
     return entries[0] if entries else None
+
+
+def _target_robot_id(scene: SceneSpec | None, requested: str | None = None) -> str | None:
+    entries = _entries(scene)
+    if requested and any(entry.id == requested for entry in entries):
+        return requested
+    return entries[0].id if entries else None
+
+
+def _workflow_action(label: str, workflow: str, robot_id: str | None, message: str | None = None) -> dict:
+    return _action(label, message, {
+        "type": "workflow_action", "workflow": workflow, "robot_id": robot_id,
+    })
+
+
+def _failed_robot_id(scene: SceneSpec | None, facts: dict[str, Any], metrics: dict[str, Any]) -> str | None:
+    robot_metrics = metrics.get("robots")
+    if isinstance(robot_metrics, dict) and robot_metrics:
+        failed = next((robot_id for robot_id, result in robot_metrics.items()
+                       if not result.get("goal_reached")), None)
+        return _target_robot_id(scene, failed or next(iter(robot_metrics)))
+    failed = next((row for row in facts.get("robots", []) if row.get("reason") != "reached the goal"), None)
+    if failed and scene is not None:
+        entry = next((entry for entry in _entries(scene) if entry.label == failed.get("robot")), None)
+        if entry is not None:
+            return entry.id
+    return _target_robot_id(scene)
 
 
 def _robot_name(scene: SceneSpec | None, facts: dict[str, Any]) -> str:
@@ -135,16 +162,21 @@ def _failed_run_reason(outcome: dict[str, Any], facts: dict[str, Any], scene: Sc
 
 
 def _diagnosis_actions(report: dict[str, Any], scene: SceneSpec | None, facts: dict[str, Any]) -> list[dict[str, Any]]:
+    robot_id = _target_robot_id(scene, report.get("robot_id"))
     hypotheses = report.get("hypotheses") or []
     if report.get("reproduced") is None:
         failed = next((robot for robot in facts.get("robots", [])
                    if robot.get("reason") != "reached the goal"), None)
         if failed:
             label = str(failed.get("robot") or _robot_name(scene, facts))
-            return [_action(f"Why did the {label} fail?", f"why did the {label} fail?"),
-                    _action(f"Make the {label} pass", f"make the {label} pass"),
-                    _action("Find where it breaks", "find where it breaks")]
-        return [_action("Run again", "run again"), _action("Find where it breaks", "find where it breaks")]
+            failed_id = robot_id
+            if scene is not None:
+                failed_id = next((entry.id for entry in _entries(scene) if entry.label == label), failed_id)
+            return [_workflow_action(f"Why did the {label} fail?", "diagnose", failed_id, f"why did the {label} fail?"),
+                    _workflow_action(f"Make the {label} pass", "redesign", failed_id, f"make the {label} pass"),
+                    _workflow_action("Find where it breaks", "find_failures", failed_id, "find where it breaks")]
+        return [_workflow_action("Run again", "run", robot_id, "run again"),
+                _workflow_action("Find where it breaks", "find_failures", robot_id, "find where it breaks")]
     confirmed = next((hypothesis for hypothesis in hypotheses if hypothesis.get("verdict") == "confirmed"), None)
     cause = (confirmed or next((hypothesis for hypothesis in hypotheses if hypothesis.get("verdict") == "partly"), {})).get("cause", "")
     if cause in {"steep ground", "side slope"}:
@@ -157,7 +189,8 @@ def _diagnosis_actions(report: dict[str, Any], scene: SceneSpec | None, facts: d
         world_action = _action("Try Earth gravity", "change gravity to Earth")
     else:
         world_action = _action(f"Try gentler terrain ({_gentler_terrain(scene)})", f"change terrain to {_gentler_terrain(scene)}")
-    return [_action("Make it pass", "make it pass"), world_action, _action("Replay the failure", "run again")]
+    return [_workflow_action("Make it pass", "redesign", robot_id, "make it pass"), world_action,
+            _workflow_action("Replay the failure", "run", robot_id, "run again")]
 
 
 def _diagnosis_reason(report: dict[str, Any]) -> str:
@@ -224,6 +257,7 @@ def next_actions(workflow: str, outcome: dict[str, Any] | str, facts: dict[str, 
             passed = False
         robot = _robot(scene)
         robot_label = _robot_name(scene, facts)
+        robot_id = _target_robot_id(scene) if passed else _failed_robot_id(scene, facts, metrics)
         if passed:
             time_to_goal = metrics.get("time_to_goal_s")
             reason = (f"{robot_label} reached the goal in {time_to_goal:g} seconds."
@@ -232,14 +266,14 @@ def next_actions(workflow: str, outcome: dict[str, Any] | str, facts: dict[str, 
                 "make the slope steeper" if scene and scene.terrain and scene.terrain.kind == "slope" else "make the terrain rougher")
             other_label, race_message = _other_robot(scene)
             return {"reason": reason, "actions": [
-                _action("Find where it breaks", "find where it breaks"),
+                _workflow_action("Find where it breaks", "find_failures", robot_id, "find where it breaks"),
                 _action("Make it harder", harder),
                 _action(f"Race it against {other_label}", race_message),
             ]}
         return {"reason": _failed_run_reason(data, facts, scene), "actions": [
-            _action("Why did it fail?", "why did it fail?"),
-            _action("Make it pass", "make it pass"),
-            _action("Find where it breaks", "find where it breaks"),
+            _workflow_action("Why did it fail?", "diagnose", robot_id, "why did it fail?"),
+            _workflow_action("Make it pass", "redesign", robot_id, "make it pass"),
+            _workflow_action("Find where it breaks", "find_failures", robot_id, "find where it breaks"),
         ]}
 
     if workflow in {"diagnose", "diagnosis"}:
@@ -247,13 +281,15 @@ def next_actions(workflow: str, outcome: dict[str, Any] | str, facts: dict[str, 
 
     if workflow in {"redesign", "design"}:
         winner = report.get("winner") or report.get("fragile")
+        robot_id = _target_robot_id(scene, report.get("robot_id"))
         if winner:
             return {"reason": f"A design was found that {('passed some checks but is not reliable' if winner.get('fragile') else 'passed the run')}: {winner.get('description', 'review the proposed changes')}.",
                     "actions": [
-                        _action("Use fragile design" if winner.get("fragile") else "Use this design",
-                                "use fragile design" if winner.get("fragile") else "use this design"),
-                        _action("Re-check the limits", "find where it breaks again"),
-                        _action("Show runs", action={"type": "show_design"}),
+                        _workflow_action("Use fragile design" if winner.get("fragile") else "Use this design",
+                                  "apply_design", robot_id,
+                                  "use fragile design" if winner.get("fragile") else "use this design"),
+                        _workflow_action("Re-check the limits", "find_failures", robot_id, "find where it breaks again"),
+                        _action("Show runs", action={"type": "show_design", "robot_id": robot_id}),
                     ]}
         diagnosis = report.get("diagnosis") or {}
         conclusion = str(diagnosis.get("conclusion") or "").strip()
@@ -278,7 +314,8 @@ def next_actions(workflow: str, outcome: dict[str, Any] | str, facts: dict[str, 
         if scene and scene.robot and scene.robot.kind == "library":
             actions.append(_action("Upload a better policy", action={"type": "open_upload", "kind": "policy"}))
         else:
-            actions.append(_action("See where it breaks", "find where it breaks"))
+            actions.append(_workflow_action("See where it breaks", "find_failures", robot_id,
+                                            "find where it breaks"))
         return {"reason": reason, "actions": actions[:4]}
 
     if workflow in {"finder", "find_failures", "envelope"}:
@@ -292,10 +329,11 @@ def next_actions(workflow: str, outcome: dict[str, Any] | str, facts: dict[str, 
         else:
             reason = _first_sentence(report.get("stopped") or report.get("explanation"),
                                      "The condition search is complete; its measured results are ready to review.")
+        robot_id = _target_robot_id(scene, report.get("robot_id"))
         return {"reason": reason, "actions": [
-            _action("Replay the weakest spot", "replay the weakest spot"),
-            _action("Why?", "why did it fail?"),
-            _action("Make it pass", "make it pass"),
+            _action("Replay the weakest spot", action={"type": "replay_weakest_spot", "robot_id": robot_id}),
+            _workflow_action("Why?", "diagnose", robot_id, "why did it fail?"),
+            _workflow_action("Make it pass", "redesign", robot_id, "make it pass"),
         ]}
 
     if workflow in {"ambiguous", "clarify"}:

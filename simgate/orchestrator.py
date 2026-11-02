@@ -13,6 +13,7 @@ from .batch import crash_report, measured
 from .director import FOLLOW_UP_WORDS, Director, follow_up_plan, real_terrain_body_change
 from .facts import facts as scene_facts
 from .next_actions import next_actions
+from .plan import Plan
 from .workflows import SessionState
 from .spec import SceneSpec
 
@@ -32,6 +33,8 @@ class Session:
         self.last_summary: dict | None = None
         self.last_diagnosis: dict | None = None
         self.last_redesign: dict | None = None
+        self.last_finder_report: dict | None = None
+        self._finder_source_spec: SceneSpec | None = None
         self._view_shows_other_scene = False   # set after "Show runs" loads the winning design's scene
         self.pending_real_terrain_change: dict[str, str] | None = None
 
@@ -196,6 +199,9 @@ class Session:
                 self.last_diagnosis = world.report
             elif world.report["type"] == "redesign":
                 self.last_redesign = world.report
+            elif world.report["type"] == "envelope":
+                self.last_finder_report = world.report
+                self._finder_source_spec = spec.model_copy(deep=True)
             await self.emit({"type": world.report["type"], "report": world.report})
         else:
             await self.emit({"type": "spec", "spec": spec.model_dump()})
@@ -307,9 +313,119 @@ class Session:
         label = self._racer_label(robot_id)
         return [f"Why did the {label} fail?" if label else "Why did it fail?", self._fix_chip(robot_id)]
 
-    async def show_design(self) -> None:
+    def _checked_action_robot(self, robot_id: str | None) -> str:
+        if self.spec is None or self.spec.domain != "robot_terrain" or not self.spec.robots:
+            raise ValueError("This action needs an existing robot scene.")
+        selected = robot_id or (self.spec.robots[0].id if len(self.spec.robots) == 1 else None)
+        if selected is None or not any(entry.id == selected for entry in self.spec.robots):
+            raise ValueError("Choose a robot from this scene before running that action.")
+        return selected
+
+    async def handle_workflow_action(self, workflow: str, robot_id: str | None) -> None:
+        """Run an explicit result-card action against its selected scene robot, without replanning its target."""
+        try:
+            target = self._checked_action_robot(robot_id)
+            if workflow == "replay_weakest_spot":
+                await self.replay_weakest_spot(target)
+                return
+            if workflow == "show_design":
+                await self.show_design(target)
+                return
+            if workflow == "run":
+                await self.run()
+                return
+            if workflow == "apply_design":
+                report = self.last_redesign or {}
+                report_target = report.get("robot_id") or (
+                    self.spec.robots[0].id if len(self.spec.robots) == 1 else None
+                )
+                if target != report_target:
+                    raise ValueError("That design belongs to a different robot.")
+                winner = report.get("winner") or report.get("fragile")
+                if winner is None:
+                    raise ValueError("There is no design to apply for that robot.")
+                plan = Plan(workflow="edit", summary="Apply the selected robot design",
+                            changes={"robot": winner["changes"], "robot_id": target})
+                await self.make("apply the selected robot design", editing=True, plan=plan)
+                return
+            if workflow not in {"diagnose", "redesign", "find_failures"}:
+                raise ValueError(f"Unsupported result action: {workflow}.")
+            plan = Plan(
+                workflow=workflow,
+                summary={"diagnose": "Why the selected robot failed", "redesign": "Make the selected robot pass",
+                         "find_failures": "Find the selected robot's limits"}[workflow],
+                robot_id=target,
+                constraints="Make the selected robot pass" if workflow == "redesign" else None,
+            )
+            await self.make(plan.summary, editing=True, plan=plan)
+        except Exception as error:  # noqa: BLE001 - malformed or stale action is shown without closing the session
+            await self.emit({"type": "error", "message": f"{type(error).__name__}: {error}"})
+
+    @staticmethod
+    def _weakest_confirmed_evidence(report: dict, robot_id: str) -> dict | None:
+        failures = [failure for failure in report.get("failures", [])
+                    if failure.get("confirm", {}).get("label") in ("reliable fail", "borderline")]
+        failures.sort(key=lambda failure: (
+            failure.get("kind") != "single",
+            len(failure.get("values") or {}),
+            failure.get("distance", float("inf")),
+            failure.get("run", ""),
+        ))
+        evidence = report.get("evidence", [])
+        for failure in failures:
+            confirmed_runs = [row for row in evidence
+                              if row.get("confirms") == failure.get("run") and row.get("broke") is True
+                              and (row.get("change") or {}).get("robot_id") in (None, robot_id)]
+            if confirmed_runs:
+                return min(confirmed_runs, key=lambda row: (row.get("seed", float("inf")), row.get("id", "")))
+        return None
+
+    async def replay_weakest_spot(self, robot_id: str | None) -> None:
+        """Re-simulate the simplest confirmed Finder failure with its exact seed and stream frames."""
+        try:
+            target = self._checked_action_robot(robot_id)
+            report = self.last_finder_report or {}
+            if report.get("robot_id") != target or self._finder_source_spec is None:
+                raise ValueError("There is no Finder result for that robot in this scene.")
+            evidence = self._weakest_confirmed_evidence(report, target)
+            if evidence is None:
+                await self.emit({"type": "question", "message": "There is no confirmed failure to replay for that robot."})
+                return
+
+            from .batch import _validate_variation
+            from .finder import prepare
+
+            source = prepare(self._finder_source_spec, report.get("knobs") or [])
+            change = dict(evidence.get("change") or {})
+            if "seed" not in change and evidence.get("seed") is not None:
+                base_seed = source.terrain.seed if source.terrain is not None else 0
+                change["seed"] = base_seed + int(evidence["seed"])
+                change["perturb_seed"] = int(evidence["seed"])
+            _, spec, _ = _validate_variation(source, change)
+            sim = agents.route(spec)
+            build = await asyncio.to_thread(agents.build, sim, spec, lambda _: None)
+            await self.emit({"type": "scene", "scene": build.scene, "code": build.code, "language": build.language})
+            self._view_shows_other_scene = True
+            await self.agent("Simulator", "working",
+                             f"Replaying confirmed run {evidence.get('confirms')} for {report.get('robot_label', target)} "
+                             f"with seed {evidence.get('seed', change.get('seed'))}…")
+            await self._stream(spec, sim, build)
+            await self.agent("Simulator", "done", "Evidence replay finished; the Finder result is unchanged.")
+            await self.emit({"type": "explanation",
+                             "message": f"Replayed the confirmed {evidence.get('failure') or 'failure'} for "
+                                        f"{report.get('robot_label', target)} using the recorded seed."})
+        except Exception as error:  # noqa: BLE001
+            await self.emit({"type": "error", "message": f"Could not replay the weakest spot: {error}"})
+
+    async def show_design(self, robot_id: str | None = None) -> None:
         """Replay the last redesign's winning design with streamed frames, without applying it."""
         try:
+            if self.last_redesign:
+                report_target = self.last_redesign.get("robot_id") or (
+                    self.spec.robots[0].id if self.spec and len(self.spec.robots) == 1 else None
+                )
+                if robot_id is not None and robot_id != report_target:
+                    raise ValueError("That design belongs to a different robot.")
             winner = (self.last_redesign or {}).get("winner") or (self.last_redesign or {}).get("fragile")
             if self.spec is None or winner is None or self.last_summary is None:
                 await self.emit({"type": "question", "message": "There's no passing design to show yet. Ask me to make it pass first."})
@@ -360,6 +476,8 @@ class Session:
 
     def _forget_runs(self) -> None:
         self.last_summary = self.last_diagnosis = self.last_redesign = None
+        self.last_finder_report = None
+        self._finder_source_spec = None
 
     def _apply_library_selection(self, spec: SceneSpec) -> None:
         from .library import LibraryRegistry

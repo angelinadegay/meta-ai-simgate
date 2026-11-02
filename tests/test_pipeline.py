@@ -2027,7 +2027,8 @@ def test_browser_handles_the_analysis_events():
     root = Path(__file__).resolve().parent.parent
     page = (root / "static" / "vendor" / "index.html").read_text(encoding="utf-8")
     for needed in ('case "diagnosis"', 'case "redesign"', 'id="diagnosisCard"', 'id="redesignCard"',
-                   'chips(q, ev.chips, null)', 'send($("useDesign").textContent.toLowerCase())', '"Use fragile design"', 'type: "show_design"',
+                   'chips(q, ev.chips, null)', 'sendWorkflowAction("apply_design", currentRedesignRobotId',
+                   'sendWorkflowAction("show_design", currentRedesignRobotId', '"Use fragile design"',
                    '"✓ confirmed"', '"~ partly"', '"✕ ruled out"', 'Designer: [55, 190]', '"Batch runner": [175, 190]',
                    'if (ev.chips)'):
         assert needed in page, needed
@@ -2105,7 +2106,7 @@ def test_next_actions_cover_the_outcome_matrix():
         "type": "redesign", "winner": {"description": "six wheels", "changes": {"wheels": 6}},
     }}, failed_facts, scene)
     check_result(redesign_found, ["Use this design", "Re-check the limits", "Show runs"])
-    assert redesign_found["actions"][2]["action"] == {"type": "show_design"}
+    assert redesign_found["actions"][2]["action"] == {"type": "show_design", "robot_id": "r1"}
 
     redesign_empty = next_actions("redesign", {"report": {
         "type": "redesign", "tried_count": 4,
@@ -2119,7 +2120,10 @@ def test_next_actions_cover_the_outcome_matrix():
 
     fragile = next_actions("redesign", {"report": {"type": "redesign",
         "fragile": {"description": "six wheels", "changes": {"wheels": 6}, "fragile": True}}}, failed_facts, scene)
-    assert fragile["actions"][0] == {"label": "Use fragile design", "message": "use fragile design"}
+    assert fragile["actions"][0]["label"] == "Use fragile design"
+    assert fragile["actions"][0]["action"] == {
+        "type": "workflow_action", "workflow": "apply_design", "robot_id": "r1",
+    }
 
     finder = next_actions("finder", {"report": {"type": "envelope", "limits": [
         {"name": "sideways push", "first_fail": 15.0},
