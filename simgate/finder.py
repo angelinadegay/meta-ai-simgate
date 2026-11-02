@@ -769,8 +769,27 @@ def _ask_hunter(messages: list[dict], ranges: dict, most: int, evidence: list[fl
 
 
 def _hunt_round(runner: Runner, combos: list[dict], context: dict, number: int, on_step: StepCallback | None) -> list[dict]:
-    for combo in combos:
-        _emit(on_step, "Hunter", "propose", f"Hunter: {combo['reason']}", f"Testing {combo_text(combo['values'])} together.")
+    if combos:
+        short_names = {"slope_deg": "slope", "push_n": "push", "obstacle_scale": "obstacle size",
+                       "speed_slower": "slower speed"}
+        condition_sets = {}
+        for combo in combos:
+            key = frozenset(combo["values"])
+            condition_sets.setdefault(key, []).append(combo)
+        if len(condition_sets) == 1:
+            first = next(iter(condition_sets.values()))[0]
+            conditions = " + ".join(short_names.get(key, KNOBS.get(key, {}).get("name", key.replace("_", " ")))
+                                     for key in first["values"])
+            thought = f"Hunter proposed {len(combos)} {conditions} combinations"
+        else:
+            conditions = sorted({short_names.get(key, KNOBS.get(key, {}).get("name", key.replace("_", " ")))
+                                 for condition_set in condition_sets for key in condition_set})
+            thought = f"Hunter proposed {len(combos)} combinations across {', '.join(conditions)}"
+        details = "\n".join(
+            f"Combination {index}: {combo_text(combo['values'])}. Reason: {combo['reason']}"
+            for index, combo in enumerate(combos, 1)
+        )
+        _emit(on_step, "Hunter", "propose", thought, details)
     jobs = []
     for combo in combos:
         variation: dict = {}

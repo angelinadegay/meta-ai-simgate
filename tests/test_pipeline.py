@@ -3308,7 +3308,9 @@ def test_hunter_failing_combination_is_confirmed_marked_surprising_and_explained
     for limit in report["limits"]:
         if not limit["never_broke"]:
             assert limit["confirm"]["fails_at"]["label"] == "reliable fail"   # phase-1 limits get badges too
-    assert any(s["agent"] == "Hunter" and s["thought"].startswith("Hunter: ") and "together" in s["thought"] for s in steps)
+    proposal_steps = [step for step in steps if step["agent"] == "Hunter" and step["tool"] == "propose"]
+    assert proposal_steps and all("proposed" in step["thought"] for step in proposal_steps)
+    assert all("Reason:" in step["result"] and "together" in step["result"] for step in proposal_steps)
     assert any(s["agent"] == "Hunter" and s["tool"] == "decide" for s in steps)
     text = rules_text(report)
     assert "although each was fine on its own" in text and number_problems(text, report) == []
