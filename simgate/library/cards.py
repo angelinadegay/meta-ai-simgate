@@ -48,6 +48,8 @@ class RobotCard(Card):
     actuator_type: Literal["torque", "position", "velocity"]
     standing_height_m: float = Field(gt=0)
     mass_kg: float = Field(gt=0)
+    footprint_length_m: float | None = Field(None, gt=0)
+    footprint_width_m: float | None = Field(None, gt=0)
     forward_axis: tuple[float, float, float] = (1.0, 0.0, 0.0)
     # uploaded robots without a trained policy: which built-in controller drives them, and its parts
     controller: Literal["policy", "wheels", "gait", "hold"] = "policy"
@@ -62,6 +64,8 @@ class RobotCard(Card):
             _validate_relative_asset_path(self.mjcf_path)
         if len(set(self.joint_names)) != len(self.joint_names):
             raise ValueError("robot joint_names must be unique")
+        if (self.footprint_length_m is None) != (self.footprint_width_m is None):
+            raise ValueError("robot footprint length and width must be provided together")
         return self
 
 

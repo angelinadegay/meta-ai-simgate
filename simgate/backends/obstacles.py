@@ -38,6 +38,7 @@ class Placed:
     size: str
     height_m: float           # rise of a step/wall/rock/log, total rise of stairs/ramp, depth of a gap
     xy: tuple[float, float]   # centre
+    yaw_deg: float            # path direction, in world coordinates
     along: float              # distance along the path from the start (m)
     length: float             # extent along the path (m)
     width_m: float | None = None    # gaps: how wide the gap is
@@ -201,7 +202,8 @@ def build_geoms(slots, H, size_m, seed: int) -> tuple[str, list[Placed]]:
         name = f"obs{i}_{ob.kind}"
         yaw = math.atan2(d[1], d[0])
         rec = Placed(name=name, kind=ob.kind, size=ob.size, height_m=round(v, 3), xy=(round(cx, 2), round(cy, 2)),
-                     along=round(sl["along"], 2), length=round(extent(ob.kind, v), 2), placement=ob.placement)
+                     yaw_deg=round(math.degrees(yaw), 3), along=round(sl["along"], 2),
+                     length=round(extent(ob.kind, v), 2), placement=ob.placement)
         geoms = []
 
         def box(gname, px, py, half_along, half_across, bottom, top, rgb=BUILT_RGB, quat=None):

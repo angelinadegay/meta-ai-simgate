@@ -8,6 +8,8 @@
   "actuator_type": "torque",
   "standing_height_m": 0.3,
   "mass_kg": 10.0,
+  "footprint_length_m": 0.7,
+  "footprint_width_m": 0.5,
   "license": "Project",
   "credit": "Built-in SimGate robot."
 }

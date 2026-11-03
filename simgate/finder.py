@@ -18,6 +18,8 @@ from collections import Counter
 from itertools import combinations
 from typing import Any, Callable
 
+import numpy as np
+
 from . import config, cost, llm, reliability
 from .batch import run_batch
 from .diagnose import robot_metrics
@@ -1470,6 +1472,140 @@ def prepare(spec: SceneSpec, knobs: list[str]) -> SceneSpec:
     return scene.fill_defaults()
 
 
+def limits_world(spec: SceneSpec, robot_id: str) -> dict:
+    """The gravity, surface, and robot identity to which measured limits apply."""
+    scene = spec.model_copy(deep=True).fill_defaults()
+    entry = _entry(scene, robot_id)
+    return {
+        "body": scene.environment.body,
+        "gravity_m_s2": round(float(scene.environment.gravity), 4),
+        "surface": scene.environment.surface,
+        "friction": round(float(scene.environment.friction), 4),
+        "robot_id": entry.id,
+        "robot_card_id": entry.robot.robot_id if entry.robot.kind == "library" else None,
+    }
+
+
+def scan_map_limits(
+    spec: SceneSpec,
+    robot_id: str | None = None,
+    missing: list[str] | None = None,
+    on_step: StepCallback | None = None,
+) -> dict:
+    """Measure map limits with at most 16 single-condition runs and the Finder's search rules."""
+    from .backends.obstacles import capability
+    from .spec import Obstacle, Terrain
+
+    if spec.domain != "robot_terrain" or not spec.robots:
+        raise ValueError("Scanning map limits needs a robot scene.")
+    entry = _entry(spec, robot_id)
+    source = spec.model_copy(deep=True).fill_defaults()
+    source_entry = _entry(source, entry.id)
+    indoor = source.terrain is not None and source.terrain.kind == "indoor"
+    if indoor:
+        available = ("step", "friction")
+    else:
+        available = ("slope_deg", "roughness", "step", "friction")
+    plans = tuple(knob for knob in available if missing is None or knob in missing)
+    if not plans:
+        return {"robot_id": entry.id, "world": limits_world(source, entry.id), "limits": [],
+                "scans": [], "runs": 0, "budget_runs": 16, "status": "already measured"}
+    budgets = {knob: 16 // len(plans) for knob in plans}
+
+    limits: list[dict] = []
+    scans: list[dict] = []
+    total_runs = 0
+    for knob in plans:
+        trial = source.model_copy(deep=True)
+        if knob == "slope_deg":
+            trial.terrain = Terrain(kind="slope", size_m=source.terrain.size_m,
+                                   seed=source.terrain.seed, slope_deg=0, roughness=0)
+            trial.obstacles = []
+        elif knob == "roughness":
+            terrain = trial.terrain
+            if terrain.kind == "flat":
+                terrain.kind = "rocky"
+            terrain.roughness = 0
+            trial.obstacles = []
+        elif knob == "friction":
+            trial.obstacles = []
+            if indoor:
+                trial.terrain = Terrain(kind="flat", size_m=source.terrain.size_m,
+                                       seed=source.terrain.seed, roughness=0)
+        else:
+            trial.obstacles = []
+            probe = trial.model_copy(deep=True)
+            probe.robot = source_entry.robot.model_copy(deep=True)
+            climb = float(capability(probe)["climb_m"])
+            trial.obstacles = [Obstacle(kind="step", height_m=max(0.01, climb * 0.1))]
+
+        trial = prepare(trial, [knob] if knob in ("slope_deg", "roughness") else [])
+        fits, _ = scene_knobs(trial, source_entry.robot)
+        if knob == "step":
+            fits["obstacle_scale"] = trial.obstacles[0].height_m / context_climb(trial, source_entry.robot)
+            knob_key = "obstacle_scale"
+        else:
+            knob_key = knob
+        if knob_key not in fits:
+            scans.append({"knob": knob, "runs": 0, "status": "not available in this scene"})
+            continue
+        context = {
+            "base": fits,
+            "robot_id": entry.id,
+            "mass": source_entry.robot.mass_kg,
+            "obstacles": _obstacle_context(trial, source_entry.robot),
+        }
+        run_budget = budgets[knob]
+        runner = Runner(trial, entry.id, "task", run_budget)
+        baseline = runner.run([({"phase": 0, "knob": None, "value": None}, {})])
+        if baseline and baseline[0]["broke"] is False:
+            runner.phase(run_budget - 1)
+            measured = search(runner, [knob_key], context, on_step)
+            limits.extend(measured)
+            scans.append({"knob": knob, "runs": len(runner.evidence), "status": "measured"})
+            for limit in measured:
+                if knob == "step":
+                    limit["physical_unit"] = "m"
+                    limit["physical_scale"] = float(capability(trial)["climb_m"])
+                elif knob == "roughness":
+                    limit["physical_unit"] = "m"
+                    limit["physical_values"] = {}
+                    from .traversability import features
+
+                    for side in ("last_ok", "first_fail"):
+                        value = limit[side]
+                        if value is None:
+                            continue
+                        rough_scene = trial.model_copy(deep=True)
+                        rough_scene.terrain.roughness = float(value)
+                        grid = features(rough_scene, source_entry)
+                        usable = grid["roughness_m"][~grid["blocked"]]
+                        limit["physical_values"][side] = float(np.median(usable)) if usable.size else None
+        else:
+            scans.append({"knob": knob, "runs": len(runner.evidence), "status": "baseline did not pass"})
+        total_runs += len(runner.evidence)
+
+    if total_runs > 16:
+        raise RuntimeError(f"Map-limit scan exceeded its 16-run budget ({total_runs}).")
+    return {
+        "robot_id": entry.id,
+        "world": limits_world(source, entry.id),
+        "limits": limits,
+        "scans": scans,
+        "runs": total_runs,
+        "budget_runs": 16,
+        "status": "measured" if limits else "unmeasured",
+    }
+
+
+def context_climb(spec: SceneSpec, robot) -> float:
+    from .backends.obstacles import capability
+
+    probe = spec.model_copy(deep=True)
+    probe.robot = robot.model_copy(deep=True)
+    return float(capability(probe)["climb_m"])
+
+
 def find_failures(spec: SceneSpec, robot_id: str | None = None, failure: str = "task", budget: str = "quick",
                   knobs: list[str] | None = None, on_step: StepCallback | None = None) -> dict:
     """Where one robot starts to fail as the world gets harsher: limits, a map of the two tightest conditions,
@@ -1488,7 +1624,8 @@ def _find(spec: SceneSpec, robot_id: str | None, failure: str, budget: str, name
     # a named "gravity" comes from the user's own words (the Director drops it otherwise), so any world may search it
     fits, skipped = scene_knobs(spec, entry.robot, gravity_asked="gravity" in (named or []))
     chosen, notes = choose_knobs(fits, budget, named)
-    report: dict[str, Any] = {"type": "envelope", "robot_id": entry.id, "robot_label": entry.label, "failure": failure,
+    report: dict[str, Any] = {"type": "envelope", "robot_id": entry.id, "robot_label": entry.label,
+                              "world": limits_world(spec, entry.id), "failure": failure,
                               "budget": budget, "budget_runs": BUDGETS[budget], "knobs": chosen, "notes": notes,
                               "skipped": {k: v for k, v in skipped.items() if named and k in named}, "limits": [],
                               "map": None, "evidence": [], "runs": 0, "model_calls": [], "failures": [], "dropped": [],

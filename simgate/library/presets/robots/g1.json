@@ -22,6 +22,8 @@
   "actuator_type": "torque",
   "standing_height_m": 0.793,
   "mass_kg": 32.1069,
+  "footprint_length_m": 0.5,
+  "footprint_width_m": 0.35,
   "forward_axis": [1.0, 0.0, 0.0],
   "license": "BSD-3-Clause",
   "credit": "Unitree Robotics, unitree_rl_gym; see third_party/unitree_rl_gym/LICENSE and NOTICE.md."

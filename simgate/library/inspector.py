@@ -566,6 +566,8 @@ def _cards(record: UploadRecord, model, found: dict, draft: RobotDraft, mjcf_pat
     robot = RobotCard(id=record.id, name=record.name, license=record.license, credit=record.credit, kind=draft.kind,
                       source="upload", mjcf_path=mjcf_path, root_body=ROOT_BODY, joint_names=joint_order,
                       actuator_type=actuator_type, standing_height_m=found["standing_height_m"], mass_kg=mass,
+                      footprint_length_m=found["bounding_box_m"]["size"][0],
+                      footprint_width_m=found["bounding_box_m"]["size"][1],
                       controller=controller, wheels=wheels, track_m=track, legs=legs, feet=draft.feet)
     label = {"wheels": "Wheel controller", "gait": "Baseline gait",
              "hold": "Holds its pose (needs a trained policy to move)"}[controller]
