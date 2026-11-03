@@ -15,3 +15,4 @@ onnxruntime>=1.17
 rasterio>=1.3
 scipy>=1.10
 pillow>=10
+pvl>=1.3                 # attached PDS3 labels for LROC elevation DTMs

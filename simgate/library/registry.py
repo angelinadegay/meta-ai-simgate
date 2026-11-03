@@ -95,7 +95,8 @@ class LibraryRegistry:
                     terrain_preset=name,
                     source="upload" if meta.get("uploaded") else "builtin",
                     license=meta.get("license", "See source terms"),
-                    credit=meta.get("credit", meta.get("source", "Terrain preset metadata")),
+                        credit=(meta.get("credit", meta.get("source", "Terrain preset metadata"))
+                            + (". " + meta["accuracy_note"] if meta.get("accuracy_note") else "")),
                 )
             )
         return worlds

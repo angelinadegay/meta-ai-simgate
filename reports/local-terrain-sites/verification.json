@@ -1,0 +1,116 @@
+{
+  "presets": [
+    {
+      "name": "victoria-opportunity",
+      "native_samples_verified": true,
+      "sample_max_error_m": 0.0,
+      "valid_fraction": 1.0,
+      "maximum_slope_deg": 28.817
+    },
+    {
+      "name": "gusev-columbia-hills",
+      "native_samples_verified": true,
+      "sample_max_error_m": 0.0,
+      "valid_fraction": 1.0,
+      "maximum_slope_deg": 25.134
+    },
+    {
+      "name": "juventae-kieserite",
+      "native_samples_verified": true,
+      "sample_max_error_m": 0.0,
+      "valid_fraction": 1.0,
+      "maximum_slope_deg": 18.621
+    },
+    {
+      "name": "arabia-northeast-mesas",
+      "native_samples_verified": true,
+      "sample_max_error_m": 0.0,
+      "valid_fraction": 1.0,
+      "maximum_slope_deg": 29.652
+    },
+    {
+      "name": "ius-chasma-floor",
+      "native_samples_verified": true,
+      "sample_max_error_m": 0.0,
+      "valid_fraction": 1.0,
+      "maximum_slope_deg": 27.343
+    },
+    {
+      "name": "apollo15-hadley-rille",
+      "native_samples_verified": true,
+      "sample_max_error_m": 0.0,
+      "valid_fraction": 1.0,
+      "maximum_slope_deg": 26.064,
+      "pds_label": {
+        "pds_product_id": "NAC_DTM_APOLLO15_2_E260N0036",
+        "sample_type": "PC_REAL",
+        "sample_bits": 32,
+        "sample_unit_in_label": null,
+        "elevation_units": "metres",
+        "elevation_units_source": "LROC NAC DTM product convention",
+        "scaling_factor": 1.0,
+        "offset": 0.0,
+        "scale_offset_explicit": false,
+        "core_null_bits": "0xFF7FFFFB",
+        "source_nodata": -3.4028226550889045e+38,
+        "reference_radius_m": 1737400.0,
+        "product_readme_url": "https://pds.lroc.im-ldi.com/data/LRO-L-LROC-5-RDR-V1.0/LROLRC_2001/DATA/SDP/NAC_DTM/APOLLO15_2/NAC_DTM_APOLLO15_2_README.TXT",
+        "vertical_reference": "LOLA-tied lunar elevations",
+        "special_pixel_bits": {
+          "CORE_NULL": "0xFF7FFFFB",
+          "CORE_LOW_REPR_SATURATION": "0xFF7FFFFC",
+          "CORE_LOW_INSTR_SATURATION": "0xFF7FFFFD",
+          "CORE_HIGH_REPR_SATURATION": "0xFF7FFFFF",
+          "CORE_HIGH_INSTR_SATURATION": "0xFF7FFFFE"
+        }
+      }
+    },
+    {
+      "name": "apollo17-taurus-littrow",
+      "native_samples_verified": true,
+      "sample_max_error_m": 0.0,
+      "valid_fraction": 1.0,
+      "maximum_slope_deg": 12.674,
+      "pds_label": {
+        "pds_product_id": "NAC_DTM_APOLLO17_E203N0308",
+        "sample_type": "PC_REAL",
+        "sample_bits": 32,
+        "sample_unit_in_label": null,
+        "elevation_units": "metres",
+        "elevation_units_source": "LROC NAC DTM product convention",
+        "scaling_factor": 1.0,
+        "offset": 0.0,
+        "scale_offset_explicit": false,
+        "core_null_bits": "0xFF7FFFFB",
+        "source_nodata": -3.4028226550889045e+38,
+        "reference_radius_m": 1737400.0,
+        "product_readme_url": "https://pds.lroc.im-ldi.com/data/LRO-L-LROC-5-RDR-V1.0/LROLRC_2001/DATA/SDP/NAC_DTM/APOLLO17/NAC_DTM_APOLLO17_README.TXT",
+        "vertical_reference": "LOLA-tied lunar elevations",
+        "special_pixel_bits": {
+          "CORE_NULL": "0xFF7FFFFB",
+          "CORE_LOW_REPR_SATURATION": "0xFF7FFFFC",
+          "CORE_LOW_INSTR_SATURATION": "0xFF7FFFFD",
+          "CORE_HIGH_REPR_SATURATION": "0xFF7FFFFF",
+          "CORE_HIGH_INSTR_SATURATION": "0xFF7FFFFE"
+        }
+      }
+    },
+    {
+      "name": "meteor-crater-rim",
+      "native_samples_verified": true,
+      "sample_max_error_m": 0.0,
+      "valid_fraction": 1.0,
+      "maximum_slope_deg": 25.01
+    },
+    {
+      "name": "meteor-crater-floor",
+      "native_samples_verified": true,
+      "sample_max_error_m": 0.0,
+      "valid_fraction": 1.0,
+      "maximum_slope_deg": 18.097
+    }
+  ],
+  "blocked_sources": 0,
+  "slope_screen_only": true,
+  "raw_files_committed": false
+}

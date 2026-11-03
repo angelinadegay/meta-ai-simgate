@@ -1,0 +1,52 @@
+{
+  "size_m": 80.0,
+  "meters_per_pixel": 1.0,
+  "relief_m": 18.107,
+  "typical_slope_deg": 15.6,
+  "max_slope_deg": 25.0,
+  "mean_slope_deg": 9.6,
+  "warnings": [],
+  "crs": "EPSG:26912",
+  "source_shape": [
+    10000,
+    10000
+  ],
+  "window_top_left_px": [
+    3529,
+    7231
+  ],
+  "window_size_px": 80,
+  "window_origin_projected_m": [
+    497231.0,
+    3876471.0
+  ],
+  "base_elevation_m": 1708.24,
+  "name": "meteor-crater-rim",
+  "label": "Meteor Crater rim, Earth",
+  "site": "Meteor Crater rim",
+  "kind": "real",
+  "body": "earth",
+  "surface": "rock",
+  "source": "C:\\Users\\angel\\Downloads\\simgate (1)\\simgate\\assets\\nasa\\terrain_raw\\earth\\USGS_1M_12_x49y388_AZ_NorthEast_D23.tif",
+  "source_format": ".TIF",
+  "source_page": null,
+  "credit": "USGS 3DEP 1 m DEM, AZ NorthEast D23",
+  "accuracy_note": "",
+  "selection_note": "Slope-screened rim patch; not a certified rover route.",
+  "crossability_screen": {
+    "typical_slope_limit_deg": 20.0,
+    "max_slope_limit_deg": 30.0,
+    "verified_simulation": false
+  },
+  "selection_distance_from_anchor_m": 822.38,
+  "selection_anchor_projected_m": [
+    497993.1232447015,
+    3876037.4895979287
+  ],
+  "preview": "reports\\local-terrain-sites\\meteor-crater-rim.png",
+  "preview_file": "meteor-crater-rim.preview.png",
+  "grid": [
+    80,
+    80
+  ]
+}

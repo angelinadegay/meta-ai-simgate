@@ -59,13 +59,12 @@ def load_preset(name: str) -> tuple[np.ndarray, dict]:
     return heights, json.loads(meta_path.read_text())
 
 
-def load_ortho_image(name: str) -> tuple[bytes, dict] | None:
-    """The optional RGB terrain image for the viewer; paths are constrained to the preset folder."""
+def _load_preset_image(name: str, key: str) -> tuple[bytes, dict] | None:
     meta_path, _ = _preset_files(name)
     if not meta_path.is_file():
         return None
     meta = json.loads(meta_path.read_text(encoding="utf-8"))
-    filename = meta.get("ortho_file")
+    filename = meta.get(key)
     if not filename:
         return None
     folder = meta_path.parent.resolve()
@@ -77,6 +76,16 @@ def load_ortho_image(name: str) -> tuple[bytes, dict] | None:
     if not image_path.is_file():
         return None
     return image_path.read_bytes(), meta
+
+
+def load_ortho_image(name: str) -> tuple[bytes, dict] | None:
+    """The optional RGB terrain image for the viewer; paths stay within the preset folder."""
+    return _load_preset_image(name, "ortho_file")
+
+
+def load_preview_image(name: str) -> tuple[bytes, dict] | None:
+    """A shaded terrain thumbnail, never used as an orbital orthoimage."""
+    return _load_preset_image(name, "preview_file")
 
 
 def resizable(meta: dict) -> bool:

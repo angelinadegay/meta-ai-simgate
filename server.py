@@ -17,7 +17,7 @@ from simgate.library.inspector import answer_robot, inspect_robot
 from simgate.library.terrain_upload import NeedsAnswers, prepare_terrain
 from simgate.library.uploads import MAX_UPLOAD_BYTES, discard_upload, get_upload, list_uploads, upload_status
 from simgate.orchestrator import Session
-from simgate.terrain_data import list_presets, load_ortho_image
+from simgate.terrain_data import list_presets, load_ortho_image, load_preview_image
 
 STATIC = Path(__file__).parent / "static"
 app = FastAPI(title="SimGate")
@@ -59,7 +59,8 @@ def library_view() -> dict:
     worlds = []
     for card in library.worlds():
         world = card.model_dump(mode="json")
-        if card.terrain_preset and load_ortho_image(card.terrain_preset) is not None:
+        if card.terrain_preset and (load_ortho_image(card.terrain_preset) is not None
+                       or load_preview_image(card.terrain_preset) is not None):
             world["preview_url"] = f"/terrain-preview/{card.terrain_preset}"
         worlds.append(world)
     return {"robots": [card.model_dump(mode="json") for card in library.robots()],
@@ -70,9 +71,9 @@ def library_view() -> dict:
 
 @app.get("/terrain-preview/{name}")
 def terrain_preview(name: str):
-    image = load_ortho_image(name)
+    image = load_ortho_image(name) or load_preview_image(name)
     if image is None:
-        return JSONResponse({"ok": False, "error": "No RGB terrain preview is available."}, status_code=404)
+        return JSONResponse({"ok": False, "error": "No terrain preview is available."}, status_code=404)
     data, _ = image
     return Response(data, media_type="image/png", headers={"Cache-Control": "public, max-age=3600"})
 

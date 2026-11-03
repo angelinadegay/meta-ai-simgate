@@ -1,0 +1,47 @@
+{
+  "size_m": 80.914,
+  "meters_per_pixel": 2.0229,
+  "relief_m": 26.236,
+  "typical_slope_deg": 19.3,
+  "max_slope_deg": 27.3,
+  "mean_slope_deg": 13.2,
+  "warnings": [],
+  "crs": "PROJCS[\"EQUIRECTANGULAR MARS\",GEOGCS[\"GCS_MARS\",DATUM[\"D_MARS\",SPHEROID[\"MARS_localRadius\",3396036.8126024,0]],PRIMEM[\"Reference_Meridian\",0],UNIT[\"degree\",0.0174532925199433,AUTHORITY[\"EPSG\",\"9122\"]]],PROJECTION[\"Equirectangular\"],PARAMETER[\"standard_parallel_1\",-5],PARAMETER[\"central_meridian\",280.6],PARAMETER[\"false_easting\",0],PARAMETER[\"false_northing\",0],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Easting\",EAST],AXIS[\"Northing\",NORTH]]",
+  "source_shape": [
+    7872,
+    3049
+  ],
+  "window_top_left_px": [
+    806,
+    1597
+  ],
+  "window_size_px": 40,
+  "window_origin_projected_m": [
+    -147.67,
+    -501814.53
+  ],
+  "base_elevation_m": -3273.71,
+  "name": "ius-chasma-floor",
+  "label": "Light-Toned Deposits along Ius Chasma Floor, Mars",
+  "site": "Light-Toned Deposits along Ius Chasma Floor",
+  "kind": "real",
+  "body": "mars",
+  "surface": "regolith",
+  "source": "C:\\Users\\angel\\Downloads\\simgate (1)\\simgate\\assets\\nasa\\terrain_raw\\mars\\DTEED_053753_1715_053819_1715_A01.IMG",
+  "source_format": ".IMG",
+  "source_page": "https://www.uahirise.org/dtm/dtm.php?ID=ESP_053753_1715",
+  "credit": "NASA/JPL-Caltech/University of Arizona HiRISE DTM",
+  "accuracy_note": "",
+  "selection_note": "",
+  "crossability_screen": {
+    "typical_slope_limit_deg": 20.0,
+    "max_slope_limit_deg": 30.0,
+    "verified_simulation": false
+  },
+  "preview": "reports\\local-terrain-sites\\ius-chasma-floor.png",
+  "preview_file": "ius-chasma-floor.preview.png",
+  "grid": [
+    40,
+    40
+  ]
+}

@@ -1,0 +1,47 @@
+{
+  "size_m": 79.931,
+  "meters_per_pixel": 1.0118,
+  "relief_m": 28.629,
+  "typical_slope_deg": 16.8,
+  "max_slope_deg": 18.6,
+  "mean_slope_deg": 14.5,
+  "warnings": [],
+  "crs": "PROJCS[\"EQUIRECTANGULAR MARS\",GEOGCS[\"GCS_MARS\",DATUM[\"D_MARS\",SPHEROID[\"MARS_localRadius\",3396190,0]],PRIMEM[\"Reference_Meridian\",0],UNIT[\"degree\",0.0174532925199433,AUTHORITY[\"EPSG\",\"9122\"]]],PROJECTION[\"Equirectangular\"],PARAMETER[\"standard_parallel_1\",0],PARAMETER[\"central_meridian\",298.13],PARAMETER[\"false_easting\",0],PARAMETER[\"false_northing\",0],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Easting\",EAST],AXIS[\"Northing\",NORTH]]",
+  "source_shape": [
+    23191,
+    7820
+  ],
+  "window_top_left_px": [
+    2214,
+    221
+  ],
+  "window_size_px": 79,
+  "window_origin_projected_m": [
+    -3972.29,
+    -225563.42
+  ],
+  "base_elevation_m": -2489.51,
+  "name": "juventae-kieserite",
+  "label": "Juventae Chasma Layered Kieserite Deposit, Mars",
+  "site": "Juventae Chasma Layered Kieserite Deposit",
+  "kind": "real",
+  "body": "mars",
+  "surface": "regolith",
+  "source": "C:\\Users\\angel\\Downloads\\simgate (1)\\simgate\\assets\\nasa\\terrain_raw\\mars\\DTEEC_007060_1760_006915_1760_A01.IMG",
+  "source_format": ".IMG",
+  "source_page": "https://www.uahirise.org/dtm/dtm.php?ID=PSP_007060_1760",
+  "credit": "NASA/JPL-Caltech/University of Arizona HiRISE DTM",
+  "accuracy_note": "",
+  "selection_note": "",
+  "crossability_screen": {
+    "typical_slope_limit_deg": 20.0,
+    "max_slope_limit_deg": 30.0,
+    "verified_simulation": false
+  },
+  "preview": "reports\\local-terrain-sites\\juventae-kieserite.png",
+  "preview_file": "juventae-kieserite.preview.png",
+  "grid": [
+    79,
+    79
+  ]
+}

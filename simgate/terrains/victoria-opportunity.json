@@ -1,0 +1,47 @@
+{
+  "size_m": 79.937,
+  "meters_per_pixel": 1.0119,
+  "relief_m": 5.264,
+  "typical_slope_deg": 9.5,
+  "max_slope_deg": 28.8,
+  "mean_slope_deg": 4.5,
+  "warnings": [],
+  "crs": "PROJCS[\"EQUIRECTANGULAR MARS\",GEOGCS[\"GCS_MARS\",DATUM[\"D_MARS\",SPHEROID[\"MARS_localRadius\",3396190,0]],PRIMEM[\"Reference_Meridian\",0],UNIT[\"degree\",0.0174532925199433,AUTHORITY[\"EPSG\",\"9122\"]]],PROJECTION[\"Equirectangular\"],PARAMETER[\"standard_parallel_1\",0],PARAMETER[\"central_meridian\",354.5],PARAMETER[\"false_easting\",0],PARAMETER[\"false_northing\",0],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Easting\",EAST],AXIS[\"Northing\",NORTH]]",
+  "source_shape": [
+    1694,
+    1279
+  ],
+  "window_top_left_px": [
+    439,
+    516
+  ],
+  "window_size_px": 79,
+  "window_origin_projected_m": [
+    120.41,
+    -121142.32
+  ],
+  "base_elevation_m": -1383.21,
+  "name": "victoria-opportunity",
+  "label": "Victoria Crater (Opportunity), Mars (U01 uncontrolled)",
+  "site": "Victoria Crater (Opportunity)",
+  "kind": "real",
+  "body": "mars",
+  "surface": "regolith",
+  "source": "C:\\Users\\angel\\Downloads\\simgate (1)\\simgate\\assets\\nasa\\terrain_raw\\mars\\DTEEC_001414_1780_001612_1780_U01.IMG",
+  "source_format": ".IMG",
+  "source_page": "https://www.uahirise.org/dtm/dtm.php?ID=PSP_001414_1780",
+  "credit": "NASA/JPL-Caltech/University of Arizona HiRISE DTM",
+  "accuracy_note": "U01 uncontrolled: absolute position less precise; native-scale heights retained.",
+  "selection_note": "",
+  "crossability_screen": {
+    "typical_slope_limit_deg": 20.0,
+    "max_slope_limit_deg": 30.0,
+    "verified_simulation": false
+  },
+  "preview": "reports\\local-terrain-sites\\victoria-opportunity.png",
+  "preview_file": "victoria-opportunity.preview.png",
+  "grid": [
+    79,
+    79
+  ]
+}

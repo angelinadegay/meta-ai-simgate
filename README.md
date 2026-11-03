@@ -335,6 +335,26 @@ settings, checks and MuJoCo physics remain unchanged. The labelled result appear
 
 ### 4. Real terrain from NASA Mars data
 
+Local HiRISE, LROC and USGS sources can be imported with `python scripts/import_local_terrain_sites.py`.
+The current supplied files yielded nine native-scale, slope-screened presets: Victoria Crater, Gusev / Columbia
+Hills, Juventae Chasma, Northeast Arabia Terra, Ius Chasma, Apollo 15 / Hadley Rille, Apollo 17 / Taurus-Littrow,
+and Meteor Crater rim and floor. Measurements,
+source-window context and a preview for each are in [the local terrain report](reports/local-terrain-sites/README.md).
+U01 HiRISE cards explicitly note less precise absolute positioning. These patches meet a native-grid slope
+screen (P95 <=20 degrees, maximum <=30 degrees), not a verified rover traversal.
+
+Apollo 15 and Apollo 17 use their numerical PDS3 `.IMG` LROC NAC DTMs, not the supplied 8-bit TIFF browse maps.
+Attached labels and GDAL agree on `PC_REAL` float32, 5 m pixels, identity scale 1 / offset 0 defaults, and
+`CORE_NULL = 0xFF7FFFFB` (about -3.402822655e38); ISIS null/saturation pixels are excluded. These labels omit
+an explicit vertical UNIT: metre elevations follow the LROC NAC DTM/LOLA product convention, recorded with
+the product readme links rather than falsely claiming a label field. Their map reference radius is 1737.4 km.
+
+Both lunar patches retain 32 x 32 native samples over 160 m. Apollo 15's rille-area candidate has 32.068 m relief,
+19.5-degree P95 slope and 26.1-degree maximum slope. Apollo 17's valley-floor patch near the landing-site anchor
+has 7.054 m relief, 6.8-degree P95 slope and 12.7-degree maximum slope. Five-metre DTMs do not resolve rover-scale
+hazards. The original `.TIF` files remain local visual references only; they are not elevation inputs or
+mislabelled as photographic orthoimagery. Raw IMG/TIFF files under `assets/nasa/` remain uncommitted.
+
 - `scripts/hirise_to_simgate.py` converts NASA HiRISE elevation models into SimGate terrain. These are about
   1 m per pixel and public domain (CC0 1.0), hosted on AWS Open Data. The script reads only the window it needs
   over the internet, so no download of the full file and no AWS account are needed.

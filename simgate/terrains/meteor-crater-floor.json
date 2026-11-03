@@ -1,0 +1,52 @@
+{
+  "size_m": 80.0,
+  "meters_per_pixel": 1.0,
+  "relief_m": 8.278,
+  "typical_slope_deg": 8.5,
+  "max_slope_deg": 18.1,
+  "mean_slope_deg": 5.0,
+  "warnings": [],
+  "crs": "EPSG:26912",
+  "source_shape": [
+    10000,
+    10000
+  ],
+  "window_top_left_px": [
+    3979,
+    8041
+  ],
+  "window_size_px": 80,
+  "window_origin_projected_m": [
+    498041.0,
+    3876021.0
+  ],
+  "base_elevation_m": 1563.53,
+  "name": "meteor-crater-floor",
+  "label": "Meteor Crater floor, Earth",
+  "site": "Meteor Crater floor",
+  "kind": "real",
+  "body": "earth",
+  "surface": "rock",
+  "source": "C:\\Users\\angel\\Downloads\\simgate (1)\\simgate\\assets\\nasa\\terrain_raw\\earth\\USGS_1M_12_x49y388_AZ_NorthEast_D23.tif",
+  "source_format": ".TIF",
+  "source_page": null,
+  "credit": "USGS 3DEP 1 m DEM, AZ NorthEast D23",
+  "accuracy_note": "",
+  "selection_note": "Slope-screened floor patch; not a certified rover route.",
+  "crossability_screen": {
+    "typical_slope_limit_deg": 20.0,
+    "max_slope_limit_deg": 30.0,
+    "verified_simulation": false
+  },
+  "selection_distance_from_anchor_m": 104.47,
+  "selection_anchor_projected_m": [
+    497993.1232447015,
+    3876037.4895979287
+  ],
+  "preview": "reports\\local-terrain-sites\\meteor-crater-floor.png",
+  "preview_file": "meteor-crater-floor.preview.png",
+  "grid": [
+    80,
+    80
+  ]
+}

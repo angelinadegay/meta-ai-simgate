@@ -1,0 +1,461 @@
+{
+  "presets": [
+    {
+      "size_m": 79.937,
+      "meters_per_pixel": 1.0119,
+      "relief_m": 5.264,
+      "typical_slope_deg": 9.5,
+      "max_slope_deg": 28.8,
+      "mean_slope_deg": 4.5,
+      "warnings": [],
+      "crs": "PROJCS[\"EQUIRECTANGULAR MARS\",GEOGCS[\"GCS_MARS\",DATUM[\"D_MARS\",SPHEROID[\"MARS_localRadius\",3396190,0]],PRIMEM[\"Reference_Meridian\",0],UNIT[\"degree\",0.0174532925199433,AUTHORITY[\"EPSG\",\"9122\"]]],PROJECTION[\"Equirectangular\"],PARAMETER[\"standard_parallel_1\",0],PARAMETER[\"central_meridian\",354.5],PARAMETER[\"false_easting\",0],PARAMETER[\"false_northing\",0],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Easting\",EAST],AXIS[\"Northing\",NORTH]]",
+      "source_shape": [
+        1694,
+        1279
+      ],
+      "window_top_left_px": [
+        439,
+        516
+      ],
+      "window_size_px": 79,
+      "window_origin_projected_m": [
+        120.41,
+        -121142.32
+      ],
+      "base_elevation_m": -1383.21,
+      "name": "victoria-opportunity",
+      "label": "Victoria Crater (Opportunity), Mars (U01 uncontrolled)",
+      "site": "Victoria Crater (Opportunity)",
+      "kind": "real",
+      "body": "mars",
+      "surface": "regolith",
+      "source": "C:\\Users\\angel\\Downloads\\simgate (1)\\simgate\\assets\\nasa\\terrain_raw\\mars\\DTEEC_001414_1780_001612_1780_U01.IMG",
+      "source_format": ".IMG",
+      "source_page": "https://www.uahirise.org/dtm/dtm.php?ID=PSP_001414_1780",
+      "credit": "NASA/JPL-Caltech/University of Arizona HiRISE DTM",
+      "accuracy_note": "U01 uncontrolled: absolute position less precise; native-scale heights retained.",
+      "selection_note": "",
+      "crossability_screen": {
+        "typical_slope_limit_deg": 20.0,
+        "max_slope_limit_deg": 30.0,
+        "verified_simulation": false
+      },
+      "preview": "reports\\local-terrain-sites\\victoria-opportunity.png",
+      "preview_file": "victoria-opportunity.preview.png"
+    },
+    {
+      "size_m": 79.833,
+      "meters_per_pixel": 1.0105,
+      "relief_m": 24.115,
+      "typical_slope_deg": 18.1,
+      "max_slope_deg": 25.1,
+      "mean_slope_deg": 13.5,
+      "warnings": [],
+      "crs": "PROJCS[\"EQUIRECTANGULAR MARS\",GEOGCS[\"GCS_MARS\",DATUM[\"D_MARS\",SPHEROID[\"MARS_localRadius\",3395580,0]],PRIMEM[\"Reference_Meridian\",0],UNIT[\"degree\",0.0174532925199433,AUTHORITY[\"EPSG\",\"9122\"]]],PROJECTION[\"Equirectangular\"],PARAMETER[\"standard_parallel_1\",-10],PARAMETER[\"central_meridian\",175.5],PARAMETER[\"false_easting\",0],PARAMETER[\"false_northing\",0],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Easting\",EAST],AXIS[\"Northing\",NORTH]]",
+      "source_shape": [
+        10847,
+        6524
+      ],
+      "window_top_left_px": [
+        6639,
+        5876
+      ],
+      "window_size_px": 79,
+      "window_origin_projected_m": [
+        2543.53,
+        -865596.28
+      ],
+      "base_elevation_m": -1917.46,
+      "name": "gusev-columbia-hills",
+      "label": "Gusev / Columbia Hills area (Spirit), Mars (U01 uncontrolled)",
+      "site": "Gusev / Columbia Hills area (Spirit)",
+      "kind": "real",
+      "body": "mars",
+      "surface": "regolith",
+      "source": "C:\\Users\\angel\\Downloads\\simgate (1)\\simgate\\assets\\nasa\\terrain_raw\\mars\\DTEEC_001513_1655_001777_1650_U01.IMG",
+      "source_format": ".IMG",
+      "source_page": "https://www.uahirise.org/dtm/dtm.php?ID=PSP_001513_1655",
+      "credit": "NASA/JPL-Caltech/University of Arizona HiRISE DTM",
+      "accuracy_note": "U01 uncontrolled: absolute position less precise; native-scale heights retained.",
+      "selection_note": "",
+      "crossability_screen": {
+        "typical_slope_limit_deg": 20.0,
+        "max_slope_limit_deg": 30.0,
+        "verified_simulation": false
+      },
+      "preview": "reports\\local-terrain-sites\\gusev-columbia-hills.png",
+      "preview_file": "gusev-columbia-hills.preview.png"
+    },
+    {
+      "size_m": 79.931,
+      "meters_per_pixel": 1.0118,
+      "relief_m": 28.629,
+      "typical_slope_deg": 16.8,
+      "max_slope_deg": 18.6,
+      "mean_slope_deg": 14.5,
+      "warnings": [],
+      "crs": "PROJCS[\"EQUIRECTANGULAR MARS\",GEOGCS[\"GCS_MARS\",DATUM[\"D_MARS\",SPHEROID[\"MARS_localRadius\",3396190,0]],PRIMEM[\"Reference_Meridian\",0],UNIT[\"degree\",0.0174532925199433,AUTHORITY[\"EPSG\",\"9122\"]]],PROJECTION[\"Equirectangular\"],PARAMETER[\"standard_parallel_1\",0],PARAMETER[\"central_meridian\",298.13],PARAMETER[\"false_easting\",0],PARAMETER[\"false_northing\",0],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Easting\",EAST],AXIS[\"Northing\",NORTH]]",
+      "source_shape": [
+        23191,
+        7820
+      ],
+      "window_top_left_px": [
+        2214,
+        221
+      ],
+      "window_size_px": 79,
+      "window_origin_projected_m": [
+        -3972.29,
+        -225563.42
+      ],
+      "base_elevation_m": -2489.51,
+      "name": "juventae-kieserite",
+      "label": "Juventae Chasma Layered Kieserite Deposit, Mars",
+      "site": "Juventae Chasma Layered Kieserite Deposit",
+      "kind": "real",
+      "body": "mars",
+      "surface": "regolith",
+      "source": "C:\\Users\\angel\\Downloads\\simgate (1)\\simgate\\assets\\nasa\\terrain_raw\\mars\\DTEEC_007060_1760_006915_1760_A01.IMG",
+      "source_format": ".IMG",
+      "source_page": "https://www.uahirise.org/dtm/dtm.php?ID=PSP_007060_1760",
+      "credit": "NASA/JPL-Caltech/University of Arizona HiRISE DTM",
+      "accuracy_note": "",
+      "selection_note": "",
+      "crossability_screen": {
+        "typical_slope_limit_deg": 20.0,
+        "max_slope_limit_deg": 30.0,
+        "verified_simulation": false
+      },
+      "preview": "reports\\local-terrain-sites\\juventae-kieserite.png",
+      "preview_file": "juventae-kieserite.preview.png"
+    },
+    {
+      "size_m": 80.543,
+      "meters_per_pixel": 2.0136,
+      "relief_m": 24.298,
+      "typical_slope_deg": 19.7,
+      "max_slope_deg": 29.7,
+      "mean_slope_deg": 13.0,
+      "warnings": [],
+      "crs": "PROJCS[\"EQUIRECTANGULAR MARS\",GEOGCS[\"GCS_MARS\",DATUM[\"D_MARS\",SPHEROID[\"MARS_localRadius\",3392593.6110435,0]],PRIMEM[\"Reference_Meridian\",0],UNIT[\"degree\",0.0174532925199433,AUTHORITY[\"EPSG\",\"9122\"]]],PROJECTION[\"Equirectangular\"],PARAMETER[\"standard_parallel_1\",25],PARAMETER[\"central_meridian\",65.42],PARAMETER[\"false_easting\",0],PARAMETER[\"false_northing\",0],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Easting\",EAST],AXIS[\"Northing\",NORTH]]",
+      "source_shape": [
+        14297,
+        4302
+      ],
+      "window_top_left_px": [
+        992,
+        2068
+      ],
+      "window_size_px": 40,
+      "window_origin_projected_m": [
+        -86.58,
+        1676100.01
+      ],
+      "base_elevation_m": 614.49,
+      "name": "arabia-northeast-mesas",
+      "label": "Craters and Mesas in Northeast Arabia Terra, Mars",
+      "site": "Craters and Mesas in Northeast Arabia Terra",
+      "kind": "real",
+      "body": "mars",
+      "surface": "regolith",
+      "source": "C:\\Users\\angel\\Downloads\\simgate (1)\\simgate\\assets\\nasa\\terrain_raw\\mars\\DTEED_026399_2085_026254_2085_A01.IMG",
+      "source_format": ".IMG",
+      "source_page": "https://www.uahirise.org/dtm/dtm.php?ID=ESP_026399_2085",
+      "credit": "NASA/JPL-Caltech/University of Arizona HiRISE DTM",
+      "accuracy_note": "",
+      "selection_note": "",
+      "crossability_screen": {
+        "typical_slope_limit_deg": 20.0,
+        "max_slope_limit_deg": 30.0,
+        "verified_simulation": false
+      },
+      "preview": "reports\\local-terrain-sites\\arabia-northeast-mesas.png",
+      "preview_file": "arabia-northeast-mesas.preview.png"
+    },
+    {
+      "size_m": 80.914,
+      "meters_per_pixel": 2.0229,
+      "relief_m": 26.236,
+      "typical_slope_deg": 19.3,
+      "max_slope_deg": 27.3,
+      "mean_slope_deg": 13.2,
+      "warnings": [],
+      "crs": "PROJCS[\"EQUIRECTANGULAR MARS\",GEOGCS[\"GCS_MARS\",DATUM[\"D_MARS\",SPHEROID[\"MARS_localRadius\",3396036.8126024,0]],PRIMEM[\"Reference_Meridian\",0],UNIT[\"degree\",0.0174532925199433,AUTHORITY[\"EPSG\",\"9122\"]]],PROJECTION[\"Equirectangular\"],PARAMETER[\"standard_parallel_1\",-5],PARAMETER[\"central_meridian\",280.6],PARAMETER[\"false_easting\",0],PARAMETER[\"false_northing\",0],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Easting\",EAST],AXIS[\"Northing\",NORTH]]",
+      "source_shape": [
+        7872,
+        3049
+      ],
+      "window_top_left_px": [
+        806,
+        1597
+      ],
+      "window_size_px": 40,
+      "window_origin_projected_m": [
+        -147.67,
+        -501814.53
+      ],
+      "base_elevation_m": -3273.71,
+      "name": "ius-chasma-floor",
+      "label": "Light-Toned Deposits along Ius Chasma Floor, Mars",
+      "site": "Light-Toned Deposits along Ius Chasma Floor",
+      "kind": "real",
+      "body": "mars",
+      "surface": "regolith",
+      "source": "C:\\Users\\angel\\Downloads\\simgate (1)\\simgate\\assets\\nasa\\terrain_raw\\mars\\DTEED_053753_1715_053819_1715_A01.IMG",
+      "source_format": ".IMG",
+      "source_page": "https://www.uahirise.org/dtm/dtm.php?ID=ESP_053753_1715",
+      "credit": "NASA/JPL-Caltech/University of Arizona HiRISE DTM",
+      "accuracy_note": "",
+      "selection_note": "",
+      "crossability_screen": {
+        "typical_slope_limit_deg": 20.0,
+        "max_slope_limit_deg": 30.0,
+        "verified_simulation": false
+      },
+      "preview": "reports\\local-terrain-sites\\ius-chasma-floor.png",
+      "preview_file": "ius-chasma-floor.preview.png"
+    },
+    {
+      "size_m": 160.0,
+      "meters_per_pixel": 5.0,
+      "relief_m": 32.068,
+      "typical_slope_deg": 19.5,
+      "max_slope_deg": 26.1,
+      "mean_slope_deg": 11.7,
+      "warnings": [],
+      "crs": "PROJCS[\"EQUIRECTANGULAR MOON\",GEOGCS[\"GCS_MOON\",DATUM[\"D_MOON\",SPHEROID[\"MOON_localRadius\",1737400,0]],PRIMEM[\"Reference_Meridian\",0],UNIT[\"degree\",0.0174532925199433,AUTHORITY[\"EPSG\",\"9122\"]]],PROJECTION[\"Equirectangular\"],PARAMETER[\"standard_parallel_1\",26],PARAMETER[\"central_meridian\",180],PARAMETER[\"false_easting\",0],PARAMETER[\"false_northing\",0],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Easting\",EAST],AXIS[\"Northing\",NORTH]]",
+      "source_shape": [
+        10673,
+        2984
+      ],
+      "window_top_left_px": [
+        4158,
+        1679
+      ],
+      "window_size_px": 32,
+      "window_origin_projected_m": [
+        -4807660.0,
+        794025.0
+      ],
+      "base_elevation_m": -1946.68,
+      "pds_product_id": "NAC_DTM_APOLLO15_2_E260N0036",
+      "sample_type": "PC_REAL",
+      "sample_bits": 32,
+      "sample_unit_in_label": null,
+      "elevation_units": "metres",
+      "elevation_units_source": "LROC NAC DTM product convention",
+      "scaling_factor": 1.0,
+      "offset": 0.0,
+      "scale_offset_explicit": false,
+      "core_null_bits": "0xFF7FFFFB",
+      "source_nodata": -3.4028226550889045e+38,
+      "reference_radius_m": 1737400.0,
+      "product_readme_url": "https://pds.lroc.im-ldi.com/data/LRO-L-LROC-5-RDR-V1.0/LROLRC_2001/DATA/SDP/NAC_DTM/APOLLO15_2/NAC_DTM_APOLLO15_2_README.TXT",
+      "vertical_reference": "LOLA-tied lunar elevations",
+      "special_pixel_bits": {
+        "CORE_NULL": "0xFF7FFFFB",
+        "CORE_LOW_REPR_SATURATION": "0xFF7FFFFC",
+        "CORE_LOW_INSTR_SATURATION": "0xFF7FFFFD",
+        "CORE_HIGH_REPR_SATURATION": "0xFF7FFFFF",
+        "CORE_HIGH_INSTR_SATURATION": "0xFF7FFFFE"
+      },
+      "name": "apollo15-hadley-rille",
+      "label": "Apollo 15 / Hadley Rille edge, Moon",
+      "site": "Apollo 15 / Hadley Rille edge",
+      "kind": "real",
+      "body": "moon",
+      "surface": "regolith",
+      "source": "C:\\Users\\angel\\Downloads\\simgate (1)\\simgate\\assets\\nasa\\terrain_raw\\moon\\NAC_DTM_APOLLO15_2_E260N0036.IMG",
+      "source_format": ".IMG",
+      "source_page": "https://data.lroc.im-ldi.com/lroc/view_rdr/NAC_DTM_APOLLO15_2",
+      "credit": "NASA/GSFC/Arizona State University LROC NAC DTM",
+      "accuracy_note": "",
+      "selection_note": "Near requested rille area; 5 m cells do not resolve rover-scale hazards.",
+      "crossability_screen": {
+        "typical_slope_limit_deg": 20.0,
+        "max_slope_limit_deg": 30.0,
+        "verified_simulation": false
+      },
+      "selection_distance_from_anchor_m": 1630.57,
+      "selection_anchor_projected_m": [
+        -4808147.745538175,
+        792416.4644209675
+      ],
+      "visual_reference_source": "C:\\Users\\angel\\Downloads\\simgate (1)\\simgate\\assets\\nasa\\terrain_raw\\moon\\NAC_DTM_APOLLO15_2_E260N0036.TIF",
+      "visual_reference_role": "Browse/shaded reference only; never sampled as elevation.",
+      "preview": "reports\\local-terrain-sites\\apollo15-hadley-rille.png",
+      "preview_file": "apollo15-hadley-rille.preview.png"
+    },
+    {
+      "size_m": 160.0,
+      "meters_per_pixel": 5.0,
+      "relief_m": 7.054,
+      "typical_slope_deg": 6.8,
+      "max_slope_deg": 12.7,
+      "mean_slope_deg": 3.0,
+      "warnings": [],
+      "crs": "PROJCS[\"EQUIRECTANGULAR MOON\",GEOGCS[\"GCS_MOON\",DATUM[\"D_MOON\",SPHEROID[\"MOON_localRadius\",1737400,0]],PRIMEM[\"Reference_Meridian\",0],UNIT[\"degree\",0.0174532925199433,AUTHORITY[\"EPSG\",\"9122\"]]],PROJECTION[\"Equirectangular\"],PARAMETER[\"standard_parallel_1\",20],PARAMETER[\"central_meridian\",180],PARAMETER[\"false_easting\",0],PARAMETER[\"false_northing\",0],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Easting\",EAST],AXIS[\"Northing\",NORTH]]",
+      "source_shape": [
+        11600,
+        9985
+      ],
+      "window_top_left_px": [
+        6730,
+        4920
+      ],
+      "window_size_px": 32,
+      "window_origin_projected_m": [
+        -4252280.0,
+        612340.0
+      ],
+      "base_elevation_m": -2630.78,
+      "pds_product_id": "NAC_DTM_APOLLO17_E203N0308",
+      "sample_type": "PC_REAL",
+      "sample_bits": 32,
+      "sample_unit_in_label": null,
+      "elevation_units": "metres",
+      "elevation_units_source": "LROC NAC DTM product convention",
+      "scaling_factor": 1.0,
+      "offset": 0.0,
+      "scale_offset_explicit": false,
+      "core_null_bits": "0xFF7FFFFB",
+      "source_nodata": -3.4028226550889045e+38,
+      "reference_radius_m": 1737400.0,
+      "product_readme_url": "https://pds.lroc.im-ldi.com/data/LRO-L-LROC-5-RDR-V1.0/LROLRC_2001/DATA/SDP/NAC_DTM/APOLLO17/NAC_DTM_APOLLO17_README.TXT",
+      "vertical_reference": "LOLA-tied lunar elevations",
+      "special_pixel_bits": {
+        "CORE_NULL": "0xFF7FFFFB",
+        "CORE_LOW_REPR_SATURATION": "0xFF7FFFFC",
+        "CORE_LOW_INSTR_SATURATION": "0xFF7FFFFD",
+        "CORE_HIGH_REPR_SATURATION": "0xFF7FFFFF",
+        "CORE_HIGH_INSTR_SATURATION": "0xFF7FFFFE"
+      },
+      "name": "apollo17-taurus-littrow",
+      "label": "Apollo 17 / Taurus-Littrow valley floor, Moon",
+      "site": "Apollo 17 / Taurus-Littrow valley floor",
+      "kind": "real",
+      "body": "moon",
+      "surface": "regolith",
+      "source": "C:\\Users\\angel\\Downloads\\simgate (1)\\simgate\\assets\\nasa\\terrain_raw\\moon\\NAC_DTM_APOLLO17_E203N0308.IMG",
+      "source_format": ".IMG",
+      "source_page": "https://data.lroc.im-ldi.com/lroc/view_rdr/NAC_DTM_APOLLO17",
+      "credit": "NASA/GSFC/Arizona State University LROC NAC DTM",
+      "accuracy_note": "",
+      "selection_note": "Near requested landing area; 5 m cells do not resolve rover-scale hazards.",
+      "crossability_screen": {
+        "typical_slope_limit_deg": 20.0,
+        "max_slope_limit_deg": 30.0,
+        "verified_simulation": false
+      },
+      "selection_distance_from_anchor_m": 9.17,
+      "selection_anchor_projected_m": [
+        -4252205.559639746,
+        612252.7037439173
+      ],
+      "visual_reference_source": "C:\\Users\\angel\\Downloads\\simgate (1)\\simgate\\assets\\nasa\\terrain_raw\\moon\\NAC_DTM_APOLLO17_E203N0308.TIF",
+      "visual_reference_role": "Browse/shaded reference only; never sampled as elevation.",
+      "preview": "reports\\local-terrain-sites\\apollo17-taurus-littrow.png",
+      "preview_file": "apollo17-taurus-littrow.preview.png"
+    },
+    {
+      "size_m": 80.0,
+      "meters_per_pixel": 1.0,
+      "relief_m": 18.107,
+      "typical_slope_deg": 15.6,
+      "max_slope_deg": 25.0,
+      "mean_slope_deg": 9.6,
+      "warnings": [],
+      "crs": "EPSG:26912",
+      "source_shape": [
+        10000,
+        10000
+      ],
+      "window_top_left_px": [
+        3529,
+        7231
+      ],
+      "window_size_px": 80,
+      "window_origin_projected_m": [
+        497231.0,
+        3876471.0
+      ],
+      "base_elevation_m": 1708.24,
+      "name": "meteor-crater-rim",
+      "label": "Meteor Crater rim, Earth",
+      "site": "Meteor Crater rim",
+      "kind": "real",
+      "body": "earth",
+      "surface": "rock",
+      "source": "C:\\Users\\angel\\Downloads\\simgate (1)\\simgate\\assets\\nasa\\terrain_raw\\earth\\USGS_1M_12_x49y388_AZ_NorthEast_D23.tif",
+      "source_format": ".TIF",
+      "source_page": null,
+      "credit": "USGS 3DEP 1 m DEM, AZ NorthEast D23",
+      "accuracy_note": "",
+      "selection_note": "Slope-screened rim patch; not a certified rover route.",
+      "crossability_screen": {
+        "typical_slope_limit_deg": 20.0,
+        "max_slope_limit_deg": 30.0,
+        "verified_simulation": false
+      },
+      "selection_distance_from_anchor_m": 822.38,
+      "selection_anchor_projected_m": [
+        497993.1232447015,
+        3876037.4895979287
+      ],
+      "preview": "reports\\local-terrain-sites\\meteor-crater-rim.png",
+      "preview_file": "meteor-crater-rim.preview.png"
+    },
+    {
+      "size_m": 80.0,
+      "meters_per_pixel": 1.0,
+      "relief_m": 8.278,
+      "typical_slope_deg": 8.5,
+      "max_slope_deg": 18.1,
+      "mean_slope_deg": 5.0,
+      "warnings": [],
+      "crs": "EPSG:26912",
+      "source_shape": [
+        10000,
+        10000
+      ],
+      "window_top_left_px": [
+        3979,
+        8041
+      ],
+      "window_size_px": 80,
+      "window_origin_projected_m": [
+        498041.0,
+        3876021.0
+      ],
+      "base_elevation_m": 1563.53,
+      "name": "meteor-crater-floor",
+      "label": "Meteor Crater floor, Earth",
+      "site": "Meteor Crater floor",
+      "kind": "real",
+      "body": "earth",
+      "surface": "rock",
+      "source": "C:\\Users\\angel\\Downloads\\simgate (1)\\simgate\\assets\\nasa\\terrain_raw\\earth\\USGS_1M_12_x49y388_AZ_NorthEast_D23.tif",
+      "source_format": ".TIF",
+      "source_page": null,
+      "credit": "USGS 3DEP 1 m DEM, AZ NorthEast D23",
+      "accuracy_note": "",
+      "selection_note": "Slope-screened floor patch; not a certified rover route.",
+      "crossability_screen": {
+        "typical_slope_limit_deg": 20.0,
+        "max_slope_limit_deg": 30.0,
+        "verified_simulation": false
+      },
+      "selection_distance_from_anchor_m": 104.47,
+      "selection_anchor_projected_m": [
+        497993.1232447015,
+        3876037.4895979287
+      ],
+      "preview": "reports\\local-terrain-sites\\meteor-crater-floor.png",
+      "preview_file": "meteor-crater-floor.preview.png"
+    }
+  ],
+  "blocked": [],
+  "notes": [
+    "Meteor Crater centre in EPSG:26912: E 497993.123, N 3876037.490; inside tile: True."
+  ]
+}

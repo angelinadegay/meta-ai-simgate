@@ -1,0 +1,75 @@
+{
+  "size_m": 160.0,
+  "meters_per_pixel": 5.0,
+  "relief_m": 7.054,
+  "typical_slope_deg": 6.8,
+  "max_slope_deg": 12.7,
+  "mean_slope_deg": 3.0,
+  "warnings": [],
+  "crs": "PROJCS[\"EQUIRECTANGULAR MOON\",GEOGCS[\"GCS_MOON\",DATUM[\"D_MOON\",SPHEROID[\"MOON_localRadius\",1737400,0]],PRIMEM[\"Reference_Meridian\",0],UNIT[\"degree\",0.0174532925199433,AUTHORITY[\"EPSG\",\"9122\"]]],PROJECTION[\"Equirectangular\"],PARAMETER[\"standard_parallel_1\",20],PARAMETER[\"central_meridian\",180],PARAMETER[\"false_easting\",0],PARAMETER[\"false_northing\",0],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Easting\",EAST],AXIS[\"Northing\",NORTH]]",
+  "source_shape": [
+    11600,
+    9985
+  ],
+  "window_top_left_px": [
+    6730,
+    4920
+  ],
+  "window_size_px": 32,
+  "window_origin_projected_m": [
+    -4252280.0,
+    612340.0
+  ],
+  "base_elevation_m": -2630.78,
+  "pds_product_id": "NAC_DTM_APOLLO17_E203N0308",
+  "sample_type": "PC_REAL",
+  "sample_bits": 32,
+  "sample_unit_in_label": null,
+  "elevation_units": "metres",
+  "elevation_units_source": "LROC NAC DTM product convention",
+  "scaling_factor": 1.0,
+  "offset": 0.0,
+  "scale_offset_explicit": false,
+  "core_null_bits": "0xFF7FFFFB",
+  "source_nodata": -3.4028226550889045e+38,
+  "reference_radius_m": 1737400.0,
+  "product_readme_url": "https://pds.lroc.im-ldi.com/data/LRO-L-LROC-5-RDR-V1.0/LROLRC_2001/DATA/SDP/NAC_DTM/APOLLO17/NAC_DTM_APOLLO17_README.TXT",
+  "vertical_reference": "LOLA-tied lunar elevations",
+  "special_pixel_bits": {
+    "CORE_NULL": "0xFF7FFFFB",
+    "CORE_LOW_REPR_SATURATION": "0xFF7FFFFC",
+    "CORE_LOW_INSTR_SATURATION": "0xFF7FFFFD",
+    "CORE_HIGH_REPR_SATURATION": "0xFF7FFFFF",
+    "CORE_HIGH_INSTR_SATURATION": "0xFF7FFFFE"
+  },
+  "name": "apollo17-taurus-littrow",
+  "label": "Apollo 17 / Taurus-Littrow valley floor, Moon",
+  "site": "Apollo 17 / Taurus-Littrow valley floor",
+  "kind": "real",
+  "body": "moon",
+  "surface": "regolith",
+  "source": "C:\\Users\\angel\\Downloads\\simgate (1)\\simgate\\assets\\nasa\\terrain_raw\\moon\\NAC_DTM_APOLLO17_E203N0308.IMG",
+  "source_format": ".IMG",
+  "source_page": "https://data.lroc.im-ldi.com/lroc/view_rdr/NAC_DTM_APOLLO17",
+  "credit": "NASA/GSFC/Arizona State University LROC NAC DTM",
+  "accuracy_note": "",
+  "selection_note": "Near requested landing area; 5 m cells do not resolve rover-scale hazards.",
+  "crossability_screen": {
+    "typical_slope_limit_deg": 20.0,
+    "max_slope_limit_deg": 30.0,
+    "verified_simulation": false
+  },
+  "selection_distance_from_anchor_m": 9.17,
+  "selection_anchor_projected_m": [
+    -4252205.559639746,
+    612252.7037439173
+  ],
+  "visual_reference_source": "C:\\Users\\angel\\Downloads\\simgate (1)\\simgate\\assets\\nasa\\terrain_raw\\moon\\NAC_DTM_APOLLO17_E203N0308.TIF",
+  "visual_reference_role": "Browse/shaded reference only; never sampled as elevation.",
+  "preview": "reports\\local-terrain-sites\\apollo17-taurus-littrow.png",
+  "preview_file": "apollo17-taurus-littrow.preview.png",
+  "grid": [
+    32,
+    32
+  ]
+}
