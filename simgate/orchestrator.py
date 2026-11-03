@@ -34,6 +34,7 @@ class Session:
         self.last_diagnosis: dict | None = None
         self.last_redesign: dict | None = None
         self.last_finder_report: dict | None = None
+        self.last_map_report: dict | None = None
         self._finder_source_spec: SceneSpec | None = None
         self._view_shows_other_scene = False   # set after "Show runs" loads the winning design's scene
         self.pending_real_terrain_change: dict[str, str] | None = None
@@ -173,7 +174,7 @@ class Session:
         await self.agent("Director", "working", "Planning the world operations…")
         director = Director(self.emit)
         state = SessionState(simulator=self.sim, build=self.build, checks=list(self.checks), summary=self.last_summary,
-                             diagnosis=self.last_diagnosis, redesign=self.last_redesign)
+                             diagnosis=self.last_diagnosis, redesign=self.last_redesign, finder=self.last_finder_report)
         world, message = await director.execute_plan(text, self.spec if editing else None, state, plan)
         follow = director.last_plan.then if director.last_plan is not None and plan is None else None
         if not editing and world.build is None:   # an answer with no scene yet: don't keep an empty one
@@ -202,7 +203,10 @@ class Session:
             elif world.report["type"] == "envelope":
                 self.last_finder_report = world.report
                 self._finder_source_spec = spec.model_copy(deep=True)
-            await self.emit({"type": world.report["type"], "report": world.report})
+            elif world.report["type"] == "traversability":
+                self.last_map_report = world.report
+            if world.report["type"] != "traversability":
+                await self.emit({"type": world.report["type"], "report": world.report})
         else:
             await self.emit({"type": "spec", "spec": spec.model_dump()})
         if world.build is not None and not unchanged:
@@ -213,6 +217,9 @@ class Session:
                 "language": world.build.language,
             })
             await self.emit({"type": "checks", "checks": [check.__dict__ for check in world.checks]})
+        if world.report is not None and world.report["type"] == "traversability":
+            await self.emit({"type": "spec", "spec": spec.model_dump()})
+            await self.emit({"type": "traversability", "report": world.report})
         if world.results is not None:
             await self.emit({"type": "metrics", "metrics": world.results})
         if not unchanged:   # an answer or analysis leaves a pending "Run it?" as it was
@@ -415,12 +422,13 @@ class Session:
                             changes={"robot": winner["changes"], "robot_id": target})
                 await self.make("apply the selected robot design", editing=True, plan=plan)
                 return
-            if workflow not in {"diagnose", "redesign", "find_failures"}:
+            if workflow not in {"diagnose", "redesign", "find_failures", "traversability"}:
                 raise ValueError(f"Unsupported result action: {workflow}.")
             plan = Plan(
                 workflow=workflow,
                 summary={"diagnose": "Why the selected robot failed", "redesign": "Make the selected robot pass",
-                         "find_failures": "Find the selected robot's limits"}[workflow],
+                         "find_failures": "Find the selected robot's limits",
+                         "traversability": "Map where it can go here"}[workflow],
                 robot_id=target,
                 constraints="Make the selected robot pass" if workflow == "redesign" else None,
             )
@@ -484,6 +492,28 @@ class Session:
         except Exception as error:  # noqa: BLE001
             await self.emit({"type": "error", "message": f"Could not replay the weakest spot: {error}"})
 
+    async def replay_map_run(self, run_id: str) -> None:
+        """Replay the exact map evidence recipe without replacing the session's source scene."""
+        try:
+            from .batch import _validate_variation
+
+            recipe = (self.last_map_report or {}).get("replays", {}).get(run_id)
+            if recipe is None:
+                raise ValueError("That map run is no longer available in this scene.")
+            with cost.track() as spent:
+                source = SceneSpec.model_validate(recipe["scene_spec"])
+                _, spec, _ = _validate_variation(source, recipe["variation"])
+                sim = agents.route(spec)
+                build = await asyncio.to_thread(sim.build, spec)
+                await self.emit({"type": "scene", "scene": build.scene, "code": build.code, "language": build.language})
+                self._view_shows_other_scene = True
+                await self.emit({"type": "traversability", "report": self.last_map_report})
+                await self._stream(spec, sim, build)
+                await self.emit({"type": "explanation", "message": f"Replayed measured map run {run_id} with its recorded seed."})
+                await self.emit({"type": "cost", "cost": spent.snapshot()})
+        except Exception as error:
+            await self.emit({"type": "error", "message": f"Could not replay map run: {error}"})
+
     async def show_design(self, robot_id: str | None = None) -> None:
         """Replay the last redesign's winning design with streamed frames, without applying it."""
         try:
@@ -544,6 +574,7 @@ class Session:
     def _forget_runs(self) -> None:
         self.last_summary = self.last_diagnosis = self.last_redesign = None
         self.last_finder_report = None
+        self.last_map_report = None
         self._finder_source_spec = None
 
     def _apply_library_selection(self, spec: SceneSpec) -> None:
@@ -577,8 +608,8 @@ class Session:
         spec.environment.gravity = world.gravity_m_s2
         spec.environment.surface = world.surface
         spec.environment.friction = world.friction
-        if world.terrain_kind == "real":
-            spec.terrain = Terrain(kind="real", preset=world.terrain_preset)
+        if world.terrain_kind in {"real", "indoor"}:
+            spec.terrain = Terrain(kind=world.terrain_kind, preset=world.terrain_preset)
         spec.title = f"{robot_card.name} on {spec.terrain.kind if spec.terrain else 'generated'} terrain, {world.body.title()}"
         spec.fill_defaults()
 
@@ -607,9 +638,9 @@ class Session:
                 await self.build_and_check(spec)
                 return
             kind = world.terrain_kind
-            if kind != "real":
+            if kind not in {"real", "indoor"}:
                 kind = terrain_kind
-            terrain = Terrain(kind=kind, preset=world.terrain_preset if kind == "real" else None)
+            terrain = Terrain(kind=kind, preset=world.terrain_preset if kind in {"real", "indoor"} else None)
             goal = "highest" if terrain.kind in {"hills", "rocky", "craters"} else "east"
             spec = SceneSpec(
                 domain="robot_terrain",
@@ -618,7 +649,8 @@ class Session:
                                         friction=world.friction),
                 terrain=terrain,
                 robot=Robot(kind="rover"),
-                mission=Mission(goal_place=goal),
+                mission=Mission(start_place="kitchen", goal_place="living_room", goal_radius_m=0.5)
+                    if kind == "indoor" else Mission(goal_place=goal),
                 obstacles=[Obstacle.model_validate(item) for item in (obstacles or [])],
             )
             self.library_selection = (robot.id, policy.id, world.id)

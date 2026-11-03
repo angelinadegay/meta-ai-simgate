@@ -73,6 +73,12 @@ class Director:
                 if plan.workflow == "edit":
                     _check_edit(plan, text, world_state)
                 self.guard_notes = _apply_text_guards(plan, text)
+                if traversability_requested(text):
+                    plan.workflow = "traversability"
+                    plan.then = None
+                    _guard_traversability_stops(plan, text)
+                    if re.search(r"\bsummit\b", text, re.I):
+                        plan.goal = GoalPlan(place="highest")
                 self.guard_notes += [note for robot in [*plan.robots, *(plan.changes.robots or [])] for note in robot._notes]
                 guarded = _analysis_plan(text, world_state, state, only_after_failure=True)
                 if guarded is not None and guarded.workflow != plan.workflow:
@@ -112,6 +118,8 @@ class Director:
                     or _rule_plan_with_title(text, world_state))
         self.guard_notes = []
         self.guard_notes.extend(_apply_text_guards(plan, text))
+        if traversability_requested(text):
+            plan = _traversability_plan(text, world_state)
         _guard_follow_up(plan, follow, self.guard_notes)
         return _guard_duration(plan, text, world_state, self.guard_notes)
 
@@ -291,6 +299,11 @@ def _plan_system() -> str:
 Return only one JSON object matching the Plan schema below. Do not return tools or a sequence of actions.
 
 Workflows:
+- traversability: measure where a robot can go, verify with spot runs, plan and drive a safe route.
+  Cues: "where can it go", "can it reach", "is it safe to walk", "safe route", "plan a route",
+  "map where it can drive", "show where it can go", or "walk safely". Works with a new or existing scene.
+  Optional robots, start (same shape as goal), goal, world and robot_id. Summit means goal.place "highest".
+  For "same question for the G1" keep the current world, start and goal but replace the robot.
 - build: create a robot_terrain or structure scene and ask before running unless run_now is true.
 - race: create multiple robots sharing a course; ask before running unless run_now is true.
 - compare: build one scene and compare its variants.
@@ -322,6 +335,9 @@ Guidance:
 - summary is a short name for the scene, used as its title: "Three rovers race on Mars hills", not an action
   such as "Create a rover scene on Mars hills".
 - Use named places rather than guessing coordinates. A shared goal can be set with goal.
+- For an apartment or inside a house use world {{"body":"earth","terrain_kind":"indoor","preset":"apartment"}}.
+    Indoor room places are kitchen, living_room, hallway and bedroom. Use robot start_place and goal.place for room trips.
+    The apartment already contains its walls, rug, floor zones, thresholds, steps and ramp; do not duplicate them as course obstacles.
 - Never invent physical values. Select known body/surface/terrain options and let code apply defaults.
 - run_now is true only when the user explicitly asks to run, race, start, or test now. Otherwise ask before running.
 - A question about capabilities or facts with no requested world change uses workflow answer.
@@ -332,7 +348,7 @@ Guidance:
     (or installed real) terrain for the new body, or to keep the original real terrain.
 - Obstacles for a course use placement "path", listed in the order the user gave them.
 - Only use a preset when the user asks for a real place (a named site such as Gale Crater, "real terrain", NASA
-  or HiRISE). For "Mars hills" or "a crater" use terrain_kind and body, with no preset.
+    or HiRISE), or a registered indoor apartment. For "Mars hills" or "a crater" use terrain_kind and body, with no preset.
 - A request that builds a new scene and also asks one analysis ("... — where does it break?", "... and stress test
   it", "... then why did it fail?") is a build (or race) with then set to that analysis: find_failures,
   stress_test or diagnose. Code runs it once the scene is built (diagnose runs the scene first).
@@ -433,6 +449,50 @@ def _plan_world_state(world_state: World | SceneSpec | dict[str, Any] | None) ->
     return json.dumps(world_state, separators=(",", ":"), default=str)[:12000]
 
 
+def traversability_requested(text: str) -> bool:
+    return bool(re.search(
+        r"where (?:on .{1,40} )?can .{0,30}(?:go|drive|walk)|can it reach|is it safe to walk|"
+        r"safe route|plan a route|map where|show where|walk safely|same question for|"
+        r"\bcan .{0,30}(?:go|get) from\b",
+        text, re.I,
+    ))
+
+
+def _traversability_plan(text: str, world_state) -> Plan:
+    from .indoor import requested_places
+
+    current = _current_spec(world_state)
+    planned = agents._mock_plan(text, current)
+    source = text.lower()
+    robots = _rule_robot_plans(text, planned.robot)
+    start, goal = requested_places(text)
+    if goal is None:
+        reached_room = re.search(r"\breach (?:the )?(kitchen|living[ _]room|hallway|bedroom)\b", source)
+        if reached_room:
+            goal = reached_room.group(1).replace(" ", "_")
+    goal_plan = GoalPlan(place=goal) if goal else (
+        GoalPlan(place="highest") if re.search(r"\bsummit\b", source) else None)
+    world = {}
+    if current is None or any(word in source for word in ("gusev", "apartment")):
+        world = {"body": planned.environment.body, "terrain_kind": planned.terrain.kind,
+                 "preset": planned.terrain.preset}
+    result = Plan(workflow="traversability", summary="Where can it go?", world=world,
+                robots=robots if current is None or re.search(r"\bg1\b|\brover\b", source) else [],
+                start=GoalPlan(place=start) if start else None, goal=goal_plan)
+    _guard_traversability_stops(result, text)
+    return result
+
+
+def _guard_traversability_stops(plan: Plan, text: str) -> None:
+    from .indoor import requested_stops
+
+    stops = requested_stops(text)
+    if len(stops) > 1:
+        if len(stops) > 5:
+            raise ValueError("A traversability request supports at most five destinations.")
+        plan.via, plan.goal = stops[:-1], GoalPlan(place=stops[-1])
+
+
 def _rule_plan(text: str, world_state: World | SceneSpec | dict[str, Any] | None) -> Plan:
     current = world_state.spec if isinstance(world_state, World) else (
         world_state if isinstance(world_state, SceneSpec) else None
@@ -441,7 +501,7 @@ def _rule_plan(text: str, world_state: World | SceneSpec | dict[str, Any] | None
     is_stress = bool(re.search(r"\bstress[- ]test\b|\bunder different conditions\b", source))
     is_compare = bool(re.search(r"\bcompare\b|\bversus\b|\bvs\.?\b", source))
     is_custom = bool(re.search(r"\bcustom\b", source))
-    has_world_request = bool(re.search(
+    has_world_request = traversability_requested(text) or bool(re.search(
         r"\b(build|create|make|put|race|compare|stress|run|simulate|test|spawn|add|remove)\b",
         source,
     ))
@@ -755,9 +815,21 @@ def _apply_text_guards(plan: Plan, text: str) -> list[str]:
     if plan.workflow in ("answer", "stress_test"):
         return []
     source = text.lower()
+    from .indoor import requested, requested_places
+
     notes: list[str] = []
     if plan.workflow != "edit" and plan.domain == "robot_terrain":
         world = plan.world.model_dump(exclude_none=True)
+        if requested(source):
+            world.update(body="earth", terrain_kind="indoor", preset="apartment", roughness=0)
+            world.pop("slope_deg", None)
+            start, goal = requested_places(source)
+            if plan.robots:
+                plan.robots[0].start_place = start or plan.robots[0].start_place or "kitchen"
+            if goal:
+                plan.goal = GoalPlan(place=goal)
+            elif plan.goal is None:
+                plan.goal = GoalPlan(place="living_room")
         bodies = {body for word, body in _WORLD_WORDS.items() if re.search(rf"\b{word}\b", source)}
         if len(bodies) == 1 and world.get("body") != (body := bodies.pop()):
             world["body"] = body
@@ -768,7 +840,7 @@ def _apply_text_guards(plan: Plan, text: str) -> list[str]:
             world.update(preset=presets_named[0], terrain_kind="real", body=meta.get("body", world.get("body")))
             world.pop("slope_deg", None)
             notes.append(f"You named {meta['label']}, so I used that real terrain.")
-        elif world.get("preset") and not presets_named and not _REAL_TERRAIN_WORDS.search(source):
+        elif world.get("preset") and world.get("terrain_kind") != "indoor" and not presets_named and not _REAL_TERRAIN_WORDS.search(source):
             notes.append(f"You didn't ask for a real place, so I used generated terrain instead of {world['preset']}.")
             del world["preset"]
             if world.get("terrain_kind") == "real":

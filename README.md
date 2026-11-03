@@ -60,6 +60,161 @@ Screenshot-only mode uses those frames and refuses to fabricate a bridge pose or
 Browser capture uses the optional dependencies in `requirements-dev.txt` and locally installed Edge.
 The optional NASA InSight GLB remains local and uncommitted; it is credited only when loaded successfully.
 
+## Where can it go?
+
+Ask **"Where can it go?"**, **"Can it reach the bedroom?"**, **"Is it safe to walk?"**,
+**"Plan a safe route"**, or **"Map where it can drive"**. The Director selects the
+`traversability` workflow with a robot and optional start/goal. The Finder card also offers
+**Map where it can go here**. With no goal, the workflow measures and verifies a map without
+inventing a destination.
+
+The map uses 0.5 m cells outdoors and 0.25 m cells indoors. Features are measured over the robot's
+card footprint: slope, roughness, step, wall/obstacle clearance and surface friction. Limits
+belong to this robot under this world's gravity and surface conditions, not every world.
+Missing limits trigger a disclosed quick Finder scan of at most 16 simulations (indoors:
+step and friction). Successful baseline runs are retained: flat ground demonstrates zero slope,
+roughness and step, plus the world's own friction; a passed step baseline also retains its height.
+For each feature, green uses the strongest reliable pass or passed baseline (the lowest handled
+coefficient for friction, whose direction is reversed). Values beyond all demonstrated passes remain
+amber until measured; an unconfirmed search success alone does not establish a reliable boundary.
+
+- **Green:** all features within reliable measured limits, or a local successful spot correction.
+- **Amber:** an unreliable band or a value beyond every demonstrated reliable/baseline pass.
+- **Red:** a measured failure limit exceeded, insufficient width (robot width + 10 cm), or a failed spot correction.
+- **Grey:** walls, structures, blocked cells or off-world.
+
+Use **Map overlay** to toggle the soft floor/ground colours. Analysis shows the limits, percentages
+(excluding blocked cells), cost and verification evidence. White outlines mark spot-corrected cells;
+the report retains their run IDs. Click a check/cross marker or a replay chip to rerun its recorded
+scene, variation and seed. The mint ribbon shows the safe route or best partial approach; the dashed
+line is straight-to-goal. A partial route is shown but is not automatically driven as a full solution.
+
+Up to six short spots run in parallel: two per available colour, crossing about 3 m outdoors
+or 1.5 m indoors, including a doorway/step indoors where possible. Green should pass, red should
+fail; amber results are reported but unjudged. Disagreements correct the swept cells and are
+named in the card. Fewer than four green/red agreements flags the whole map **unreliable**,
+including when too few judged spots are available. Paired route runs use the same seed and
+normal speed; a successful route does not certify the surrounding map.
+
+The apartment's 6° ramp now joins the raised bedroom through a 1.6 m opening in its east wall:
+the ramp is 1.4 m wide, rises 0.512 m, and has a 1.2 m hall approach. The three 0.17 m steps remain
+in place and red for the rover; they are no longer the only access. Routed rovers brake before
+waypoint turns and align before moving forward. Clearance includes the footprint's turning sweep
+beside red terrain; actual heading progress during rotation is not mistaken for being stuck.
+These changes do not change the legacy straight-to-goal controller.
+
+An ordered request such as **"In the apartment, can the rover go from the kitchen to the living room,
+then to the bedroom?"** retains both stops and compares straight versus safe **per leg**.
+The map is measured and spot-checked once; legs use independent simulations starting at each stop,
+not a continuous mission or a claim that the second leg physically followed a successful first one.
+
+> Map from measured limits (step ±1 cm, slope ±1.9°, …); real places combine features, so the map is checked with spot runs below.
+
+### Live Meta-model examples
+
+The four demo prompts were rerun with Mock mode **disabled**, planner `muse-spark-1.3`,
+and configured builder `muse-wonder-1.0`. Builder mode was `template`, so there were **no Builder
+model calls**. The G1 apartment question reused the rover apartment session and its kitchen/bedroom
+mission. Reports, replay recipes and cost events are saved under
+[reports/traversability-live](reports/traversability-live/summary.json).
+
+| World / robot | Green / amber / red | Spot agreement; corrections | Route result | Runs / wall time / model calls |
+| --- | --- | --- | --- | --- |
+| Gusev / G1 | 0.0% / 65.1% / 34.8% | 1 of 4; 1 red prediction corrected to measured green | Straight reached in 143.5 s; planned route reached in 156.3 s, 2% longer actual travel | 22 / 64.5 s / 1 |
+| Apartment / rover | 59.4% / 31.7% / 8.9% | 3 of 6; 1 local red step/ledge prediction corrected to measured green | Straight stuck; safe route reached via ramp in 36.0 s | 16 / 16.0 s / 1 |
+| Apartment / G1 | 62.4% / 29.0% / 8.6% | 2 of 6; 2 predicted-green spots corrected red (stuck, fell) | Straight fell at 6.73 s; safe route stuck | 20 / 28.2 s / 1 |
+| Apartment / rover, via living room | 59.4% / 31.7% / 8.9% | 3 of 6; 1 local red step/ledge prediction corrected to measured green | Kitchen → living room: straight 7.2 s, safe 7.5 s; living room → bedroom: straight stuck, safe 25.7 s via ramp | 18 / 14.8 s / 1 |
+
+**All four maps are flagged unreliable.** The apartment maps now have two spots per colour;
+Gusev still has four spots (two amber and two red). Two amber spots are included in each denominator
+but not judged. Flat-baseline passes do not establish nonzero reliable slope/roughness limits,
+so nonflat Gusev remains mostly amber rather than being promoted for the demo.
+The Gusev correction is a tiny area that rounds to 0.0% green. It changes local evidence, not
+the whole-map reliability verdict. The outdoor grid covers the measured 80 m Gusev patch
+(160 x 160 cells), not the entire real region. Apartment maps are 56 x 40 cells.
+The rover's local correction is on a ramp-side ledge, not the bedroom stairs; the stairs stay red.
+The safe kitchen-to-bedroom route travels 665% farther than the **failed, truncated** straight run;
+the safe living-room-to-bedroom leg travels 181% farther than its failed straight run.
+Kitchen-to-living-room actual travel differs by about 0%. These are travelled-distance comparisons,
+not detour percentages against a completed direct trip.
+
+The D1 saved requests total **76 simulations, 123.5 s wall time and 4 planning model calls**.
+The preceding T5 work used 10 planning model calls, for **14 across T5 and D1**.
+Browser screenshot checks replay saved reports and make no model calls. The optional side-by-side
+robot comparison is not implemented.
+
+![Gusev G1 map, corrected cells, straight and planned routes](tests/screenshots/traversability/mars-g1-map-routes.png)
+![Apartment rover map and route via the connected ramp](tests/screenshots/traversability/apartment-rover-map-routes.png)
+![Apartment G1 map, corrected cells and attempted route](tests/screenshots/traversability/apartment-g1-map-routes.png)
+![Apartment rover map with both requested legs](tests/screenshots/traversability/apartment-rover-two-leg-map-routes.png)
+
+Reproduce the live evidence using configured Meta models, then capture/check the UI with local Edge
+and the optional development dependencies:
+
+```powershell
+.\.venv\Scripts\python.exe scripts\run_traversability_examples.py
+.\.venv\Scripts\python.exe -m pytest -q tests\test_traversability_browser.py
+```
+
+### Measured safe routes (Python API)
+
+`simgate.routing.plan_route(scene, corrected_map)` plans from the scene's start to its goal.
+Supply the corrected map returned by `simgate.traversability.verify`; explicit `start_xy`,
+`goal_xy`, and a scene `RobotEntry` can also be supplied. A* uses green cost 1, amber cost 5,
+small green slope/clearance penalties, and excludes red and grey cells. Wall clearance
+uses the robot footprint width. Smoothing cannot cross blocked cells or increase route risk.
+
+The result includes `found`, `path_xy`, `length_m`, and `reason`. When no route exists,
+`partial_path_xy` shows the closest reachable approach; the explanation names the blocking
+feature and measured limit when available. It does not silently drive a partial route.
+
+`simgate.routing.compare_routes(scene, corrected_map)` runs straight-to-goal and waypoint
+missions together using the parallel batch runner, with the same seed, world, robot settings,
+start, goal, and time budget. It returns both run records, the route, and a measured comparison
+in `text`; path percentages compare actual simulated travel, even when the straight run fails.
+Waypoint switching uses 1 m outdoors or 0.4 m indoors and checks the next segment against
+the route's clearance grid before cutting a corner. An unreliable source map remains labelled
+unreliable; route planning is not a safety certification.
+
+## Generation-zero robot designs (Python API)
+
+`simgate.evolve.propose_generation0(challenge, n=4)` accepts a robot-terrain `SceneSpec`
+and returns JSON-ready proposals, **without running, racing or ranking them**. The scene's
+title and mission describe the challenge; its world is unchanged. Choose 2-8 designs so each
+generation can include at least one procedural rover and one procedural walker.
+G1 and all library robot bodies are excluded from the design space.
+
+The Designer uses `BUILDER_MODEL` (Muse Wonder when configured), independently of
+`BUILDER_MODE`. It receives code-built `FACTS`: world gravity, surface/friction, relief and
+P95 slope sampled from the scene terrain, and `rock_sizes_m` from terrain metadata when present.
+Existing cards without rock measurements explicitly report them as unknown; they are not
+inferred from orbital elevations. Reasons are design hypotheses, not evidence that a robot works.
+
+`DESIGN_SPACE` is enforced in code: rover wheels 4/6, radius 0.10-0.40 m, width 0.05-0.20 m,
+wheel speed 3-12 rad/s; walker legs 4/6, length 0.12-0.40 m, gait 1-3 Hz, stride 8-25 degrees.
+Both kinds allow chassis length 0.4-1.2 m, width 0.3-0.9 m and mass 5-40 kg.
+Continuous values are clamped with recorded adjustments; invalid discrete choices, library
+parameters, duplicates after clamping/defaults, and generations missing either kind are rejected.
+
+Each proposal has `id` (`G0-A`, etc.), `color`, short `name`, one-line `reason`, a validated
+`robot` dictionary, `adjustments`, `source`, `fallback_reason`, and `tested=False`.
+Invalid JSON gets one corrective retry, then fixed diverse rules. Mock mode or endpoint failure
+also uses those rules; fallback provenance is explicit in the returned designs and application log.
+Invalid challenges or missing terrain data remain errors rather than fabricated place facts.
+
+```python
+from simgate.evolve import propose_generation0
+from simgate.spec import Environment, Mission, SceneSpec, Terrain
+
+challenge = SceneSpec(
+    domain="robot_terrain", title="Reach the Gusev summit",
+    environment=Environment(body="mars", surface="regolith"),
+    terrain=Terrain(kind="real", preset="gusev-columbia-hills", roughness=0),
+    mission=Mission(start_place="lowest", goal_place="highest"),
+)
+designs = propose_generation0(challenge)
+```
+
 ## Project status
 
 This is a **prototype**. It was built before the hackathon building period started, to test the idea and
@@ -372,6 +527,31 @@ mislabelled as photographic orthoimagery. Raw IMG/TIFF files under `assets/nasa/
   source data before the robot runs.
 - `scripts/make_test_dtm.py` makes a **fake** file in the same format for offline testing. It's always
   labelled as synthetic.
+
+### Indoor apartment
+
+Choose **Apartment** on the home page, or ask "A rover in an apartment from the kitchen to the living room"
+or "A rover inside a house from the kitchen to the bedroom". The code-defined JSON-compatible layout in
+`simgate/indoor.py` is a 14 x 10 m single floor under Earth gravity. Named mission places are `kitchen`,
+`living_room`, `hallway` and `bedroom`; human prompts can use "living room" with a space.
+
+Walls are static boxes, 2.6 m high and 0.12 m thick. Four doorways are 0.84-0.90 m wide and one is 0.65 m;
+thresholds are 15-20 mm. The bedroom platform rises 0.51 m via three 0.17 m steps. A separate 6-degree ramp
+leads to a small landing. Floor zones use their own nominal contact friction: tile 0.6, wood 0.5, rug 0.8
+and a wet patch by the sink 0.15. The rug is 8 mm thick; other zone overlays are 2 mm. The supporting floor,
+walls, steps, ramp and thresholds are collision geometry; a non-colliding height grid supplies placement probes
+only and cannot override the zones' friction. Layout sizes are not expanded by outdoor course-sizing rules.
+
+The browser shows a no-ceiling cutaway, floor materials, a sink/counter and soft indoor lighting, framed to
+the whole floor plan on load. The outdoor sky and horizon are disabled indoors. Material upgrades are visual
+only. This is a fixed engineering layout with nominal friction, not a scanned or certified building model.
+Room names resolve to fixed metre coordinates; navigation still steers to the goal, not a general route planner.
+A small rover traverses kitchen to living room, while walls and the 0.17 m stairs can block it: choosing a
+room does not guarantee a traversable route for every robot.
+
+Tests: `python -m pytest tests/test_indoor.py tests/test_indoor_browser.py -q`. They cover true dimensions,
+Earth gravity, wall blocking, kitchen-to-living-room travel, actual tile/rug wheel-contact friction, named rooms,
+rules/model guards and library selection. Browser captures are in `tests/screenshots/indoor/`.
 
 ### 5. Start and goal missions
 

@@ -13,8 +13,8 @@ from .spec import Mission, Obstacle, Robot, RobotEntry, SceneSpec, StructureGoal
 from .terrain_data import load_preset, resizable
 
 
-Place = Literal["start_area", "center", "lowest", "highest", "north", "south", "east", "west"]
-TerrainKind = Literal["flat", "hills", "rocky", "slope", "craters", "real"]
+Place = Literal["start_area", "center", "lowest", "highest", "north", "south", "east", "west", "kitchen", "living_room", "hallway", "bedroom"]
+TerrainKind = Literal["flat", "hills", "rocky", "slope", "craters", "real", "indoor"]
 RobotKind = Literal["rover", "walker"]
 Surface = Literal["rock", "regolith", "gravel", "sand", "mud", "ice"]
 
@@ -175,9 +175,9 @@ def set_world(world: World, args: dict[str, Any]) -> ToolResult:
             spec.environment.surface = world_card.surface
             spec.environment.friction = world_card.friction
             spec.terrain = Terrain(
-                kind=world_card.terrain_kind if world_card.terrain_kind == "real" else parsed.terrain_kind or (spec.terrain.kind if spec.terrain else "hills"),
+                kind=world_card.terrain_kind,
                 preset=world_card.terrain_preset,
-            ) if world_card.terrain_kind == "real" else (spec.terrain or Terrain())
+            ) if world_card.terrain_kind in {"real", "indoor"} else (spec.terrain or Terrain())
         else:
             available = [card for card in registry.worlds() if card.terrain_kind == "real"]
             real = next((item for item in available if item.terrain_preset == parsed.preset), None)
@@ -198,7 +198,7 @@ def set_world(world: World, args: dict[str, Any]) -> ToolResult:
         spec.environment.friction = presets.friction_for(parsed.surface)
     if parsed.terrain_kind is not None:
         spec.terrain.kind = parsed.terrain_kind
-        if parsed.terrain_kind != "real":
+        if parsed.terrain_kind not in {"real", "indoor"}:
             spec.terrain.preset = spec.terrain.preset_size_m = spec.terrain.preset_relief_m = None
     if parsed.slope_deg is not None:
         if spec.terrain.kind != "slope":

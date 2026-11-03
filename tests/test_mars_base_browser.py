@@ -15,7 +15,8 @@ def browser_page():
         port = connection.getsockname()[1]
     root = Path(__file__).resolve().parents[1]
     process = subprocess.Popen(
-        [sys.executable, "-m", "uvicorn", "server:app", "--host", "127.0.0.1", "--port", str(port)],
+        [sys.executable, "-m", "uvicorn", "server:app", "--host", "127.0.0.1", "--port", str(port),
+         "--no-access-log"],
         cwd=root, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
     )
     try:

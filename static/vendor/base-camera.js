@@ -21,6 +21,10 @@ export function frameBase(camera, controls, root, sceneData, terrainHeight, inde
     }
   }
   if (bounds.isEmpty()) return null;
+  return frameBounds(camera, controls, bounds);
+}
+
+export function frameBounds(camera, controls, bounds) {
   const centre = bounds.getCenter(new THREE.Vector3()), size = bounds.getSize(new THREE.Vector3());
   const vertical = camera.fov * Math.PI / 180, horizontal = 2 * Math.atan(Math.tan(vertical / 2) * camera.aspect);
   const distance = Math.max(2, size.length() / 2 / Math.sin(Math.min(vertical, horizontal) / 2) * 1.16);

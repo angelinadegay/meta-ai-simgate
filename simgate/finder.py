@@ -1486,6 +1486,24 @@ def limits_world(spec: SceneSpec, robot_id: str) -> dict:
     }
 
 
+def _map_baseline(spec: SceneSpec, row: dict, run_id: str) -> dict | None:
+    """Keep passed flat-baseline evidence even when no search boundary was confirmed."""
+    terrain = spec.terrain
+    if row.get("broke") is not False or terrain.kind not in ("flat", "slope", "rocky"):
+        return None
+    if (terrain.kind != "flat" and terrain.roughness != 0) or (terrain.kind == "slope" and terrain.slope_deg != 0):
+        return None
+    if spec.structures or any(obstacle.kind != "step" for obstacle in spec.obstacles):
+        return None
+    from .backends.obstacles import SIZES
+
+    step = max((obstacle.height_m if obstacle.height_m is not None else SIZES["step"][obstacle.size]
+                for obstacle in spec.obstacles), default=0.0)
+    return {"run_id": run_id, "passed": True,
+            "values": {"slope_deg": 0.0, "roughness": 0.0, "step": step,
+                       "friction": float(spec.environment.friction)}}
+
+
 def scan_map_limits(
     spec: SceneSpec,
     robot_id: str | None = None,
@@ -1514,11 +1532,26 @@ def scan_map_limits(
 
     limits: list[dict] = []
     scans: list[dict] = []
+    baselines: list[dict] = []
     total_runs = 0
     for knob in plans:
         trial = source.model_copy(deep=True)
+        trial.robots = [source_entry.model_copy(deep=True)]
+        trial.robot = trial.robots[0].robot.model_copy(deep=True)
+        trial.structures = []
+        trial.disturbance = None
+        # Isolate each feature on a short, traversable baseline. A room-to-room
+        # mission or a distant real-terrain summit must not invalidate a step probe.
+        from .spec import Mission
+
+        trial.mission = Mission(start_xy=[-1.5, 0], goal_xy=[1.5, 0], goal_radius_m=0.25)
+        for key, value in trial.mission.model_dump().items():
+            setattr(trial.robots[0], key, value)
+        trial.duration_s, trial.time_limit_given = 24.0, True
+        trial.terrain = Terrain(kind="rocky" if knob == "roughness" else "flat",
+                                size_m=10, seed=source.terrain.seed, roughness=0)
         if knob == "slope_deg":
-            trial.terrain = Terrain(kind="slope", size_m=source.terrain.size_m,
+            trial.terrain = Terrain(kind="slope", size_m=10,
                                    seed=source.terrain.seed, slope_deg=0, roughness=0)
             trial.obstacles = []
         elif knob == "roughness":
@@ -1530,14 +1563,14 @@ def scan_map_limits(
         elif knob == "friction":
             trial.obstacles = []
             if indoor:
-                trial.terrain = Terrain(kind="flat", size_m=source.terrain.size_m,
+                trial.terrain = Terrain(kind="flat", size_m=10,
                                        seed=source.terrain.seed, roughness=0)
         else:
             trial.obstacles = []
             probe = trial.model_copy(deep=True)
             probe.robot = source_entry.robot.model_copy(deep=True)
             climb = float(capability(probe)["climb_m"])
-            trial.obstacles = [Obstacle(kind="step", height_m=max(0.01, climb * 0.1))]
+            trial.obstacles = [Obstacle(kind="step", height_m=max(0.01, climb * 0.25))]
 
         trial = prepare(trial, [knob] if knob in ("slope_deg", "roughness") else [])
         fits, _ = scene_knobs(trial, source_entry.robot)
@@ -1558,11 +1591,18 @@ def scan_map_limits(
         run_budget = budgets[knob]
         runner = Runner(trial, entry.id, "task", run_budget)
         baseline = runner.run([({"phase": 0, "knob": None, "value": None}, {})])
+        if baseline:
+            evidence = _map_baseline(trial, baseline[0], f"{knob}-{baseline[0]['id']}")
+            if evidence:
+                baselines.append(evidence)
         if baseline and baseline[0]["broke"] is False:
             runner.phase(run_budget - 1)
             measured = search(runner, [knob_key], context, on_step)
             limits.extend(measured)
             scans.append({"knob": knob, "runs": len(runner.evidence), "status": "measured"})
+            errors = [row["error"] for row in runner.evidence if row.get("error")]
+            if errors:
+                scans[-1]["errors"] = errors
             for limit in measured:
                 if knob == "step":
                     limit["physical_unit"] = "m"
@@ -1591,6 +1631,7 @@ def scan_map_limits(
         "robot_id": entry.id,
         "world": limits_world(source, entry.id),
         "limits": limits,
+        "baselines": baselines,
         "scans": scans,
         "runs": total_runs,
         "budget_runs": 16,
@@ -1675,6 +1716,8 @@ def _find(spec: SceneSpec, robot_id: str | None, failure: str, budget: str, name
         report["surprising_failure_line"] = surprising_failure_line(report)
         return report
     _emit(on_step, "Batch runner", "baseline", "Running the scene as it is.", "It passes as it is (run r1).")
+    baseline = _map_baseline(scene, first, first["id"])
+    report["baselines"] = [baseline] if baseline else []
 
     report["limits"] = search(runner, chosen, context, on_step)
     finish("search")

@@ -163,6 +163,8 @@ def footprint_inside_terrain(center, yaw: float, length: float, width: float, si
 def prepare_structure_terrain(spec: SceneSpec) -> None:
     if not spec.structures or spec.terrain is None:
         return
+    if spec.terrain.kind == "indoor":
+        return
     if spec.terrain.kind == "real":
         if spec.terrain.structure_crop_size_m is None and len(spec.structures) > 1:
             from .terrain_data import load_structure_patch

@@ -370,9 +370,16 @@ def next_actions(workflow: str, outcome: dict[str, Any] | str, facts: dict[str, 
             reason += " " + report["surprising_failure_line"]
         robot_id = _target_robot_id(scene, report.get("robot_id"))
         return {"reason": reason, "actions": [
+            _workflow_action("Map where it can go here", "traversability", robot_id, "map where it can go here"),
             _action("Replay the weakest spot", action={"type": "replay_weakest_spot", "robot_id": robot_id}),
             _workflow_action("Why?", "diagnose", robot_id, "why did it fail?"),
             _workflow_action("Make it pass", "redesign", robot_id, "make it pass"),
+        ]}
+
+    if workflow == "traversability":
+        return {"reason": report.get("summary", "Measured map ready."), "actions": [
+            _workflow_action("Re-check the map", "traversability",
+                             _target_robot_id(scene, report.get("robot_id")), "map where it can go here"),
         ]}
 
     if workflow in {"ambiguous", "clarify"}:

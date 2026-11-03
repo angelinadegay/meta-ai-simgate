@@ -59,6 +59,10 @@ def library_view() -> dict:
     worlds = []
     for card in library.worlds():
         world = card.model_dump(mode="json")
+        if card.terrain_kind == "indoor":
+            from simgate.indoor import get_layout
+
+            world["indoor_layout"] = get_layout(card.terrain_preset)
         if card.terrain_preset and (load_ortho_image(card.terrain_preset) is not None
                        or load_preview_image(card.terrain_preset) is not None):
             world["preview_url"] = f"/terrain-preview/{card.terrain_preset}"
@@ -184,6 +188,8 @@ async def ws(socket: WebSocket):
                 await emit({"type": "reset"})
             elif msg.get("type") == "workflow_action":
                 await session.handle_workflow_action(msg.get("workflow", ""), msg.get("robot_id"))
+            elif msg.get("type") == "replay_map_run":
+                await session.replay_map_run(msg.get("run_id", ""))
             elif msg.get("type") == "structure_action":
                 await session.handle_structure_action(msg.get("operation", ""), msg.get("structure_index"))
             elif msg.get("type") in ("set_start", "set_goal"):

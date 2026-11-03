@@ -589,6 +589,8 @@
       <button class="chip" id="goalBtn" hidden title="Then click the terrain">Set goal</button>
       <button class="chip" id="qualityToggle" type="button" title="Switch between detailed and faster rendering">Quality: High</button>
     </div>
+    <button class="chip on" id="mapToggle" hidden type="button" aria-pressed="true"
+      style="position:absolute;left:18px;top:104px;z-index:5;background:#fffffff0">Map overlay</button>
     <div id="robotCameras" hidden></div>
     <div id="pickHint" hidden></div>
     <pre class="card" id="code"></pre>
@@ -617,6 +619,10 @@
       <div class="card" id="reportCard" hidden><h3>Report card</h3><div id="reportCounts"></div><div id="reportRows"></div><div id="stressExplanation"></div><div class="cost-line" id="reportCost"></div></div>
       </section>
       <section class="panel-section" data-panel-section="analysis" hidden>
+      <div class="card" id="mapCard" hidden><h3>Where can it go?</h3><div id="mapLegend"></div>
+        <div id="mapLimits"></div><p id="mapAgreement"></p><p id="mapComparison"></p>
+        <div id="mapReplays" class="card-actions"></div><p id="mapHonesty" class="honesty"></p>
+        <p id="mapScope" class="honesty"></p><div id="mapCost" class="cost-line"></div></div>
       <div class="card" id="envelopeCard" hidden><h3>Envelope</h3><div id="envelopeBody"></div><div class="honesty" id="envelopeHonesty"></div><div class="cost-line" id="envelopeCost"></div></div>
       <div class="card" id="diagnosisCard" hidden><h3>Diagnosis</h3><div id="diagnosisRows"></div><div class="analysis-lines" id="diagnosisDecisions"></div><div class="analysis-text" id="diagnosisConclusion"></div><div class="cost-line" id="diagnosisCost"></div></div>
       <div class="card" id="redesignCard" hidden><h3>Redesign</h3><div id="redesignBody"></div>
@@ -662,11 +668,13 @@
 </div>
 
 <script type="module">
+import { mapOverlay } from "/static/vendor/traversability.js";
 import * as THREE from "three";
 import { OrbitControls } from "/static/vendor/OrbitControls.js";
 import { buildStructureVisuals, setStructureDetails, measureStructureVisuals } from "/static/vendor/structures.js";
 import { buildTerrainHorizon } from "/static/vendor/terrain-horizon.js";
-import { frameBase, advanceFollowTransition } from "/static/vendor/base-camera.js";
+import { frameBase, frameBounds, advanceFollowTransition } from "/static/vendor/base-camera.js";
+import { decorateIndoor, apartmentThumbnail } from "/static/vendor/indoor-visuals.js";
 import { createMissionFlag, disposeMissionMarkers } from "/static/vendor/mission-markers.js";
 
 const $ = (id) => document.getElementById(id);
@@ -678,6 +686,7 @@ const EXAMPLES = [
   ["Surprise me", "Test a lunar rover navigating a field of craters."],
 ];
 const HOME_WORLD_TEMPLATES = [
+  { key: "apartment", title: "Apartment", description: "Rooms · Doorways · Mixed floors", body: "earth", surface: "rock", terrain: "indoor", badge: "Indoor" },
   { key: "mars-hills", title: "Mars · Hills", description: "Red regolith · Low gravity", body: "mars", surface: "regolith", terrain: "hills", badge: "Popular" },
   { key: "moon-craters", title: "Moon · Highlands", description: "Dusty craters · Low gravity", body: "moon", surface: "regolith", terrain: "craters", badge: "" },
   { key: "earth-hills", title: "Earth · Alpine Trail", description: "Rocky slopes · Earth gravity", body: "earth", surface: "rock", terrain: "hills", badge: "" },
@@ -697,6 +706,13 @@ let selectedHomeRobot = null;
 let currentSpec = null;
 let currentMetrics = null;
 let currentRedesignRobotId = null;
+let traversabilityVisual = null;
+$("mapToggle").onclick = () => {
+  if (!traversabilityVisual) return;
+  const visible = !traversabilityVisual.root.visible;
+  traversabilityVisual.root.visible = visible;
+  $("mapToggle").setAttribute("aria-pressed", String(visible)); $("mapToggle").classList.toggle("on", visible);
+};
 let activeDetailsTab = "scene";
 let presentationMode = false;
 let detailsMode = false;
@@ -1069,9 +1085,9 @@ function updateSceneContext(spec = currentSpec) {
   const surface = spec.environment?.surface || "steel frame";
   const body = spec.environment?.body || "earth";
   $("worldHeading").textContent = `${body.replace(/^\w/, (letter) => letter.toUpperCase())} · ${terrain}`;
-  $("worldFacts").textContent = `${gravity} m/s² gravity · ${surface}`;
+  $("worldFacts").textContent = spec.terrain?.kind === "indoor" ? `${gravity} m/s² gravity · mixed floor zones` : `${gravity} m/s² gravity · ${surface}`;
   $("sceneHud").hidden = false;
-  const worldId = spec.terrain?.kind === "real" ? `real-${spec.terrain.preset}` : `${body}-${surface}`;
+  const worldId = spec.terrain?.kind === "indoor" ? "apartment" : spec.terrain?.kind === "real" ? `real-${spec.terrain.preset}` : `${body}-${surface}`;
   const worldCard = libraryData.worlds.find((item) => item.id === worldId);
   const sceneDetails = $("sceneDetails"); sceneDetails.replaceChildren();
   sceneDetails.appendChild(textEl("strong", selectedRobotCard?.name || (robot ? robot.kind : "Structural frame")));
@@ -1087,7 +1103,7 @@ function updateSceneContext(spec = currentSpec) {
   else sceneDetails.appendChild(textEl("span", `Reference values · ${gravity} m/s² · friction ${spec.environment?.friction ?? "—"}`));
   const structureGoal = current?.mission?.goal_structure || entries[0]?.goal_structure || spec.mission?.goal_structure;
   const goal = structureGoal ? structureGoal.replaceAll("_", " ") : entries[0]?.goal_place || spec.mission?.goal_place || (entries[0]?.goal_xy || spec.mission?.goal_xy ? "coordinates" : "not set");
-  $("goalPill").textContent = `◎  Goal: ${goal}`; $("goalPill").hidden = false;
+  $("goalPill").textContent = `◎  Goal: ${goal.replaceAll("_", " ")}`; $("goalPill").hidden = false;
 }
 function metricInsight(metrics = {}) {
   if (metrics.goal_reached === true) return [`Goal reached in ${metrics.time_to_goal_s ?? "—"} s`, `The robot covered ${metrics.distance_m ?? metrics.path_length_m ?? "—"} m with ${Math.round((metrics.slip_ratio || 0) * 100)}% slip.`];
@@ -1114,7 +1130,7 @@ function renderHomeExamples() {
 }
 function homeWorldOptions() {
   const generated = HOME_WORLD_TEMPLATES.map((template) => {
-    const world = libraryData.worlds.find((item) => item.id === `${template.body}-${template.surface}`);
+    const world = libraryData.worlds.find((item) => item.id === (template.terrain === "indoor" ? "apartment" : `${template.body}-${template.surface}`));
     return world ? { ...template, world, worldId: world.id } : null;
   }).filter(Boolean);
   const real = libraryData.worlds.filter((world) => world.terrain_kind === "real").map((world) => ({
@@ -1122,9 +1138,10 @@ function homeWorldOptions() {
     body: world.body, surface: world.surface, terrain: "real", worldId: world.id, world,
     badge: world.source === "upload" ? "Uploaded" : "Real NASA data",
   }));
-  return [...real, ...generated];
+  return [...generated.filter(item => item.terrain === "indoor"), ...real, ...generated.filter(item => item.terrain !== "indoor")];
 }
 function terrainIllustration(item) {
+  if (item.terrain === "indoor") return `<img src="${apartmentThumbnail(item.world.indoor_layout)}" alt="Apartment floor plan" style="width:100%;height:100%;object-fit:contain">`;
   const palettes = {
     mars: ["#afa2bb", "#efc3a8", "#ad746f", "#955b58"],
     moon: ["#222b47", "#73768c", "#777a8a", "#a7a5ad"],
@@ -1609,6 +1626,10 @@ ws.onmessage = (m) => {
       retry.onclick = () => sendWorkflowAction("find_failures", currentRedesignRobotId, retry.textContent);
       insight.querySelector(".card-actions")?.appendChild(retry); break;
     }
+    case "traversability":
+      renderTraversability(ev.report); setStatus(ev.report.unreliable ? "Map uncertain" : "Map ready");
+      setRequestProgress("Measured map and route evidence are ready.", "done");
+      addInsight("Where can it go?", ev.report.summary, "analysis"); showPanel("analysis"); break;
     case "redesign": setStatus("Ready"); setRequestProgress("Design search complete. Results are ready.", "done"); renderRedesign(ev.report); addInsight("Design search complete", detailForReport(ev.report), "analysis"); break;
     case "batch_start":
       setRequestProgress("Testing scene conditions…");
@@ -1672,6 +1693,63 @@ const VERDICTS = { confirmed: "✓ confirmed", partly: "~ partly", "ruled out": 
 // request's total when it ends.
 let costLine = null;
 function showCost(id, cost) { costLine = $(id); costLine.textContent = cost ? cost.text : ""; }
+function renderTraversability(report) {
+  if (traversabilityVisual) {
+    world.remove(traversabilityVisual.root);
+    traversabilityVisual.root.traverse(object => {
+      object.geometry?.dispose(); object.material?.map?.dispose(); object.material?.dispose();
+    });
+  }
+  const groundHeight = (x, y) => {
+    if (!current?.indoor) return terrainHeightAt(current, x, y);
+    let height = 0;
+    for (const geom of current.indoor.geoms) {
+      if (["wall", "counter"].includes(geom.surface)) continue;
+      const [cx, cy, cz] = geom.position, [sx, sy, sz] = geom.size_m;
+      if (Math.abs(x - cx) <= sx / 2 && Math.abs(y - cy) <= sy / 2) {
+        height = Math.max(height, cz + sz / 2 - (x - cx) * Math.tan((geom.pitch_deg || 0) * Math.PI / 180));
+      }
+    }
+    return height;
+  };
+  const replay = runId => sendEvent({ type: "replay_map_run", run_id: runId });
+  traversabilityVisual = mapOverlay(report, groundHeight, replay); world.add(traversabilityVisual.root);
+  world.updateMatrixWorld(true);
+  const bounds = new THREE.Box3().setFromObject(traversabilityVisual.root);
+  frameBounds(camera, controls, bounds);
+  const centre = controls.target.clone(), distance = camera.position.distanceTo(centre);
+  camera.position.copy(centre).add(new THREE.Vector3(0.35, 1.5, 0.75).normalize().multiplyScalar(distance));
+  const right = new THREE.Vector3().crossVectors(camera.position.clone().sub(centre), camera.up).normalize().negate();
+  const panelOffset = right.multiplyScalar(distance * 0.2);
+  camera.position.add(panelOffset); controls.target.add(panelOffset);
+  followCam = false; followTransitionRemaining = 0; controls.update();
+  $("mapToggle").hidden = false; $("mapToggle").setAttribute("aria-pressed", "true");
+  $("mapToggle").classList.add("on"); $("mapCard").hidden = false;
+  $("mapLegend").replaceChildren();
+  for (const [color, description] of [["green", "reliable limits"], ["amber", "uncertain / unmeasured"], ["red", "fails / too narrow"], ["grey", "blocked"]]) {
+    const swatch = textEl("div", `${color === "grey" ? "" : `${report.percentages[color]}% `}${color} · ${description}`);
+    swatch.style.borderLeft = `8px solid ${{green:"#40d8a0", amber:"#f2bc55", red:"#f4777d", grey:"#8e98ab"}[color]}`;
+    swatch.style.paddingLeft = "8px"; $("mapLegend").appendChild(swatch);
+  }
+  $("mapLegend").appendChild(textEl("small", "Percentages exclude blocked cells. White outlines = spot-corrected. Solid mint = safe/partial route; dashed = straight."));
+  $("mapLimits").replaceChildren(textEl("strong", `${report.robot_label} · measured limits`));
+  for (const [feature, limits] of Object.entries(report.limits)) {
+    const unit = feature === "slope_deg" ? "°" : ["step", "roughness"].includes(feature) ? " m" : "";
+    const format = value => value === null ? "unmeasured" : `${Number(value.toPrecision(3))}${unit}`;
+    $("mapLimits").appendChild(textEl("div", `${feature}: reliable ${format(limits.reliable_ok)}; first fail ${format(limits.first_fail)}`));
+  }
+  $("mapLimits").appendChild(textEl("div", `Required width (with margin): ${report.width_limit_m.toFixed(2)} m`));
+  $("mapAgreement").textContent = report.agreement_text;
+  $("mapComparison").textContent = report.comparison.text;
+  $("mapHonesty").textContent = report.honesty;
+  $("mapScope").textContent = `${report.limits_scope} ${report.scan_note}`;
+  $("mapReplays").replaceChildren();
+  for (const run of [...report.spot_checks, ...report.comparison.runs]) {
+    const button = textEl("button", `${run.passed === null ? "?" : run.passed ? "✓" : "✕"} ${run.label || run.id}`, "chip");
+    button.type = "button"; button.onclick = () => replay(run.id); $("mapReplays").appendChild(button);
+  }
+  showCost("mapCost", report.cost);
+}
 function textEl(tag, text, cls) { const el = document.createElement(tag); el.textContent = text; if (cls) el.className = cls; return el; }
 function renderDiagnosis(r) {
   $("diagnosisCard").hidden = false; $("redesignCard").hidden = true;
@@ -2034,6 +2112,16 @@ const WORLDS = {
   enceladus: { top: "#080d1b", horizon: "#121c30", ground: "#1a202a", sun: "#f7f7ff", pos: [-24, 35, 18], intensity: 2.9, hemi: 0.2, stars: true },
 };
 function setWorld(world = {}) {
+  const indoor = world.terrain_kind === "indoor";
+  sky.visible = !indoor;
+  hemisphere.color.set(indoor ? 0xf6fff9 : 0xe9e6ff);
+  hemisphere.groundColor.set(indoor ? 0x87998b : 0x777386);
+  if (indoor) {
+    scene.background.set(0xe5ede8); scene.fog = null; stars.visible = false;
+    sun.color.set(0xfff4df); sun.position.set(1, 18, 5); sun.intensity = 1.1; sun.shadow.radius = 5;
+    hemisphere.intensity = 1.8;
+    return;
+  }
   const profile = WORLDS[world.body] || WORLDS.earth;
   skyUniforms.topColor.value.set(profile.top); skyUniforms.horizonColor.value.set(profile.horizon);
   skyUniforms.groundColor.value.set(profile.ground); sun.color.set(profile.sun); sun.position.set(...profile.pos);
@@ -2292,6 +2380,13 @@ $("goalBtn").onclick = () => setPick("goal");
 let downAt = null;
 renderer.domElement.addEventListener("pointerdown", (e) => { downAt = [e.clientX, e.clientY]; });
 renderer.domElement.addEventListener("pointerup", (e) => {
+  if (traversabilityVisual?.root.visible && downAt && Math.hypot(e.clientX - downAt[0], e.clientY - downAt[1]) <= 5 && !pickMode) {
+    const bounds = renderer.domElement.getBoundingClientRect(), ray = new THREE.Raycaster();
+    ray.setFromCamera(new THREE.Vector2((e.clientX - bounds.left) / bounds.width * 2 - 1,
+      -((e.clientY - bounds.top) / bounds.height) * 2 + 1), camera);
+    const hit = ray.intersectObjects(traversabilityVisual.markers)[0];
+    if (hit) { traversabilityVisual.replay(hit.object.userData.runId); return; }
+  }
   if (!pickMode || !terrainMesh || !downAt || Math.hypot(e.clientX - downAt[0], e.clientY - downAt[1]) > 5) return;  // a drag rotates the view
   const r = renderer.domElement.getBoundingClientRect();
   const ray = new THREE.Raycaster();
@@ -2305,6 +2400,7 @@ renderer.domElement.addEventListener("pointerup", (e) => {
 });
 
 function clearWorld() {
+  traversabilityVisual = null; $("mapToggle").hidden = true; $("mapCard").hidden = true;
   structureSceneToken++; structureVisualRoot = null;
   missionMarkers = null;
   $("structureCards").replaceChildren(); $("structuresPanel").hidden = true;
@@ -2724,12 +2820,14 @@ function loadScene(s) {
         : geomMesh(g, s.mesh_assets, meshGeometries, visual);
       if (g.type === "hfield") {
         terrainMesh = m;
-        m.add(buildTerrainHorizon(g.hfield, m));
+        if (s.indoor) m.visible = false;
+        else m.add(buildTerrainHorizon(g.hfield, m));
       }
       if (m && /^struct\d+_(habitat|lander|bridge)_/.test(g.name || "")) m.visible = false;
       if (m && /goal_(flag|zone)/.test(g.name || "")) m.visible = false;
       meshes[g.id] = m; if (m) world.add(m);
     }
+    if (s.indoor) decorateIndoor(s, meshes);
     renderStructureCards(s.structures || []);
     const token = structureSceneToken;
     const visuals = buildStructureVisuals(s, { terrainHeight: terrainHeightAt,
@@ -2774,6 +2872,12 @@ function loadScene(s) {
     const start = target ? target.getWorldPosition(new THREE.Vector3()) : new THREE.Vector3();
     controls.target.copy(start); camera.position.set(start.x - 3.2, start.y + 2.2, start.z + 2.6);
     if (s.structures?.length) focusStructureVisuals();
+    if (s.indoor) {
+      world.updateMatrixWorld(true);
+      const [width, depth] = s.indoor.size_m;
+      const bounds = new THREE.Box3(new THREE.Vector3(-width/2,-depth/2,0),new THREE.Vector3(width/2,depth/2,2.6));
+      bounds.applyMatrix4(world.matrixWorld); frameBounds(camera, controls, bounds); followCam = false;
+    }
   } else if (s.kind === "frame") {
     buildFrame(s);
   }

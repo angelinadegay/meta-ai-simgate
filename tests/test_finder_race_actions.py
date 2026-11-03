@@ -64,8 +64,9 @@ def test_race_actions_keep_finder_diagnose_and_redesign_robot_ids():
 
     report = evidence_report()
     finder_actions = next_actions("finder", {"report": report}, facts(scene, {}), scene)["actions"]
-    assert finder_actions[0]["action"] == {"type": "replay_weakest_spot", "robot_id": "r2"}
-    assert [action["action"]["robot_id"] for action in finder_actions[1:]] == ["r2", "r2"]
+    assert finder_actions[0]["action"]["workflow"] == "traversability"
+    assert finder_actions[1]["action"] == {"type": "replay_weakest_spot", "robot_id": "r2"}
+    assert [action["action"]["robot_id"] for action in finder_actions] == ["r2"] * 4
 
     diagnosis = next_actions("diagnosis", {"report": {
         "type": "diagnosis", "robot_id": "r2", "reproduced": True,
@@ -182,3 +183,9 @@ def test_server_and_browser_route_targeted_finder_actions():
     assert 'msg.get("type") == "workflow_action"' in server
     assert 'await session.handle_workflow_action(msg.get("workflow", ""), msg.get("robot_id"))' in server
     assert 'await session.show_design(msg.get("robot_id"))' in server
+
+    sender = page.split("function sendWorkflowAction(", 1)[1].split("function addInsight", 1)[0]
+    assert 'type: "workflow_action", workflow, robot_id: robotId' in sender
+    assert 'lastRequestText = label' in sender
+    assert 'addMsg(label, "user")' in sender
+    assert "beginStepGroup()" in sender

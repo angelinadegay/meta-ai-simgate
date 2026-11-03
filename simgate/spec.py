@@ -20,7 +20,7 @@ class Environment(BaseModel):
 
 
 class Terrain(BaseModel):
-    kind: Literal["flat", "hills", "rocky", "slope", "craters", "real"] = "hills"
+    kind: Literal["flat", "hills", "rocky", "slope", "craters", "real", "indoor"] = "hills"
     preset: Optional[str] = None        # for kind="real": a saved real-terrain preset, e.g. "jezero"
     slope_deg: float = 0.0
     roughness: float = Field(0.3, ge=0.0, le=1.0)
@@ -55,8 +55,17 @@ class Robot(BaseModel):
     command_speed_m_s: float = 0.6
 
 
-Place = Literal["start_area", "center", "lowest", "highest", "north", "south", "east", "west"]
+Place = Literal["start_area", "center", "lowest", "highest", "north", "south", "east", "west", "kitchen", "living_room", "hallway", "bedroom"]
 StructureGoal = Literal["habitat_airlock", "lander"]
+
+
+class NavigationGrid(BaseModel):
+    cell_size_m: float = Field(gt=0)
+    x_m: list[float]
+    y_m: list[float]
+    allowed: list[list[bool]]
+    blockers: list[tuple[float, float, float, float, float]] = Field(default_factory=list)
+    radius_m: float = Field(default=0, ge=0)
 
 
 class Mission(BaseModel):
@@ -71,6 +80,8 @@ class Mission(BaseModel):
     goal_place: Optional[Place] = None
     goal_structure: Optional[StructureGoal] = None
     goal_radius_m: float = Field(1.0, gt=0.1, le=5.0)
+    waypoints: list[tuple[float, float]] = Field(default_factory=list)
+    navigation_grid: Optional[NavigationGrid] = None
 
     def has_goal(self) -> bool:
         return self.goal_xy is not None or self.goal_place is not None or self.goal_structure is not None
@@ -88,6 +99,8 @@ class RobotEntry(BaseModel):
     goal_place: Optional[Place] = None
     goal_structure: Optional[StructureGoal] = None
     goal_radius_m: float = Field(1.0, gt=0.1, le=5.0)
+    waypoints: list[tuple[float, float]] = Field(default_factory=list)
+    navigation_grid: Optional[NavigationGrid] = None
 
     def mission(self) -> Mission:
         return Mission(
@@ -99,6 +112,8 @@ class RobotEntry(BaseModel):
             goal_place=self.goal_place,
             goal_structure=self.goal_structure,
             goal_radius_m=self.goal_radius_m,
+            waypoints=self.waypoints,
+            navigation_grid=self.navigation_grid,
         )
 
 
@@ -182,6 +197,15 @@ class SceneSpec(BaseModel):
 
     def fill_defaults(self) -> "SceneSpec":
         """Fill physical values from reference presets and record what was assumed."""
+        if self.terrain is not None and self.terrain.kind == "indoor":
+            from .indoor import get_layout
+
+            self.terrain.preset = self.terrain.preset or "apartment"
+            layout = get_layout(self.terrain.preset)
+            self.terrain.size_m, self.terrain.roughness = max(layout["size_m"]), 0.0
+            self.environment.body, self.environment.gravity = "earth", 9.81
+            if self.mission is None:
+                self.mission = Mission(start_place="kitchen", goal_place="living_room", goal_radius_m=0.5)
         env = self.environment
         t = self.terrain
         if self.domain == "robot_terrain" and t is not None and t.kind == "real":
@@ -239,6 +263,8 @@ class SceneSpec(BaseModel):
                         goal_place=mission.goal_place,
                         goal_structure=mission.goal_structure,
                         goal_radius_m=mission.goal_radius_m,
+                        waypoints=mission.waypoints,
+                        navigation_grid=mission.navigation_grid,
                     )
                 ]
             else:
@@ -286,7 +312,7 @@ class SceneSpec(BaseModel):
                         f"Policy {self.robot.policy_id!r} is not compatible with robot {robot_card.id!r}."
                     )
                 self.robot.mass_kg = robot_card.mass_kg
-            if self.obstacles and self.terrain.kind != "real":
+            if self.obstacles and self.terrain.kind not in {"real", "indoor"}:
                 from .backends.obstacles import course_length_needed   # local import: avoids a cycle
                 path = 0.73 * self.terrain.size_m                         # default start to the far-side goal
                 need = course_length_needed(self.obstacles)

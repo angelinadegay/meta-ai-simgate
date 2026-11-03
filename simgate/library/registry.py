@@ -80,6 +80,9 @@ class LibraryRegistry:
             for body, gravity in presets.GRAVITY.items()
             for surface, friction in surfaces.items()
         ]
+        worlds.append(WorldCard(id="apartment", name="Apartment", body="earth", gravity_m_s2=9.81,
+                    surface="rock", friction=0.5, terrain_kind="indoor", terrain_preset="apartment",
+                    license="Procedural engineering layout", credit="SimGate 14 x 10 m apartment; nominal per-zone friction."))
         for name, meta in list_presets().items():
             body = meta.get("body", "earth")
             surface = meta.get("surface", "rock")

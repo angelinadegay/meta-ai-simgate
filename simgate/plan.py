@@ -15,16 +15,18 @@ def _far_side_to_place(value: Any) -> Any:
     """Models often say "far side"; the far side of the default course is the east edge."""
     if isinstance(value, str) and value.strip().lower().replace("_", " ") in ("far side", "the far side"):
         return "east"
+    if isinstance(value, str) and value.strip().lower().replace(" ", "_") in {"kitchen", "living_room", "hallway", "bedroom"}:
+        return value.strip().lower().replace(" ", "_")
     return value
 
 
 PlanPlace = Annotated[Place, BeforeValidator(_far_side_to_place)]
 
 Workflow = Literal["build", "race", "compare", "stress_test", "edit", "custom", "answer", "diagnose", "redesign",
-                   "find_failures"]
+                   "find_failures", "traversability"]
 FinderKnob = Literal["slope_deg", "friction", "gravity", "push_n", "payload", "obstacle_scale", "roughness", "speed"]
 FollowUp = Literal["find_failures", "stress_test", "diagnose"]   # analyses a build can be followed by
-TerrainKind = Literal["flat", "hills", "rocky", "slope", "craters", "real"]
+TerrainKind = Literal["flat", "hills", "rocky", "slope", "craters", "real", "indoor"]
 Surface = Literal["rock", "regolith", "gravel", "sand", "mud", "ice"]
 RobotKind = Literal["rover", "walker"]
 SceneDomain = Literal["robot_terrain", "structure"]
@@ -220,6 +222,8 @@ class Plan(BaseModel):
     obstacles: list[Obstacle] = Field(default_factory=list, max_length=30)
     structures: list[TerrainStructure] = Field(default_factory=list, max_length=8)
     goal: GoalPlan | None = None
+    start: GoalPlan | None = None
+    via: list[PlanPlace] = Field(default_factory=list, max_length=4)
     variants: list[Variation] = Field(default_factory=list, max_length=23)
     question: str | None = Field(default=None, max_length=1000)
     changes: EditChanges = Field(default_factory=EditChanges)
@@ -238,6 +242,8 @@ class Plan(BaseModel):
 
     @model_validator(mode="after")
     def validate_workflow_payload(self) -> "Plan":
+        if self.start is not None and self.start.structure not in (None, "lander"):
+            raise ValueError("A structure start must be the lander; use coordinates or a named place otherwise.")
         if sum(robot.count for robot in self.robots) > 6:
             raise ValueError("A plan can expand to at most six robots.")
         if self.workflow == "race" and sum(robot.count for robot in self.robots) < 2:
@@ -255,7 +261,7 @@ class Plan(BaseModel):
         if self.workflow == "answer" and not self.reply:
             raise ValueError("workflow 'answer' requires reply.")
         if self.domain == "structure" and self.workflow in {"race", "compare", "stress_test", "custom", "diagnose", "redesign",
-                                                            "find_failures"}:
+                                                            "find_failures", "traversability"}:
             raise ValueError(f"workflow {self.workflow!r} is not available for structure scenes.")
         if self.then is not None and (self.workflow not in ("build", "race") or self.domain != "robot_terrain"):
             raise ValueError("then is only for a build or race of a robot scene: the analysis to run once it is built.")

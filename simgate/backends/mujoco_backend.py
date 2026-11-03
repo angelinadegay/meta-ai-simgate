@@ -60,6 +60,11 @@ def make_heights(spec: SceneSpec, start_xy: tuple[float, float] | None = None) -
     xs = np.linspace(-half, half, GRID)
     X, Y = np.meshgrid(xs, xs)          # X varies along columns, Y along rows
     H = np.zeros_like(X)
+    if t.kind == "indoor":
+        from ..indoor import height_grid
+
+        H = height_grid(t.preset or "apartment", GRID)
+        return H, max(float(H.max()), 0.01)
 
     if t.kind == "slope":
         H += np.tan(math.radians(t.slope_deg)) * (X + half)
@@ -310,6 +315,7 @@ def apply_gentler_route(spec: SceneSpec, search_radius_m: float = 15.0) -> str |
     entry = spec.robots[0]
     entry.start_xy, entry.start_place = list(start), None
     entry.goal_xy, entry.goal_place = list(goal), None
+    entry.waypoints, entry.navigation_grid = [], None
     spec.mission = Mission(start_xy=list(start), goal_xy=list(goal), goal_radius_m=entry.goal_radius_m)
     if note not in spec.assumptions:
         spec.assumptions.append(note)
@@ -337,6 +343,10 @@ EDGE_MARGIN = 0.85       # keep start and goal inside 85% of the half-width, awa
 
 def place_xy(H: np.ndarray, size_m: float, place: str) -> tuple[float, float]:
     """Turn a named place into coordinates on this terrain."""
+    from ..indoor import ROOM_PLACES, get_layout
+
+    if place in ROOM_PLACES:
+        return tuple(get_layout()["places"][place])
     half = size_m / 2
     lim = half * EDGE_MARGIN * 0.9
     fixed = {"start_area": default_start(size_m), "center": (0.0, 0.0),
@@ -358,10 +368,15 @@ def resolve_mission(spec: SceneSpec, H: np.ndarray) -> dict:
     """Start position, heading and (optional) goal, in metres on this terrain."""
     size, ms = spec.terrain.size_m, spec.mission
     lim = size / 2 * EDGE_MARGIN
+    limits = (lim, lim)
+    if spec.terrain.kind == "indoor":
+        from ..indoor import get_layout
+
+        limits = tuple(length / 2 * EDGE_MARGIN for length in get_layout(spec.terrain.preset)["size_m"])
     clamped = []
 
     def clamp(xy, what):
-        x, y = float(np.clip(xy[0], -lim, lim)), float(np.clip(xy[1], -lim, lim))
+        x, y = float(np.clip(xy[0], -limits[0], limits[0])), float(np.clip(xy[1], -limits[1], limits[1]))
         if (x, y) != (float(xy[0]), float(xy[1])):
             clamped.append(what)
         return round(x, 2), round(y, 2)
@@ -372,10 +387,14 @@ def resolve_mission(spec: SceneSpec, H: np.ndarray) -> dict:
             start = clamp(ms.start_xy, "start")
         elif ms.start_place:
             start = place_xy(H, size, ms.start_place)
+            if spec.terrain.kind == "indoor":
+                start = clamp(start, "start")
         if ms.goal_xy is not None:
             goal = clamp(ms.goal_xy, "goal")
         elif ms.goal_place:
             goal = place_xy(H, size, ms.goal_place)
+            if spec.terrain.kind == "indoor":
+                goal = clamp(goal, "goal")
         elif ms.goal_structure is not None:
             goal = place_xy(H, size, "east")   # temporary anchor for placing near-goal structures
         if ms.start_heading_deg is not None:
@@ -383,7 +402,10 @@ def resolve_mission(spec: SceneSpec, H: np.ndarray) -> dict:
         elif goal is not None:
             heading = math.degrees(math.atan2(goal[1] - start[1], goal[0] - start[0]))
     return {"start": start, "heading_deg": round(heading, 1), "goal": goal,
-            "radius": ms.goal_radius_m if ms else 1.0, "clamped": clamped}
+            "radius": ms.goal_radius_m if ms else 1.0, "clamped": clamped,
+            "waypoints": list(ms.waypoints) if ms else [],
+            "waypoint_radius_m": 0.4 if spec.terrain.kind == "indoor" else 1.0,
+            "navigation_grid": ms.navigation_grid.model_dump() if ms and ms.navigation_grid else None}
 
 
 PERTURB_M, PERTURB_DEG = 0.01, 1.0   # the start nudge for repeated runs of one condition (SceneSpec.perturb_seed)
@@ -554,8 +576,9 @@ class Outcome:
         self.tipped_since = t if self.tipped_since is None else self.tipped_since
         return self.tipped_since if t - self.tipped_since >= TIPPED_HOLD_S else None
 
-    def update(self, t: float, xy: np.ndarray, reached_at: float | None, fell: bool) -> None:
-        self.window.append((t, xy))
+    def update(self, t: float, xy: np.ndarray, reached_at: float | None, fell: bool,
+               heading: np.ndarray | None = None) -> None:
+        self.window.append((t, xy, heading.copy() if heading is not None else None))
         while len(self.window) > 1 and self.window[1][0] <= t - STUCK_WINDOW_S:
             self.window.popleft()
         if self.decided is not None:
@@ -564,7 +587,9 @@ class Outcome:
             self.decided = {"reason": "reached", "at_s": round(t, 2)}
         elif fell:
             self.decided = {"reason": "fell", "at_s": round(t, 2)}
-        elif self.window[0][0] <= t - STUCK_WINDOW_S and float(np.linalg.norm(xy - self.window[0][1])) < STUCK_MOVE_M:
+        elif self.window[0][0] <= t - STUCK_WINDOW_S and float(np.linalg.norm(xy - self.window[0][1])) < STUCK_MOVE_M \
+                and (heading is None or self.window[0][2] is None
+                     or float(np.linalg.norm(heading - self.window[0][2])) < 0.1):
             self.decided = {"reason": "stuck", "at_s": round(t, 2)}
 
 
@@ -815,7 +840,9 @@ def _robot_collision_masks(body_xml: str, index: int, count: int) -> str:
 
 def ground_geoms(model: mujoco.MjModel) -> set[int]:
     kinds = {int(mujoco.mjtGeom.mjGEOM_HFIELD), int(mujoco.mjtGeom.mjGEOM_PLANE)}
-    return {g for g in range(model.ngeom) if int(model.geom_type[g]) in kinds}
+    return {geom for geom in range(model.ngeom) if int(model.geom_type[geom]) in kinds
+            or (mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_GEOM, geom) or "").startswith(
+                ("indoor_floor", "indoor_bedroom_step", "indoor_bedroom_platform", "indoor_threshold", "indoor_ramp"))}
 
 
 def sliding_contacts(model, data, parts: set[int], ground: set[int], speeds: list | None = None) -> tuple[int, int]:
@@ -1005,15 +1032,26 @@ class Navigator:
         self.radius = float(mission.get("radius", 1.0)) if mission else 1.0
         self.goal_z = mission.get("goal_z") if mission and mission.get("goal_structure") else None
         self.waypoints = [np.array(point, dtype=float) for point in mission.get("waypoints", [])] if mission else []
+        self.waypoint_radius = float(mission.get("waypoint_radius_m", 0.3)) if mission else 0.3
+        self.navigation_grid = mission.get("navigation_grid") if mission else None
         self.reached_at: float | None = None
         self.max_turn = self.MAX_TURN if robot_kind == "rover" else self.WALKER_MAX_TURN   # walkers wobble when one side steps backward
+        self.robot_kind = robot_kind
 
     def command(self, pos_xy: np.ndarray, heading: np.ndarray, t: float,
                 surface_z: float | None = None) -> tuple[float, float]:
         """(turn, go) for this instant."""
         if self.goal is None:
             return 0.0, 1.0
-        while self.waypoints and float(np.linalg.norm(self.waypoints[0] - pos_xy)) <= 0.3:
+        while self.waypoints and float(np.linalg.norm(self.waypoints[0] - pos_xy)) <= self.waypoint_radius:
+            if self.navigation_grid:
+                from ..routing import segment_cells
+
+                target = self.waypoints[1] if len(self.waypoints) > 1 else self.goal
+                cells = segment_cells(self.navigation_grid, pos_xy, target)
+                allowed = self.navigation_grid["allowed"]
+                if cells is None or any(not allowed[row][col] for row, col in cells):
+                    break
             self.waypoints.pop(0)
         at_height = self.goal_z is None or (surface_z is not None and abs(surface_z - self.goal_z) <= 0.15)
         if not self.waypoints and self.reached_at is None and float(np.linalg.norm(self.goal - pos_xy)) <= self.radius and at_height:
@@ -1023,7 +1061,15 @@ class Navigator:
         d = (self.waypoints[0] if self.waypoints else self.goal) - pos_xy
         err = math.atan2(d[1], d[0]) - math.atan2(heading[1], heading[0])
         err = (err + math.pi) % (2 * math.pi) - math.pi
-        return float(np.clip(self.GAIN * err, -self.max_turn, self.max_turn)), 1.0
+        go = max(0.0, math.cos(err)) if self.navigation_grid else 1.0
+        if self.navigation_grid and self.robot_kind == "rover" and abs(err) > 0.1:
+            go = 0.0
+        if self.navigation_grid and self.robot_kind == "rover" and self.waypoints:
+            go *= min(1.0, float(np.linalg.norm(d)) / 0.8)
+        if self.navigation_grid and self.robot_kind == "walker":
+            go = max(0.2, go)
+        gain = 3.0 if self.navigation_grid and self.robot_kind == "rover" else self.GAIN
+        return float(np.clip(gain * err, -self.max_turn, self.max_turn)), go
 
 
 # ── Backend ────────────────────────────────────────────────────────────────
@@ -1083,6 +1129,7 @@ class MuJoCoSimulator(Simulator):
                 waypoints.append([habitat["position"]["x"] + math.cos(yaw) * distance,
                                   habitat["position"]["y"] + math.sin(yaw) * distance])
                 mission["waypoints"] = waypoints
+                mission["waypoint_radius_m"] = 0.3
             if entry.start_heading_deg is None:
                 mission["heading_deg"] = round(math.degrees(math.atan2(xy[1] - start[1], xy[0] - start[0])), 1)
 
@@ -1175,6 +1222,8 @@ class MuJoCoSimulator(Simulator):
                 start_heading_deg=entry.start_heading_deg,
                 goal_xy=goal_xy,
                 goal_radius_m=entry.goal_radius_m,
+                waypoints=entry.waypoints,
+                navigation_grid=entry.navigation_grid,
             )
             robot_spec = spec.model_copy(deep=True)
             robot_spec.robot = entry.robot.model_copy(deep=True)
@@ -1373,6 +1422,18 @@ class MuJoCoSimulator(Simulator):
         run is never drawn, so it builds without the view: simplifying a library robot's meshes is most of a
         build."""
         template_xml, _, _ = self.template(spec)      # also resolves the start and goal
+        if spec.terrain.kind == "indoor":
+            from ..indoor import geometry_xml
+            import xml.etree.ElementTree as ET
+
+            root = ET.fromstring(template_xml)
+            ground = root.find(".//geom[@name='ground']")
+            ground.set("contype", "0")
+            ground.set("conaffinity", "0")
+            worldbody = root.find("worldbody")
+            for geom in ET.fromstring("<worldbody>" + geometry_xml(spec.terrain.preset) + "</worldbody>"):
+                worldbody.append(geom)
+            template_xml = ET.tostring(root, encoding="unicode")
         xml = template_xml if code is None else code
         model = _model_from_xml(xml)                  # raises with a readable error if invalid
         if view:
@@ -1384,6 +1445,10 @@ class MuJoCoSimulator(Simulator):
         else:
             scene = {"backend": self.name, "kind": "mujoco"}
         scene["mission"] = self.mission
+        if spec.terrain.kind == "indoor":
+            from ..indoor import get_layout
+
+            scene["indoor"] = get_layout(spec.terrain.preset)
         scene["terrain_size_m"] = spec.terrain.size_m
         scene["course"] = [vars(p) for p in self.course]
         scene["course_notes"] = self.course_notes
@@ -1570,7 +1635,10 @@ class MuJoCoSimulator(Simulator):
             raise ValueError("Choose a finite start or goal position.")
         model, data = self._make(build)
         probe = TerrainProbe(model)
-        if not probe.ok or abs(x - probe.cx) > probe.hx or abs(y - probe.cy) > probe.hy:
+        half_x, half_y = probe.hx, probe.hy
+        if build.scene.get("indoor"):
+            half_x, half_y = [length / 2 for length in build.scene["indoor"]["size_m"]]
+        if not probe.ok or abs(x - probe.cx) > half_x or abs(y - probe.cy) > half_y:
             raise ValueError("The selected point is outside the physics terrain.")
         updated = spec.model_copy(deep=True)
         scene = copy.deepcopy(build.scene)
@@ -1581,10 +1649,14 @@ class MuJoCoSimulator(Simulator):
         moved = {}
         for entry in entries:
             mission = copy.deepcopy(scene.get("robots", {}).get(entry.id, {}).get("mission") or scene["mission"])
+            if entry.navigation_grid is not None:
+                entry.waypoints, entry.navigation_grid = [], None
+                mission.pop("waypoints", None)
+                mission.pop("navigation_grid", None)
             ground_z = probe._bilinear(probe.heights, x, y) + probe.cz
             if which == "start":
                 radius = footprint_radius(entry.robot)
-                if abs(x - probe.cx) + radius >= probe.hx or abs(y - probe.cy) + radius >= probe.hy:
+                if abs(x - probe.cx) + radius >= half_x or abs(y - probe.cy) + radius >= half_y:
                     raise ValueError("The robot's start footprint must fit inside the physics terrain.")
                 ground_z = height_at(probe.heights, 2 * probe.hx, x - probe.cx, y - probe.cy, radius) + probe.cz
                 entry.start_xy, entry.start_place, entry.start_structure = [x, y], None, None
@@ -1613,6 +1685,7 @@ class MuJoCoSimulator(Simulator):
                 scene["initial_qpos"] = data.qpos.tolist()
             else:
                 entry.goal_xy, entry.goal_place, entry.goal_structure = [x, y], None, None
+                entry.waypoints, entry.navigation_grid = [], None
                 mission["goal"] = [x, y]
                 for key in ("goal_structure", "goal_z", "waypoints"):
                     mission.pop(key, None)
@@ -1721,7 +1794,8 @@ class MuJoCoSimulator(Simulator):
                         vx_limit = card.ranges[card.names.index("vx")][1]
                         yaw_range = card.ranges[card.names.index("yaw_rate")]
                         commands = {
-                            "vx": float(np.clip(robot.command_speed_m_s * math.cos(turn), 0.0, vx_limit)),
+                            "vx": float(np.clip(robot.command_speed_m_s * (
+                                go if nav.navigation_grid else math.cos(turn)), 0.0, vx_limit)),
                             "vy": 0.0,
                             "yaw_rate": float(np.clip(turn, yaw_range[0], yaw_range[1])),
                         }
@@ -1737,7 +1811,10 @@ class MuJoCoSimulator(Simulator):
                     joint = int(model.actuator_trnid[actuator, 0])
                     name = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_JOINT, joint) or ""
                     side = 1.0 if name.endswith("r_j") else -1.0
-                    controls[i] *= 1 + side * turn
+                    if nav.navigation_grid:
+                        controls[i] = robot.drive_speed * float(np.clip(active_time / 1.0, 0.0, 1.0)) * (go + side * turn)
+                    else:
+                        controls[i] *= 1 + side * turn
             if len(controls) != len(state["actuators"]):
                 raise ValueError(f"Controller output does not match actuator mapping for {state['entry'].id}.")
             data.ctrl[state["actuators"]] = controls
@@ -1758,7 +1835,10 @@ class MuJoCoSimulator(Simulator):
                 self._sides = (model, np.array([
                     1.0 if (mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_JOINT, int(model.actuator_trnid[a][0])) or "").endswith("r_j")
                     else -1.0 for a in range(model.nu)]))
-            v = v * (1 + self._sides[1] * turn)        # turning left: right wheels faster, left wheels slower
+            if spec.mission is not None and spec.mission.navigation_grid is not None:
+                v = rb.drive_speed * float(np.clip(t_active / 1.0, 0.0, 1.0)) * (go + self._sides[1] * turn)
+            else:
+                v = v * (1 + self._sides[1] * turn)        # turning left: right wheels faster, left wheels slower
         return v
 
     def validate(self, spec: SceneSpec, build: BuildResult) -> list[Check]:
@@ -2130,7 +2210,8 @@ class MuJoCoSimulator(Simulator):
                     state["distances"].append((round(data.time - settle_s, 2), distance, xy.copy()))
                 state["track"].update(data, xy, data.time - settle_s, state["flipped_at"] is not None)
                 if settled:
-                    watch.update(data.time - settle_s, xy, state["navigator"].reached_at, state["flipped_at"] is not None)
+                    watch.update(data.time - settle_s, xy, state["navigator"].reached_at, state["flipped_at"] is not None,
+                                 state["heading"] if nav.navigation_grid else None)
             if record:
                 frames.append({"t": round(frame / FPS, 3), "poses": self._poses(model, data)})
                 if len(frames) >= chunk_frames:
@@ -2288,7 +2369,8 @@ class MuJoCoSimulator(Simulator):
                             speed_limit = command_card.ranges[command_card.names.index("vx")][1]
                             yaw_limits = command_card.ranges[command_card.names.index("yaw_rate")]
                             command_values = {
-                                "vx": float(np.clip(spec.robot.command_speed_m_s * math.cos(turn), 0.0, speed_limit)),
+                                "vx": float(np.clip(spec.robot.command_speed_m_s * (
+                                    go if nav.navigation_grid else math.cos(turn)), 0.0, speed_limit)),
                                 "vy": 0.0,
                                 "yaw_rate": float(np.clip(turn, yaw_limits[0], yaw_limits[1])),
                             }
@@ -2338,7 +2420,8 @@ class MuJoCoSimulator(Simulator):
                     flipped_at = tipped                      # past 60° for a second: it has fallen
                 xy = np.array([x, y])
                 track.update(data, xy, t_now, fallen=fall_started_at is not None or flipped_at is not None)
-                watch.update(t_now, xy, nav.reached_at, flipped_at is not None)
+                watch.update(t_now, xy, nav.reached_at, flipped_at is not None,
+                             heading if nav.navigation_grid else None)
                 if last_xy is not None:
                     path_len += float(np.linalg.norm(xy - last_xy))
                 last_xy = xy

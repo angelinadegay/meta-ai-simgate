@@ -165,9 +165,11 @@ AFFIRM = re.compile(r"^\s*(y|yes|yep|yeah|ok|okay|sure|go|run|run it|looks good|
 # ── Planner ────────────────────────────────────────────────────────────────
 
 def _mock_plan(text: str, current: SceneSpec | None = None) -> SceneSpec:
+    from .indoor import requested
+
     t = text.lower()
     spec = current.model_copy(deep=True) if current else None
-    is_structure = any(w in t for w in ("building", "house", "tower", "frame", "story", "storey", "earthquake", "quake"))
+    is_structure = not requested(t) and any(w in t for w in ("building", "house", "tower", "frame", "story", "storey", "earthquake", "quake"))
     is_robot = any(w in t for w in ("robot", "rover", "walk", "leg", "dog", "quadruped", "hexapod", "spider", "insect", "humanoid", "unitree")) or bool(re.search(r"\bg1\b", t))
     if spec is None or (is_structure and spec.domain != "structure") or (is_robot and spec.domain != "robot_terrain"):
         spec = SceneSpec(domain="structure" if is_structure else "robot_terrain")
@@ -232,6 +234,9 @@ def _mock_plan(text: str, current: SceneSpec | None = None) -> SceneSpec:
             rb.legs = 6
         _mock_obstacles(spec, t, new_scene=current is None)
         _mock_mission(spec, t)
+        if requested(t):
+            spec.terrain = Terrain(kind="indoor", preset="apartment")
+            spec.environment.body, spec.environment.gravity = "earth", 9.81
         if "bigger wheel" in t or "larger wheel" in t:
             rb.wheel_radius = round(rb.wheel_radius * 1.5, 3)
         if "longer leg" in t:
@@ -346,7 +351,9 @@ def scene_title(spec: SceneSpec) -> str:
     return f"{listed[0].upper()}{listed[1:]} on {where}{course}"
 
 
-PLACE_WORDS = [("lowest", ("lowest", "bottom", "crater floor", "valley", "low point")),
+PLACE_WORDS = [("kitchen", ("kitchen",)), ("living_room", ("living room", "living_room")),
+               ("hallway", ("hallway",)), ("bedroom", ("bedroom",)),
+               ("lowest", ("lowest", "bottom", "crater floor", "valley", "low point")),
                ("highest", ("highest", "top", "summit", "peak", "rim", "high point")),
                ("east", ("far side",)),
                ("center", ("center", "centre", "middle")),

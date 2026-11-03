@@ -28,6 +28,7 @@ class SessionState:
     summary: dict | None = None
     diagnosis: dict | None = None
     redesign: dict | None = None
+    finder: dict | None = None
 
     def failed_robot(self) -> str | None:
         """The first robot in leaderboard order that failed the last run, or None when there is no failed run."""
@@ -46,6 +47,25 @@ class SessionState:
 
 async def execute(plan: Plan, current: SceneSpec | None, director: "Director",
                   state: SessionState | None = None) -> WorkflowResult:
+    if plan.workflow == "traversability":
+        from .traversability import map_report
+
+        world = await _prepare_robot_world(plan, current, director)
+        if plan.start is not None:
+            for entry in world.spec.robots:
+                entry.start_xy, entry.start_place = plan.start.xy, plan.start.place
+                entry.start_structure = plan.start.structure
+            world.spec.fill_defaults()
+        ready, message = await _check_and_repair(world, director, "Building the world for a measured map.")
+        if not ready or world.build is None:
+            return world, message
+        report = await _stream_steps(
+            lambda on_step: map_report(world.spec, plan.robot_id, (state or SessionState()).finder, on_step,
+                                       **({"via": plan.via} if plan.via else {})),
+            director,
+        )
+        world.report = report
+        return world, report["summary"]
     if plan.workflow in ("diagnose", "redesign"):
         return await _analysis(plan, current, director, state or SessionState())
     if plan.workflow == "find_failures":
@@ -146,15 +166,24 @@ async def _prepare_robot_world(
             "Selecting the shared world conditions.",
         )
     if current is not None and plan.robots:
+        previous_mission = world.spec.robots[0].mission() if world.spec.robots else world.spec.mission
         world.spec.robots = []
         world.spec.robot = None
         world.spec.mission = None
+    else:
+        previous_mission = None
 
     spawned: list[tuple[str, bool]] = []
     for robot_plan in plan.robots:
         for args in _spawn_args(robot_plan):
             result = await director._mock_call(world, "spawn_robot", args, f"Adding {args['label']}.")
             spawned.append((result.data["robot"]["id"], robot_plan.goal_place is not None))
+    if previous_mission is not None:
+        for entry in world.spec.robots:
+            if entry.start_place is None and entry.start_xy is None:
+                entry.start_xy, entry.start_place = previous_mission.start_xy, previous_mission.start_place
+            if plan.goal is None and entry.goal_place is None and entry.goal_xy is None:
+                entry.goal_xy, entry.goal_place = previous_mission.goal_xy, previous_mission.goal_place
 
     if plan.obstacles:
         if current is not None:
@@ -178,7 +207,8 @@ async def _prepare_robot_world(
         target = ({"xy": plan.goal.xy} if plan.goal.xy is not None else
                   {"structure": plan.goal.structure} if plan.goal.structure is not None else
                   {"place": plan.goal.place})
-        targets = [robot_id for robot_id, has_override in spawned if not has_override]
+        targets = ([robot_id for robot_id, has_override in spawned if not has_override]
+                   if spawned else [entry.id for entry in world.spec.robots])
         if targets and len(targets) == len(spawned):
             await director._mock_call(
                 world,

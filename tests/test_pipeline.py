@@ -2129,7 +2129,7 @@ def test_next_actions_cover_the_outcome_matrix():
     finder = next_actions("finder", {"report": {"type": "envelope", "limits": [
         {"name": "sideways push", "first_fail": 15.0},
     ]}}, failed_facts, scene)
-    check_result(finder, ["Replay the weakest spot", "Why?", "Make it pass"])
+    check_result(finder, ["Map where it can go here", "Replay the weakest spot", "Why?", "Make it pass"])
     assert "15" in finder["reason"]
 
     ambiguous = next_actions("ambiguous", {"reason": "Which world should I change?", "options": [

@@ -9,7 +9,7 @@ import zlib
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-from .spec import Disturbance, SceneSpec
+from .spec import Disturbance, NavigationGrid, SceneSpec
 
 RUN_TIMEOUT_SECONDS = 120.0
 MAX_BATCH_RUNS = 24
@@ -73,6 +73,12 @@ class Variation(BaseModel):
     speed_scale: float | None = Field(default=None, gt=0, le=2)
     face_uphill: bool | None = None
     flatten_terrain: bool | None = None
+    start_xy: list[float] | None = Field(default=None, min_length=2, max_length=2)
+    goal_xy: list[float] | None = Field(default=None, min_length=2, max_length=2)
+    start_heading_deg: float | None = Field(default=None, ge=-360, le=360)
+    goal_radius_m: float | None = Field(default=None, gt=0.1, le=5)
+    waypoints: list[tuple[float, float]] | None = None
+    navigation_grid: NavigationGrid | None = None
     robot: dict[str, Any] | None = None
     robot_id: str | None = None      # robot-level knobs apply to this robot only (default: every robot)
 
@@ -119,6 +125,21 @@ def _validate_variation(base_spec: SceneSpec, raw: dict) -> tuple[Variation, Sce
         raise ValueError("Stress tests currently support robot scenes only.")
     if target is not None:
         _target_entries(spec, target)
+    if any(key in knobs for key in ("start_xy", "goal_xy", "start_heading_deg", "goal_radius_m",
+                                   "waypoints", "navigation_grid")):
+        for entry in _target_entries(spec, target):
+            if "start_xy" in knobs:
+                entry.start_xy, entry.start_place, entry.start_structure = knobs["start_xy"], None, None
+            if "goal_xy" in knobs:
+                entry.goal_xy, entry.goal_place, entry.goal_structure = knobs["goal_xy"], None, None
+            if "start_heading_deg" in knobs:
+                entry.start_heading_deg = knobs["start_heading_deg"]
+            if "goal_radius_m" in knobs:
+                entry.goal_radius_m = knobs["goal_radius_m"]
+            if "waypoints" in knobs:
+                entry.waypoints = variation.waypoints or []
+            if "navigation_grid" in knobs:
+                entry.navigation_grid = variation.navigation_grid
     if "surface" in knobs:
         spec.environment.surface = knobs["surface"]
         spec.environment.friction = None
