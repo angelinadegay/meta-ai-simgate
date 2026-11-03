@@ -3,12 +3,14 @@
 import json
 import logging
 import math
-from typing import Any
+import base64
+import zlib
+from typing import Any, Callable
 
 import numpy as np
 
 from . import config, llm
-from .spec import Environment, Mission, Robot, SceneSpec, Terrain
+from .spec import Environment, Mission, Obstacle, Robot, SceneSpec, Terrain
 
 logger = logging.getLogger(__name__)
 
@@ -29,7 +31,22 @@ COLORS = ("#40d8a0", "#f2bc55", "#718cff", "#ef829f",
 RACE_STUCK_WINDOW_S = 5.0
 RACE_NO_PROGRESS_M = 0.1
 RACE_HIGH_SLIP_RATIO = 0.5
-MAX_EVOLUTION_RUNS = 16
+MAX_EVOLUTION_RUNS = 20
+MAX_EVOLUTION_GENERATIONS = 5
+DEFAULT_CHALLENGE = "victoria-rim-boulders"
+DEFAULT_CHALLENGE_DURATION_S = 90.0
+DEFAULT_ROCK_SIZE_M = 0.25
+DEFAULT_ROCK_COUNT = 24
+DEFAULT_LOOSE_SOIL_FRICTION = 0.55
+ROCK_SIZE_RANGE_M = (0.15, 0.35)
+ROCK_COUNT_RANGE = (12, 30)
+LOOSE_SOIL_FRICTION_RANGE = (0.45, 0.65)
+DEFAULT_CHALLENGE_CONFIG = {
+    "rock_size_m": DEFAULT_ROCK_SIZE_M,
+    "rock_count": DEFAULT_ROCK_COUNT,
+    "friction": DEFAULT_LOOSE_SOIL_FRICTION,
+    "start_offset_m": 0.0,
+}
 
 SYSTEM = """You are the Designer proposing generation-zero procedural robots for a place.
 Propose exactly the requested number, including at least one rover and one walker.
@@ -204,20 +221,167 @@ def propose_generation0(challenge: SceneSpec, n: int = 4) -> list[dict]:
     return designs
 
 
-def challenge_preset(preset_id: str) -> SceneSpec:
-    """Resolve a built-in robot-design challenge by its stable preset id."""
-    if preset_id != "victoria-climb-out":
+def steepest_climb_points(
+    challenge: SceneSpec, span_m: float = 20.0,
+    start_height_percentile: float | None = None,
+    goal_height_percentile: float | None = None,
+) -> dict:
+    """Find the steepest uphill segment of a fixed length on the sampled terrain grid."""
+    from scipy.ndimage import gaussian_filter, map_coordinates
+    from .backends.mujoco_backend import make_heights
+
+    scene = challenge.model_copy(deep=True).fill_defaults()
+    if scene.terrain is None or scene.terrain.kind != "real":
+        raise ValueError("A steepest climb requires real elevation terrain.")
+    if isinstance(span_m, bool) or not isinstance(span_m, (int, float)) or not 8 <= span_m <= 60:
+        raise ValueError("A climb segment must be between 8 and 60 metres.")
+    heights, _ = make_heights(scene)
+    spacing = float(scene.terrain.size_m) / (heights.shape[0] - 1)
+    smooth = gaussian_filter(heights, sigma=max(0.7, 0.8 / spacing))
+    dy, dx = np.gradient(smooth, spacing, spacing)
+    magnitude = np.hypot(dx, dy)
+    ux = np.divide(dx, magnitude, out=np.zeros_like(dx), where=magnitude > 1e-9)
+    uy = np.divide(dy, magnitude, out=np.zeros_like(dy), where=magnitude > 1e-9)
+    half = float(scene.terrain.size_m) / 2
+    coordinates = np.linspace(-half, half, heights.shape[0])
+    X, Y = np.meshgrid(coordinates, coordinates)
+    start_x, start_y = X - ux * span_m / 2, Y - uy * span_m / 2
+    goal_x, goal_y = X + ux * span_m / 2, Y + uy * span_m / 2
+    edge = half - spacing
+    valid = ((np.abs(start_x) <= edge) & (np.abs(start_y) <= edge) &
+             (np.abs(goal_x) <= edge) & (np.abs(goal_y) <= edge) & (magnitude > 1e-6))
+    rows, cols = np.where(valid)
+    if not len(rows):
+        raise ValueError("No uphill segment of the requested length fits inside this terrain.")
+    row_scale = (heights.shape[0] - 1) / (2 * half)
+    start_h = map_coordinates(smooth, np.array([
+        (start_y[rows, cols] + half) * row_scale,
+        (start_x[rows, cols] + half) * row_scale,
+    ]), order=1)
+    goal_h = map_coordinates(smooth, np.array([
+        (goal_y[rows, cols] + half) * row_scale,
+        (goal_x[rows, cols] + half) * row_scale,
+    ]), order=1)
+    rises = goal_h - start_h
+    candidates = np.ones(len(rises), dtype=bool)
+    if start_height_percentile is not None:
+        candidates &= start_h <= np.percentile(smooth, start_height_percentile)
+    if goal_height_percentile is not None:
+        candidates &= goal_h >= np.percentile(smooth, goal_height_percentile)
+    candidates &= rises > 0
+    if not candidates.any():
+        raise ValueError("No uphill segment fits the requested floor-to-rim elevation bands.")
+    best = int(np.argmax(np.where(candidates, rises, -np.inf)))
+    rise = float(rises[best])
+    start = [round(float(start_x[rows[best], cols[best]]), 2),
+             round(float(start_y[rows[best], cols[best]]), 2)]
+    goal = [round(float(goal_x[rows[best], cols[best]]), 2),
+            round(float(goal_y[rows[best], cols[best]]), 2)]
+    return {
+        "start_xy": start, "goal_xy": goal, "span_m": float(span_m),
+        "rise_m": round(rise, 3),
+        "slope_deg": round(math.degrees(math.atan2(rise, span_m)), 2),
+    }
+
+
+def challenge_preset(
+    preset_id: str, span_m: float = 20.0, duration_s: float = 90.0,
+    rock_size_m: float | None = None, rock_count: int | None = None,
+    friction: float | None = None, start_offset_m: float | None = None,
+) -> SceneSpec:
+    """Resolve a climb challenge; Hadley and Meteor use the steepest measured uphill segment."""
+    presets = {
+        "victoria-climb-out": {
+            "title": "Victoria Crater floor to rim", "terrain": "victoria-opportunity",
+            "body": "mars", "surface": "regolith", "endpoints": "lowest-highest",
+        },
+        "hadley-climb-out": {
+            "title": "Apollo 15 Hadley Rille floor to rim", "terrain": "apollo15-hadley-rille",
+            "body": "moon", "surface": "regolith", "endpoints": "steepest",
+        },
+        "meteor-crater-climb": {
+            "title": "Meteor Crater steep rim climb", "terrain": "meteor-crater-rim",
+            "body": "earth", "surface": "rock", "endpoints": "steepest",
+        },
+        "victoria-rim-boulders": {
+            "title": "Victoria Crater steep rim climb through a loose boulder field",
+            "terrain": "victoria-opportunity", "body": "mars", "surface": "regolith",
+            "endpoints": "steepest",
+        },
+    }
+    preset = presets.get(preset_id)
+    if preset is None:
         raise ValueError(f"Unknown design challenge preset: {preset_id}")
-    return SceneSpec(
+    if preset_id == "victoria-rim-boulders":
+        rock_size_m = DEFAULT_CHALLENGE_CONFIG["rock_size_m"] if rock_size_m is None else rock_size_m
+        rock_count = DEFAULT_CHALLENGE_CONFIG["rock_count"] if rock_count is None else rock_count
+        friction = DEFAULT_CHALLENGE_CONFIG["friction"] if friction is None else friction
+        start_offset_m = DEFAULT_CHALLENGE_CONFIG["start_offset_m"] if start_offset_m is None else start_offset_m
+        if not ROCK_SIZE_RANGE_M[0] <= rock_size_m <= ROCK_SIZE_RANGE_M[1]:
+            raise ValueError(f"Rock size must be from {ROCK_SIZE_RANGE_M[0]} to {ROCK_SIZE_RANGE_M[1]} m.")
+        if isinstance(rock_count, bool) or not ROCK_COUNT_RANGE[0] <= rock_count <= ROCK_COUNT_RANGE[1]:
+            raise ValueError(f"Rock-field density must be from {ROCK_COUNT_RANGE[0]} to {ROCK_COUNT_RANGE[1]} rocks.")
+        if not LOOSE_SOIL_FRICTION_RANGE[0] <= friction <= LOOSE_SOIL_FRICTION_RANGE[1]:
+            raise ValueError(
+                f"Loose-soil friction must be from {LOOSE_SOIL_FRICTION_RANGE[0]} to "
+                f"{LOOSE_SOIL_FRICTION_RANGE[1]}."
+            )
+        if not math.isfinite(start_offset_m) or abs(start_offset_m) > 6.0:
+            raise ValueError("The start offset along the wall must be from -6 to 6 m.")
+    challenge = SceneSpec(
         domain="robot_terrain",
-        title="Victoria Crater floor to rim",
-        environment=Environment(body="mars", surface="regolith"),
-        terrain=Terrain(kind="real", preset="victoria-opportunity", roughness=0.0),
+        title=preset["title"],
+        environment=Environment(body=preset["body"], surface=preset["surface"]),
+        terrain=Terrain(kind="real", preset=preset["terrain"], roughness=0.0),
         robot=Robot(),
         mission=Mission(start_place="lowest", goal_place="highest", goal_radius_m=2.0),
-        duration_s=90.0,
+        obstacles=([Obstacle(kind="rock", height_m=rock_size_m, count=rock_count, placement="path",
+                             path_fraction=0.5)] if preset_id == "victoria-rim-boulders" else []),
+        duration_s=duration_s,
         time_limit_given=True,
     ).fill_defaults()
+    if preset_id == "victoria-rim-boulders":
+        challenge.environment.friction = friction
+        challenge.assumptions.append(
+            f"Loose regolith friction is set to {friction:.2f} (calibration range "
+            f"{LOOSE_SOIL_FRICTION_RANGE[0]:.2f}–{LOOSE_SOIL_FRICTION_RANGE[1]:.2f}); "
+            f"{rock_count} path rocks are {rock_size_m:.2f} m high (calibration range "
+            f"{ROCK_SIZE_RANGE_M[0]:.2f}–{ROCK_SIZE_RANGE_M[1]:.2f} m)."
+        )
+    if preset["endpoints"] == "steepest":
+        endpoints = (steepest_climb_points(
+            challenge, span_m, start_height_percentile=30, goal_height_percentile=80,
+        ) if preset_id == "victoria-rim-boulders" else steepest_climb_points(challenge, span_m))
+        if preset_id == "victoria-rim-boulders" and start_offset_m:
+            dx = endpoints["goal_xy"][0] - endpoints["start_xy"][0]
+            dy = endpoints["goal_xy"][1] - endpoints["start_xy"][1]
+            distance = math.hypot(dx, dy)
+            offset = (dy / distance * start_offset_m, -dx / distance * start_offset_m)
+            endpoints["start_xy"] = [round(endpoints["start_xy"][0] + offset[0], 2),
+                                     round(endpoints["start_xy"][1] + offset[1], 2)]
+            endpoints["goal_xy"] = [round(endpoints["goal_xy"][0] + offset[0], 2),
+                                     round(endpoints["goal_xy"][1] + offset[1], 2)]
+        challenge.mission = Mission(
+            start_xy=endpoints["start_xy"], goal_xy=endpoints["goal_xy"], goal_radius_m=2.0,
+        )
+        for entry in challenge.robots:
+            entry.start_xy, entry.start_place = endpoints["start_xy"], None
+            entry.goal_xy, entry.goal_place = endpoints["goal_xy"], None
+        if preset_id == "victoria-rim-boulders":
+            distance = math.dist(endpoints["start_xy"], endpoints["goal_xy"])
+            # 3 m/s is the slowest allowed rover top speed; twice its travel time is a generous lower bound.
+            challenge.duration_s = max(duration_s, 2 * distance / DESIGN_SPACE["rover"]["drive_speed"][0])
+            challenge.time_limit_given = True
+    return challenge
+
+
+def calibration_quality(results: dict | list[dict]) -> dict:
+    """Apply the calibration target: no reaches, and the best design closes 20–80% of the route."""
+    rows = _result_rows(results)
+    best = max((float(row.get("progress_percent", 0)) for row in rows), default=0.0)
+    reached = any(bool(row.get("reached_goal")) for row in rows)
+    return {"qualifies": not reached and 20.0 <= best <= 80.0,
+            "best_progress_percent": round(best, 1), "any_reached": reached}
 
 
 def _validate_race_designs(designs: list[dict]) -> list[dict]:
@@ -266,6 +430,37 @@ def _race_event(samples: list[dict], index: int, time_s: float | None = None) ->
     }
 
 
+def _nearest_rock(event: dict, run: dict) -> dict | None:
+    if event.get("x") is None or event.get("y") is None:
+        return None
+    scene = run.get("race_scene") or {}
+    geoms, poses = scene.get("geoms") or [], scene.get("poses") or []
+    rocks = []
+    for course_item in scene.get("course") or []:
+        if course_item.get("kind") not in {"rock", "boulder"}:
+            continue
+        names = set(course_item.get("geoms") or [])
+        for index, geom in enumerate(geoms):
+            if geom.get("name") not in names or index >= len(poses):
+                continue
+            pose = poses[index]
+            distance = math.hypot(float(pose[0]) - float(event["x"]), float(pose[1]) - float(event["y"]))
+            rocks.append((distance, course_item, geom))
+    if not rocks:
+        return None
+    distance, course_item, geom = min(rocks, key=lambda row: row[0])
+    if distance > max(1.0, float(course_item.get("height_m", 0)) * 2.5):
+        return None
+    try:
+        rock_index = int(geom["name"].rsplit("_", 1)[1]) + 1
+    except (KeyError, ValueError):
+        rock_index = 1
+    return {
+        "name": f"Rock {rock_index}", "size_m": course_item.get("height_m"),
+        "distance_m": round(distance, 2),
+    }
+
+
 def _score_race_result(design: dict, run: dict, time_limit_s: float) -> dict:
     summary = run.get("summary") or {}
     telemetry = summary.get("race_telemetry") or {}
@@ -311,6 +506,9 @@ def _score_race_result(design: dict, run: dict, time_limit_s: float) -> dict:
     event = _race_event(samples, event_index, event_time)
     if event["x"] is None and summary.get("final_xy") is not None:
         event["x"], event["y"] = summary["final_xy"]
+    rock = _nearest_rock(event, run)
+    if rock:
+        event["rock"] = rock
     return {
         "id": design["id"], "name": design["name"], "color": design.get("color"),
         "kind": design["robot"]["kind"], "reached_goal": reached,
@@ -319,10 +517,100 @@ def _score_race_result(design: dict, run: dict, time_limit_s: float) -> dict:
         "time_s": round(float(event_time if event_time is not None else time_limit_s), 2),
         "outcome": outcome, "event": event, "reason": design.get("reason"),
         "run_id": run.get("id"),
+        "samples": [
+            {key: sample.get(key) for key in
+             ("time_s", "x", "y", "distance_to_goal_m", "local_slope_deg", "step_m", "slip_ratio")}
+            for sample in samples
+        ],
     }
 
 
-def race_generation(challenge: SceneSpec, designs: list[dict], seed: int) -> dict:
+def _generation_replay(runs: dict[str, dict], results: list[dict], time_limit_s: float) -> dict:
+    """Pack independent candidate ghost tracks into one shared-terrain 3D race replay."""
+    first = next((runs.get(row["id"]) for row in results if runs.get(row["id"])), None)
+    if first is None or not first.get("race_scene"):
+        raise RuntimeError("The race worker did not return a 3D scene for replay.")
+    first_scene = first["race_scene"]
+    first_ghost = first.get("ghost")
+    if not first_ghost:
+        raise RuntimeError("The race worker did not record robot poses for replay.")
+    first_robot_ids = set(first_ghost.get("geom_ids") or [])
+    static_indices = [index for index in range(len(first_scene["geoms"])) if index not in first_robot_ids]
+    static_scene = {key: value for key, value in first_scene.items()
+                    if key not in {"geoms", "poses", "robots", "follow_geom", "robot_root_body"}}
+    static_scene["geoms"] = []
+    static_scene["poses"] = []
+    for new_id, old_id in enumerate(static_indices):
+        geom = dict(first_scene["geoms"][old_id])
+        geom["id"] = new_id
+        static_scene["geoms"].append(geom)
+        static_scene["poses"].append(first_scene["poses"][old_id])
+
+    robot_geoms, robots, tracks, failures = [], {}, [], []
+    next_geom_id = len(static_scene["geoms"])
+    for index, row in enumerate(results):
+        run = runs.get(row["id"], {})
+        scene, ghost = run.get("race_scene"), run.get("ghost")
+        if not scene or not ghost:
+            raise RuntimeError(f"The race worker did not record a 3D replay for {row['id']}.")
+        old_ids = ghost.get("geom_ids") or []
+        if not old_ids or any(geom_id >= len(scene.get("geoms", [])) for geom_id in old_ids):
+            raise RuntimeError(f"The race replay for {row['id']} has invalid robot geometry.")
+        initial = []
+        new_ids = []
+        for old_id in old_ids:
+            geom = dict(scene["geoms"][old_id])
+            geom["id"] = next_geom_id
+            rgba = list(geom.get("rgba") or [0.4, 0.6, 0.8, 1.0])
+            color = row.get("color") or COLORS[index % len(COLORS)]
+            rgb = [int(color[offset:offset + 2], 16) / 255 for offset in (1, 3, 5)]
+            geom["rgba"] = [*rgb, rgba[3] if len(rgba) > 3 else 1.0]
+            robot_geoms.append(geom)
+            initial.append(scene["poses"][old_id])
+            new_ids.append(next_geom_id)
+            next_geom_id += 1
+        robot_id = f"evolution_{index}"
+        old_follow = run.get("race_follow_geom", old_ids[0])
+        follow = new_ids[old_ids.index(old_follow)] if old_follow in old_ids else new_ids[0]
+        robots[robot_id] = {"label": row["name"], "follow_geom": follow, "color": color}
+        raw_frames = json.loads(zlib.decompress(base64.b64decode(ghost["data"])))
+        tracks.append((new_ids, raw_frames, initial))
+        if not row.get("reached_goal") and row.get("event", {}).get("x") is not None:
+            failures.append({
+                "x": row["event"]["x"], "y": row["event"]["y"],
+                "outcome": row["outcome"], "label": f"✕ {row['outcome']} · {row['name']}",
+                "color": color,
+            })
+
+    if not tracks:
+        raise RuntimeError("The generation race has no recorded robot tracks.")
+    frame_step_s = 0.2
+    frame_count = max(1, int(math.ceil(time_limit_s / frame_step_s)))
+    frame_times = [round(index * frame_step_s, 3) for index in range(frame_count + 1)]
+    packed_frames, indices = [], [0] * len(tracks)
+    for time_s in frame_times:
+        poses = list(static_scene["poses"])
+        for track_index, (new_ids, raw_frames, initial) in enumerate(tracks):
+            while indices[track_index] + 1 < len(raw_frames) and raw_frames[indices[track_index] + 1][0] <= time_s:
+                indices[track_index] += 1
+            current_poses = raw_frames[indices[track_index]][1] if raw_frames else initial
+            poses.extend(current_poses)
+        packed_frames.append([time_s, poses])
+    compressed = zlib.compress(json.dumps(packed_frames, separators=(",", ":"), allow_nan=False).encode(), 9)
+    return {
+        "scene": static_scene,
+        "track": {
+            "encoding": "deflate-base64", "frame_count": len(packed_frames),
+            "frame_step_s": frame_step_s, "robots": robots, "geoms": robot_geoms,
+            "frames": base64.b64encode(compressed).decode("ascii"),
+            "failure_markers": failures,
+        },
+    }
+
+
+def race_generation(
+    challenge: SceneSpec, designs: list[dict], seed: int, record_replay: bool = True,
+) -> dict:
     """Run each candidate in a parallel worker on the same cloned challenge and terrain seed."""
     if isinstance(seed, bool) or not isinstance(seed, int) or seed < 0:
         raise ValueError("Race seed must be a nonnegative integer.")
@@ -351,7 +639,7 @@ def race_generation(challenge: SceneSpec, designs: list[dict], seed: int) -> dic
             "robot_kind": kind,
             "robot": robot,
         })
-    runs = batch.run_batch(base, variations, baseline=False, record=False, race_telemetry=True)
+    runs = batch.run_batch(base, variations, baseline=False, record=record_replay, race_telemetry=True)
     by_label = {run.get("label"): run for run in runs}
     missing = [f"{candidate['id']} {candidate['name']}" for candidate in candidates
                if f"{candidate['id']} {candidate['name']}" not in by_label]
@@ -368,6 +656,10 @@ def race_generation(challenge: SceneSpec, designs: list[dict], seed: int) -> dic
     ))
     for rank, row in enumerate(results, 1):
         row["rank"] = rank
+    replay_runs = {
+        candidate["id"]: by_label[f"{candidate['id']} {candidate['name']}"] for candidate in candidates
+    }
+    replay = _generation_replay(replay_runs, results, time_limit_s) if record_replay else None
     return {
         "challenge": base.title, "seed": seed, "time_limit_s": time_limit_s,
         "terrain": base.terrain.model_dump(mode="json"),
@@ -375,6 +667,8 @@ def race_generation(challenge: SceneSpec, designs: list[dict], seed: int) -> dic
         "goal": {"place": base.mission.goal_place, "xy": base.mission.goal_xy,
                  "radius_m": base.mission.goal_radius_m},
         "results": results,
+        **({"replay_scene": replay["scene"]} if replay else {}),
+        **({"race_replay": replay["track"]} if replay else {}),
     }
 
 
@@ -393,6 +687,9 @@ def _fingerprint(robot: dict) -> tuple:
 def _failure_fact(parent: dict) -> str:
     event = parent.get("event") or {}
     where = []
+    if event.get("rock"):
+        rock = event["rock"]
+        where.append(f"{rock['name']} ({float(rock['size_m']):.2f} m rock)")
     if event.get("step_m") is not None and event["step_m"] > 0.01:
         where.append(f"a {event['step_m']:.2f} m local step")
     if event.get("local_slope_deg") is not None:
@@ -691,7 +988,7 @@ def _validate_winner_design(design: dict) -> dict:
 
 
 def verify_winner(challenge: SceneSpec, design: dict) -> dict:
-    """Re-run a candidate on three new terrain/start seeds and report its Wilson interval."""
+    """Re-run a candidate on five new terrain/start seeds and report its Wilson interval."""
     from . import batch, cost, reliability
 
     candidate = _validate_winner_design(design)
@@ -709,11 +1006,11 @@ def verify_winner(challenge: SceneSpec, design: dict) -> dict:
         "perturb_seed": index,
         "robot_kind": candidate["robot"]["kind"],
         "robot": robot,
-    } for index in range(1, 4)]
+    } for index in range(1, 6)]
     with cost.track():
         runs = batch.run_batch(base, variations, baseline=False, record=False)
-    if len(runs) != 3:
-        raise RuntimeError(f"Winner verification expected 3 runs, received {len(runs)}.")
+    if len(runs) != 5:
+        raise RuntimeError(f"Winner verification expected 5 runs, received {len(runs)}.")
     scored, passed = [], 0
     for run in runs:
         if run.get("error"):
@@ -737,10 +1034,10 @@ def verify_winner(challenge: SceneSpec, design: dict) -> dict:
         })
     low, high = reliability.wilson(passed, len(runs))
     return {
-        "passed": passed, "total": len(runs), "reliable": passed >= 2,
+        "passed": passed, "total": len(runs), "reliable": passed >= 4,
         "wilson_95": [round(low, 3), round(high, 3)],
         "text": reliability.ci_text(passed, len(runs)),
-        "message": f"{candidate['name']} reaches the goal {passed} of 3 times ({reliability.ci_text(passed, 3)}).",
+        "message": f"{candidate['name']} reaches the goal {passed} of 5 times ({reliability.ci_text(passed, 5)}).",
         "results": scored,
     }
 
@@ -844,6 +1141,128 @@ def margin_search(
     return result
 
 
+def _terrain_slope_p95(challenge: SceneSpec, height_scale: float) -> float:
+    from .backends.mujoco_backend import make_heights
+
+    scene = challenge.model_copy(deep=True).fill_defaults()
+    scene.terrain.height_scale = height_scale
+    heights, _ = make_heights(scene)
+    spacing = float(scene.terrain.size_m) / (heights.shape[0] - 1)
+    dy, dx = np.gradient(heights, spacing, spacing)
+    return float(np.percentile(np.degrees(np.arctan(np.hypot(dx, dy))), 95))
+
+
+def terrain_margin_search(challenge: SceneSpec, design: dict, budget: int = 6) -> dict:
+    """Run separate Finder searches for boulder size and surface friction."""
+    from . import finder
+
+    if isinstance(budget, bool) or not isinstance(budget, int) or not 1 <= budget <= 6:
+        raise ValueError("Each terrain margin search budget must be an integer from 1 to 6.")
+    candidate = _validate_winner_design(design)
+    scene = challenge.model_copy(deep=True).fill_defaults()
+    if scene.terrain is None or scene.terrain.kind != "real" or len(scene.robots) != 1:
+        unavailable = {"available": False, "reason": "Terrain margins need one robot on real elevation data.",
+                       "runs": 0}
+        return {"height_scale": unavailable, "friction": unavailable.copy(),
+                "runs": 0, "text": unavailable["reason"]}
+    entry = scene.robots[0]
+    entry.robot = Robot.model_validate(candidate["robot"])
+    scene.robot = entry.robot.model_copy(deep=True)
+    fits, _ = finder.scene_knobs(scene, entry.robot)
+    margins = {}
+    rocks = [obstacle for obstacle in scene.obstacles if obstacle.kind in {"rock", "boulder"}]
+    has_rock_field = bool(rocks)
+    search_knobs = ("obstacle_scale", "friction") if has_rock_field else ("height_scale", "friction")
+    for knob in search_knobs:
+        result_key = "rock_size" if knob == "obstacle_scale" else knob
+        if knob == "obstacle_scale" and has_rock_field:
+            current_rock = max(float(obstacle.height_m or 0) for obstacle in rocks)
+            search_base = {**fits, "obstacle_scale": 1.0}
+            obstacle_context = (current_rock, current_rock)
+        else:
+            search_base = fits
+            obstacle_context = finder._obstacle_context(scene, entry.robot)
+        if knob not in search_base:
+            margins[result_key] = {
+                "available": False,
+                "reason": "Friction is already at Finder's minimum." if knob == "friction"
+                else "Finder cannot scale this terrain.",
+                "runs": 0,
+            }
+            continue
+        prepared = finder.prepare(scene, [])
+        context = {
+            "base": search_base, "robot_id": entry.id, "mass": entry.robot.mass_kg,
+            "obstacles": obstacle_context,
+        }
+        runner = finder.Runner(prepared, entry.id, "task", budget=budget)
+        baseline = runner.run([({"phase": 0, "knob": knob, "value": search_base[knob]}, {})])[0]
+        if baseline["broke"] is not False:
+            margins[result_key] = {
+                "available": False, "reason": "The design did not pass the baseline margin run.",
+                "runs": len(runner.evidence), "evidence": runner.evidence,
+            }
+            continue
+        limit = finder.search(
+            runner, [knob], context, None,
+            harsh_values={"obstacle_scale": 2.0} if knob == "obstacle_scale" else None,
+        )[0]
+        margin = {
+            "available": True, "knob": knob, "name": limit["name"],
+            "baseline": limit["baseline"], "last_ok": limit["last_ok"],
+            "first_fail": limit["first_fail"], "step": limit["step"],
+            "never_broke": limit["never_broke"],
+            "runs": len(runner.evidence), "evidence": runner.evidence,
+        }
+        if knob == "height_scale":
+            base_p95 = _terrain_slope_p95(scene, float(fits[knob]))
+            tested_scale = float(limit["last_ok"])
+            delta = max(0.0, _terrain_slope_p95(scene, tested_scale) - base_p95)
+            if limit["never_broke"]:
+                margin["text"] = (
+                    f"Still climbs out at terrain ×{tested_scale:.2f}; P95 slopes rise about {delta:.1f}° "
+                    "and failure was not found in the tested range."
+                )
+            else:
+                margin["text"] = (
+                    f"Still climbs out with P95 slopes about {delta:.1f}° steeper (terrain ×{tested_scale:.2f}); "
+                    f"fails above ×{float(limit['first_fail']):.2f}."
+                )
+        elif knob == "obstacle_scale":
+            if limit["never_broke"]:
+                margin["text"] = (
+                    f"Still climbs with {current_rock * float(limit['last_ok']):.2f} m rocks; "
+                    "failure was not found in the tested range."
+                )
+            else:
+                last_ok = float(limit["last_ok"]) * current_rock
+                first_fail = float(limit["first_fail"]) * current_rock
+                margin["text"] = (
+                    f"Still climbs with {last_ok:.2f} m rocks; fails above about {first_fail:.2f} m."
+                )
+        elif limit["never_broke"]:
+            margin["text"] = (
+                f"Still climbs out at friction {float(limit['last_ok']):.2f}; "
+                "failure was not found in the tested range."
+            )
+        else:
+            margin["text"] = (
+                f"Still climbs out at friction {float(limit['last_ok']):.2f}; "
+                f"fails below about {float(limit['first_fail']):.2f}."
+            )
+        margins[result_key] = margin
+    result_keys = ["rock_size" if key == "obstacle_scale" else key for key in search_knobs]
+    margin_text = "; ".join(
+        margins[key].get("text") or margins[key].get("reason", "not available")
+        for key in result_keys
+    )
+    return {
+        **margins, "runs": sum(margin["runs"] for margin in margins.values()),
+        "available": any(margin["available"] for margin in margins.values()),
+        "text": margin_text,
+    }
+
+
 def _honesty_line(challenge: SceneSpec) -> str:
     scene = challenge.model_copy(deep=True).fill_defaults()
     if scene.terrain is not None and scene.terrain.kind == "real":
@@ -863,35 +1282,56 @@ def _honesty_line(challenge: SceneSpec) -> str:
             "Designs are simplified procedural robots.")
 
 
-def evolve(challenge: SceneSpec, max_generations: int = 4, n: int = 4, seed: int = 0) -> dict:
+def evolve(
+    challenge: SceneSpec, max_generations: int = 5, n: int = 4, seed: int = 0,
+    on_event: Callable[[dict], None] | None = None,
+) -> dict:
     """Propose, race, and mutate generations until success or the bounded race budget is spent."""
-    if isinstance(max_generations, bool) or not isinstance(max_generations, int) or not 1 <= max_generations <= 8:
-        raise ValueError("max_generations must be an integer from 1 to 8.")
+    if (isinstance(max_generations, bool) or not isinstance(max_generations, int)
+            or not 1 <= max_generations <= MAX_EVOLUTION_GENERATIONS):
+        raise ValueError(f"max_generations must be an integer from 1 to {MAX_EVOLUTION_GENERATIONS}.")
     if isinstance(n, bool) or not isinstance(n, int) or not 2 <= n <= len(COLORS):
         raise ValueError("A generation needs 2-8 designs.")
     if max_generations * n > MAX_EVOLUTION_RUNS:
-        raise ValueError(f"Evolution is limited to {MAX_EVOLUTION_RUNS} simulation runs.")
+        raise ValueError(f"Evolution is limited to {MAX_EVOLUTION_RUNS} candidate races.")
     from . import cost
 
     with cost.track() as spent:
+        if on_event:
+            on_event({"type": "agent", "agent": "Designer", "status": "working",
+                      "message": "Proposing diverse procedural robots from the place's terrain facts…"})
         designs = propose_generation0(challenge, n)
+        if on_event:
+            on_event({"type": "agent", "agent": "Designer", "status": "done",
+                      "message": f"Proposed {len(designs)} bounded designs for generation 0."})
         generations, family_tree, all_raced = [], [], []
         success = False
         runs_used = 0
+        races_used = 0
+        replay_scene = None
         winner = None
         winner_verification = None
         winner_margin = None
         rejected_winners = []
         budget_stop = None
         for generation in range(max_generations):
-            if runs_used + n + 3 > MAX_EVOLUTION_RUNS:
-                budget_stop = (f"Evolution stopped with {runs_used}/{MAX_EVOLUTION_RUNS} runs used; "
-                               f"{n} races plus 3 verification runs would exceed the budget.")
+            if races_used + n > MAX_EVOLUTION_RUNS:
+                budget_stop = (f"Evolution stopped after {races_used}/{MAX_EVOLUTION_RUNS} candidate races; "
+                               f"the next generation would exceed the race budget.")
                 break
+            if on_event:
+                on_event({"type": "agent", "agent": "Simulator", "status": "working",
+                          "message": f"Racing generation {generation} side by side on the same challenge…"})
             race = race_generation(challenge, designs, seed)
             runs_used += len(race["results"])
+            races_used += len(race["results"])
+            replay_scene = replay_scene or race.pop("replay_scene", None)
             race["generation"] = generation
             generations.append(race)
+            if on_event and replay_scene is not None and generation == 0:
+                on_event({"type": "race_scene", "scene": replay_scene})
+            if on_event:
+                on_event({"type": "generation", "generation": race})
             current_by_id = {design["id"]: design for design in designs}
             for result in race["results"]:
                 source = current_by_id[result["id"]]
@@ -902,6 +1342,9 @@ def evolve(challenge: SceneSpec, max_generations: int = 4, n: int = 4, seed: int
                 all_raced.append({**result, "generation": generation})
             reached = [row for row in race["results"] if row["reached_goal"]]
             for result in reached:
+                if on_event:
+                    on_event({"type": "agent", "agent": "Simulator", "status": "working",
+                              "message": f"Verifying apparent winner {result['id']} on five new seeds…"})
                 verification_challenge = challenge.model_copy(deep=True)
                 if verification_challenge.terrain is not None:
                     verification_challenge.terrain.seed = seed
@@ -916,14 +1359,11 @@ def evolve(challenge: SceneSpec, max_generations: int = 4, n: int = 4, seed: int
                     success = True
                     winner = result
                     winner_verification = verification
-                    margin_budget = min(6, MAX_EVOLUTION_RUNS - runs_used)
-                    winner_margin = (
-                        margin_search(verification_challenge, result, all_raced, budget=margin_budget)
-                        if margin_budget else {
-                            "available": False, "reason": "No runs remain for a margin search.", "runs": 0,
-                        }
-                    )
+                    winner_margin = terrain_margin_search(verification_challenge, result, budget=6)
                     runs_used += winner_margin.get("runs", 0)
+                    if on_event:
+                        on_event({"type": "agent", "agent": "Simulator", "status": "done",
+                                  "message": f"Winner verified: {verification['text']}."})
                     break
                 rejected_winners.append({
                     "id": result["id"], "verification": verification,
@@ -947,9 +1387,19 @@ def evolve(challenge: SceneSpec, max_generations: int = 4, n: int = 4, seed: int
                     "race_reached_goal": True, "reached_goal": False,
                     "outcome": result["outcome"], "progress_percent": result["progress_percent"],
                 })
+            if on_event:
+                on_event({"type": "agent", "agent": "Simulator", "status": "done",
+                          "message": f"Generation {generation} race complete."})
             if success:
                 break
-            if generation + 1 < max_generations and runs_used + n + 3 <= MAX_EVOLUTION_RUNS:
+            if generation + 1 < max_generations and races_used + n <= MAX_EVOLUTION_RUNS:
+                if on_event:
+                    on_event({"type": "agent", "agent": "Analyst", "status": "working",
+                              "message": "Explaining failure locations and outcomes from race telemetry…"})
+                    on_event({"type": "agent", "agent": "Analyst", "status": "done",
+                              "message": _failure_report(max(race["results"], key=lambda row: row["progress_percent"]))})
+                    on_event({"type": "agent", "agent": "Designer", "status": "working",
+                              "message": "Proposing children linked to the measured failures…"})
                 next_designs = next_generation({
                     "generation": generation,
                     "results": race["results"],
@@ -963,9 +1413,13 @@ def evolve(challenge: SceneSpec, max_generations: int = 4, n: int = 4, seed: int
                         "result": None,
                     })
                 designs = next_designs
+                if on_event:
+                    on_event({"type": "tree", "family_tree": family_tree, "designs": next_designs})
+                    on_event({"type": "agent", "agent": "Designer", "status": "done",
+                              "message": f"Generation {generation + 1} designs and family links are ready."})
             elif generation + 1 < max_generations:
-                budget_stop = (f"Evolution stopped with {runs_used}/{MAX_EVOLUTION_RUNS} runs used; "
-                               f"{n} more races plus 3 verification runs would exceed the budget.")
+                budget_stop = (f"Evolution stopped after {races_used}/{MAX_EVOLUTION_RUNS} candidate races; "
+                               f"{n} more candidate races would exceed the race budget.")
         by_id = {row["id"]: row for row in all_raced}
         for edge in family_tree:
             edge["result"] = {
@@ -990,11 +1444,26 @@ def evolve(challenge: SceneSpec, max_generations: int = 4, n: int = 4, seed: int
                 report += f" Rejected apparent winner(s): {rejected}."
             if budget_stop:
                 report += f" {budget_stop}"
+        if on_event:
+            on_event({"type": "agent", "agent": "Analyst", "status": "done",
+                      "message": report if not success else
+                      f"{winner['id']} verified {winner_verification['text']}; {winner_margin.get('text') or winner_margin.get('reason')}"})
         return {
             "challenge": challenge.title, "success": success,
+            "challenge_spec": challenge.model_dump(mode="json"),
+            "challenge_conditions": {
+                "friction": challenge.environment.friction,
+                "duration_s": challenge.duration_s,
+                "rocks": [
+                    {"size_m": obstacle.height_m, "count": obstacle.count}
+                    for obstacle in challenge.obstacles if obstacle.kind in {"rock", "boulder"}
+                ],
+            },
+            "race_scene": replay_scene,
             "generations": generations, "family_tree": family_tree,
             "best": best, "winner": winner, "verification": winner_verification,
             "margin": winner_margin, "honesty": _honesty_line(challenge),
             "rejected_winners": rejected_winners, "report": report,
+            "race_count": races_used, "simulation_count": runs_used,
             "cost": spent.snapshot(),
         }

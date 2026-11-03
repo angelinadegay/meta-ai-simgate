@@ -1,0 +1,8 @@
+{
+  "generation_3d": "race-3d-midrun.png",
+  "generation": "generation-race.png",
+  "family_tree": "family-tree.png",
+  "winner": "winner-card.png",
+  "telemetry_source": "report.json",
+  "tree_generations": 1
+}

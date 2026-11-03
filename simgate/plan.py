@@ -23,7 +23,7 @@ def _far_side_to_place(value: Any) -> Any:
 PlanPlace = Annotated[Place, BeforeValidator(_far_side_to_place)]
 
 Workflow = Literal["build", "race", "compare", "stress_test", "edit", "custom", "answer", "diagnose", "redesign",
-                   "find_failures", "traversability"]
+                   "find_failures", "traversability", "evolve"]
 FinderKnob = Literal["slope_deg", "friction", "gravity", "push_n", "payload", "obstacle_scale", "roughness", "speed"]
 FollowUp = Literal["find_failures", "stress_test", "diagnose"]   # analyses a build can be followed by
 TerrainKind = Literal["flat", "hills", "rocky", "slope", "craters", "real", "indoor"]
@@ -214,6 +214,7 @@ class Plan(BaseModel):
         min_length=1, max_length=400,
         description="A short name for the scene, used as its title, e.g. \"Three rovers race on Mars hills\".",
     )
+    evolution_challenge: Literal["victoria-rim-boulders"] | None = None
     domain: SceneDomain = "robot_terrain"
     world: WorldPlan = Field(default_factory=WorldPlan)
     robots: list[RobotPlan] = Field(default_factory=list, max_length=6)
@@ -261,7 +262,7 @@ class Plan(BaseModel):
         if self.workflow == "answer" and not self.reply:
             raise ValueError("workflow 'answer' requires reply.")
         if self.domain == "structure" and self.workflow in {"race", "compare", "stress_test", "custom", "diagnose", "redesign",
-                                                            "find_failures", "traversability"}:
+                                                            "find_failures", "traversability", "evolve"}:
             raise ValueError(f"workflow {self.workflow!r} is not available for structure scenes.")
         if self.then is not None and (self.workflow not in ("build", "race") or self.domain != "robot_terrain"):
             raise ValueError("then is only for a build or race of a robot scene: the analysis to run once it is built.")

@@ -35,6 +35,7 @@ class Session:
         self.last_redesign: dict | None = None
         self.last_finder_report: dict | None = None
         self.last_map_report: dict | None = None
+        self.last_evolution: dict | None = None
         self._finder_source_spec: SceneSpec | None = None
         self._view_shows_other_scene = False   # set after "Show runs" loads the winning design's scene
         self.pending_real_terrain_change: dict[str, str] | None = None
@@ -205,6 +206,8 @@ class Session:
                 self._finder_source_spec = spec.model_copy(deep=True)
             elif world.report["type"] == "traversability":
                 self.last_map_report = world.report
+            elif world.report["type"] == "evolution":
+                self.last_evolution = world.report
             if world.report["type"] != "traversability":
                 await self.emit({"type": world.report["type"], "report": world.report})
         else:
@@ -575,6 +578,7 @@ class Session:
         self.last_summary = self.last_diagnosis = self.last_redesign = None
         self.last_finder_report = None
         self.last_map_report = None
+        self.last_evolution = None
         self._finder_source_spec = None
 
     def _apply_library_selection(self, spec: SceneSpec) -> None:

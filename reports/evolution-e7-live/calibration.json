@@ -1,0 +1,273 @@
+{
+  "rows": [
+    {
+      "challenge": "victoria-rim-boulders",
+      "trial": 1,
+      "rock_size_m": 0.25,
+      "rock_count": 24,
+      "friction": 0.55,
+      "start_offset_m": 0.0,
+      "duration_s": 90.0,
+      "start_xy": [
+        -25.25,
+        24.79
+      ],
+      "goal_xy": [
+        -38.6,
+        9.9
+      ],
+      "qualifies": false,
+      "best_progress_percent": 100.0,
+      "any_reached": true,
+      "outcomes": [
+        {
+          "id": "G0-C",
+          "name": "Wide Six",
+          "outcome": "reached",
+          "progress_percent": 100.0,
+          "event": {
+            "time_s": 14.8,
+            "x": -32.604,
+            "y": 11.381,
+            "local_slope_deg": 5.2,
+            "step_m": 0.017
+          }
+        },
+        {
+          "id": "G0-A",
+          "name": "Trail Four",
+          "outcome": "slipped",
+          "progress_percent": 45.8,
+          "event": {
+            "time_s": 13.6,
+            "x": -29.3,
+            "y": 18.21,
+            "local_slope_deg": 5.8,
+            "step_m": 0.015,
+            "rock": {
+              "name": "Rock 16",
+              "size_m": 0.25,
+              "distance_m": 0.12
+            }
+          }
+        },
+        {
+          "id": "G0-B",
+          "name": "Steady Six",
+          "outcome": "stuck",
+          "progress_percent": 42.0,
+          "event": {
+            "time_s": 19.2,
+            "x": -28.81,
+            "y": 18.533,
+            "local_slope_deg": 5.6,
+            "step_m": 0.017,
+            "rock": {
+              "name": "Rock 7",
+              "size_m": 0.25,
+              "distance_m": 0.6
+            }
+          }
+        },
+        {
+          "id": "G0-D",
+          "name": "Light Four",
+          "outcome": "flipped",
+          "progress_percent": 5.3,
+          "event": {
+            "time_s": 3.43,
+            "x": -25.565,
+            "y": 24.022,
+            "local_slope_deg": 2.5,
+            "step_m": 0.001
+          }
+        }
+      ],
+      "adjustment": "default settings"
+    },
+    {
+      "challenge": "victoria-rim-boulders",
+      "trial": 2,
+      "rock_size_m": 0.3,
+      "rock_count": 24,
+      "friction": 0.5,
+      "start_offset_m": 0.0,
+      "duration_s": 90.0,
+      "start_xy": [
+        -25.25,
+        24.79
+      ],
+      "goal_xy": [
+        -38.6,
+        9.9
+      ],
+      "qualifies": true,
+      "best_progress_percent": 44.3,
+      "any_reached": false,
+      "outcomes": [
+        {
+          "id": "G0-C",
+          "name": "Wide Six",
+          "outcome": "slipped",
+          "progress_percent": 44.3,
+          "event": {
+            "time_s": 12.8,
+            "x": -28.779,
+            "y": 18.076,
+            "local_slope_deg": 6.0,
+            "step_m": 0.014,
+            "rock": {
+              "name": "Rock 14",
+              "size_m": 0.3,
+              "distance_m": 0.03
+            }
+          }
+        },
+        {
+          "id": "G0-A",
+          "name": "Trail Four",
+          "outcome": "slipped",
+          "progress_percent": 42.8,
+          "event": {
+            "time_s": 14.4,
+            "x": -28.628,
+            "y": 18.291,
+            "local_slope_deg": 5.9,
+            "step_m": 0.018,
+            "rock": {
+              "name": "Rock 14",
+              "size_m": 0.3,
+              "distance_m": 0.28
+            }
+          }
+        },
+        {
+          "id": "G0-B",
+          "name": "Steady Six",
+          "outcome": "stuck",
+          "progress_percent": 40.3,
+          "event": {
+            "time_s": 20.0,
+            "x": -28.491,
+            "y": 18.728,
+            "local_slope_deg": 5.6,
+            "step_m": 0.01,
+            "rock": {
+              "name": "Rock 4",
+              "size_m": 0.3,
+              "distance_m": 0.73
+            }
+          }
+        },
+        {
+          "id": "G0-D",
+          "name": "Light Four",
+          "outcome": "flipped",
+          "progress_percent": 11.0,
+          "event": {
+            "time_s": 6.07,
+            "x": -26.14,
+            "y": 23.195,
+            "local_slope_deg": 2.2,
+            "step_m": 0.001
+          }
+        }
+      ],
+      "adjustment": "larger rocks and lower loose-soil friction"
+    }
+  ],
+  "default": "victoria-rim-boulders",
+  "default_row": {
+    "challenge": "victoria-rim-boulders",
+    "trial": 2,
+    "rock_size_m": 0.3,
+    "rock_count": 24,
+    "friction": 0.5,
+    "start_offset_m": 0.0,
+    "duration_s": 90.0,
+    "start_xy": [
+      -25.25,
+      24.79
+    ],
+    "goal_xy": [
+      -38.6,
+      9.9
+    ],
+    "qualifies": true,
+    "best_progress_percent": 44.3,
+    "any_reached": false,
+    "outcomes": [
+      {
+        "id": "G0-C",
+        "name": "Wide Six",
+        "outcome": "slipped",
+        "progress_percent": 44.3,
+        "event": {
+          "time_s": 12.8,
+          "x": -28.779,
+          "y": 18.076,
+          "local_slope_deg": 6.0,
+          "step_m": 0.014,
+          "rock": {
+            "name": "Rock 14",
+            "size_m": 0.3,
+            "distance_m": 0.03
+          }
+        }
+      },
+      {
+        "id": "G0-A",
+        "name": "Trail Four",
+        "outcome": "slipped",
+        "progress_percent": 42.8,
+        "event": {
+          "time_s": 14.4,
+          "x": -28.628,
+          "y": 18.291,
+          "local_slope_deg": 5.9,
+          "step_m": 0.018,
+          "rock": {
+            "name": "Rock 14",
+            "size_m": 0.3,
+            "distance_m": 0.28
+          }
+        }
+      },
+      {
+        "id": "G0-B",
+        "name": "Steady Six",
+        "outcome": "stuck",
+        "progress_percent": 40.3,
+        "event": {
+          "time_s": 20.0,
+          "x": -28.491,
+          "y": 18.728,
+          "local_slope_deg": 5.6,
+          "step_m": 0.01,
+          "rock": {
+            "name": "Rock 4",
+            "size_m": 0.3,
+            "distance_m": 0.73
+          }
+        }
+      },
+      {
+        "id": "G0-D",
+        "name": "Light Four",
+        "outcome": "flipped",
+        "progress_percent": 11.0,
+        "event": {
+          "time_s": 6.07,
+          "x": -26.14,
+          "y": 23.195,
+          "local_slope_deg": 2.2,
+          "step_m": 0.001
+        }
+      }
+    ],
+    "adjustment": "larger rocks and lower loose-soil friction"
+  },
+  "qualified": true,
+  "seed": 0,
+  "simulations": 8
+}

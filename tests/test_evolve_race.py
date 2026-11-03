@@ -1,3 +1,4 @@
+import asyncio
 import json
 
 import pytest
@@ -53,6 +54,82 @@ def test_score_detects_all_outcomes_from_telemetry():
         assert scored["event"]["x"] is not None
         assert scored["time_s"] == (12 if expected == "reached" else 3 if expected == "flipped"
                                     else 5 if expected in ("stuck", "slipped") else 90)
+        assert len(scored["samples"]) == 7
+
+
+def test_director_routes_victoria_robot_design_request_to_evolve():
+    from simgate.director import Director
+
+    prompt = "Design a robot that can climb out of Victoria Crater."
+    plan = Director().plan(prompt)
+
+    assert plan.workflow == "evolve"
+    assert plan.world.preset == "victoria-opportunity"
+    assert plan.world.terrain_kind == "real"
+    assert plan.world.roughness == 0
+    challenge = evolve.challenge_preset("victoria-rim-boulders")
+    assert plan.evolution_challenge == "victoria-rim-boulders"
+    assert plan.start.xy == challenge.mission.start_xy
+    assert plan.goal.xy == challenge.mission.goal_xy
+    assert len(plan.obstacles) == 1 and plan.obstacles[0].kind == "rock"
+    assert plan.duration_s == 90
+    assert plan.run_now
+
+
+def test_workflow_streams_live_family_tree_updates():
+    from simgate.workflows import _stream_evolution
+
+    class FakeDirector:
+        _root_id = "root"
+
+        def __init__(self):
+            self.events = []
+
+        async def emit(self, event):
+            self.events.append(event)
+
+        async def _emit_agent_step(self, agent, model, tool, parent_id, thought, result, status):
+            self.events.append({"type": "agent", "agent": agent, "status": status})
+
+    director = FakeDirector()
+    tree = [{"parent_id": "G0-A", "child_id": "G1-A"}]
+    designs = [{"id": "G1-A", "name": "Wide Rover"}]
+
+    def job(on_event):
+        on_event({"type": "tree", "family_tree": tree, "designs": designs})
+        return {"report": "finished"}
+
+    report = asyncio.run(_stream_evolution(job, director))
+
+    assert report == {"report": "finished"}
+    assert {"type": "evolution_tree", "family_tree": tree, "designs": designs} in director.events
+
+
+def test_director_forwards_evolution_progress_events():
+    from simgate.director import Director
+
+    events = []
+
+    async def capture(event):
+        events.append(event)
+
+    director = Director(capture)
+    event = {"type": "evolution_tree", "family_tree": [], "designs": []}
+
+    asyncio.run(director.emit(event))
+
+    assert events == [event]
+
+
+def test_evolve_cues_do_not_intercept_unrelated_prompts():
+    from simgate.director import evolve_requested
+
+    assert evolve_requested("design a robot for the rocky trail")
+    assert evolve_requested("what robot could handle this place?")
+    assert evolve_requested("invent a robot")
+    assert evolve_requested("evolve")
+    assert evolve_requested("best robot for this place")
+    assert not evolve_requested("where can the rover go?")
 
 
 def test_race_runs_designs_on_same_seed_and_ranks_from_simulation(monkeypatch):
@@ -75,7 +152,7 @@ def test_race_runs_designs_on_same_seed_and_ranks_from_simulation(monkeypatch):
         return results
 
     monkeypatch.setattr("simgate.batch.run_batch", fake_batch)
-    result = evolve.race_generation(_challenge(), designs, seed=19)
+    result = evolve.race_generation(_challenge(), designs, seed=19, record_replay=False)
 
     assert calls["scene"].terrain.seed == 19
     assert [variation["seed"] for variation in calls["variations"]] == [19] * 4
@@ -232,15 +309,16 @@ def test_evolve_stops_immediately_when_any_design_reaches_goal(monkeypatch):
 
     budgets = []
 
-    def fake_margin(challenge, design, failures, budget=6):
+    def fake_margin(challenge, design, budget=6):
         budgets.append(budget)
-        cost.add_runs(budget)
+        cost.add_runs(budget * 2)
         return {
-            "available": True, "text": "It would fail if the slope were about 4° steeper.", "runs": budget,
+            "available": True, "text": "Still climbs with steeper slopes; fails below friction 0.4.",
+            "runs": budget * 2, "height_scale": {"runs": budget}, "friction": {"runs": budget},
         }
 
     monkeypatch.setattr(evolve, "verify_winner", fake_verify)
-    monkeypatch.setattr(evolve, "margin_search", fake_margin)
+    monkeypatch.setattr(evolve, "terrain_margin_search", fake_margin)
     calls = []
 
     def fake_race(challenge, designs, seed):
@@ -260,12 +338,14 @@ def test_evolve_stops_immediately_when_any_design_reaches_goal(monkeypatch):
     assert report["report"].startswith("Goal reached by ")
     assert "verified" in report["report"]
     assert budgets == [6]
-    assert report["cost"]["runs"] == 13
-    assert report["cost"]["runs"] <= evolve.MAX_EVOLUTION_RUNS
+    assert report["cost"]["runs"] == 19
+    assert report["race_count"] == 4
+    assert report["simulation_count"] == 19
     assert report["honesty"].endswith("Designs are simplified procedural robots.")
 
 
-def test_verify_winner_rejects_one_of_three_and_reports_new_seeds(monkeypatch):
+@pytest.mark.parametrize(("passes", "reliable"), [(1, False), (3, False), (4, True)])
+def test_verify_winner_requires_four_of_five_and_reports_new_seeds(monkeypatch, passes, reliable):
     from simgate import batch
 
     calls = {}
@@ -275,7 +355,7 @@ def test_verify_winner_rejects_one_of_three_and_reports_new_seeds(monkeypatch):
         return [
             {"id": f"run-{index}", "changes": variation,
              "summary": {
-                 "goal_reached": index == 1, "outcome": "reached" if index == 1 else "stuck",
+                 "goal_reached": index <= passes, "outcome": "reached" if index <= passes else "stuck",
                  "start_distance_to_goal_m": 10, "closest_distance_m": 5,
              }}
             for index, variation in enumerate(variations, start=1)
@@ -285,13 +365,15 @@ def test_verify_winner_rejects_one_of_three_and_reports_new_seeds(monkeypatch):
     candidate = evolve._rules(4)[0]
     result = evolve.verify_winner(_challenge(), candidate)
 
-    assert result["passed"] == 1
-    assert result["total"] == 3
-    assert result["reliable"] is False
-    assert [row["progress_percent"] for row in result["results"]] == [100, 50, 50]
+    assert result["passed"] == passes
+    assert result["total"] == 5
+    assert result["reliable"] is reliable
+    assert [row["progress_percent"] for row in result["results"]] == [
+        100 if index <= passes else 50 for index in range(1, 6)
+    ]
     assert result["wilson_95"][0] < result["wilson_95"][1]
-    assert [row["seed"] for row in calls["variations"]] == [1, 2, 3]
-    assert [row["perturb_seed"] for row in calls["variations"]] == [1, 2, 3]
+    assert [row["seed"] for row in calls["variations"]] == [1, 2, 3, 4, 5]
+    assert [row["perturb_seed"] for row in calls["variations"]] == [1, 2, 3, 4, 5]
     assert calls["kwargs"] == {"baseline": False, "record": False}
 
 
@@ -354,10 +436,12 @@ def test_evolve_continues_after_an_unreliable_apparent_winner(monkeypatch):
     def fake_verify(challenge, design):
         verify_calls.append(design["id"])
         return {
-            "reliable": False, "passed": 1, "total": 3, "text": "passes 1/3 (95% CI 6–79%)",
+            "reliable": False, "passed": 1, "total": 5, "text": "passes 1/5 (95% CI 6–79%)",
             "results": [
                 {"reached_goal": False, "outcome": "stuck", "progress_percent": 45},
                 {"reached_goal": True, "outcome": "reached", "progress_percent": 100},
+                {"reached_goal": False, "outcome": "stuck", "progress_percent": 50},
+                {"reached_goal": False, "outcome": "stuck", "progress_percent": 50},
                 {"reached_goal": False, "outcome": "stuck", "progress_percent": 50},
             ],
         }
@@ -445,6 +529,268 @@ def test_evolve_reports_closest_failure_and_links_family_tree(monkeypatch):
     assert report["cost"]["model_calls"] == 0
 
 
-def test_evolution_enforces_the_sixteen_race_budget():
-    with pytest.raises(ValueError, match="limited to 16"):
-        evolve.evolve(_challenge(), max_generations=5, n=4, seed=0)
+def test_evolution_enforces_twenty_candidate_races_and_five_generations():
+    with pytest.raises(ValueError, match="limited to 20"):
+        evolve.evolve(_challenge(), max_generations=5, n=5, seed=0)
+    with pytest.raises(ValueError, match="from 1 to 5"):
+        evolve.evolve(_challenge(), max_generations=6, n=4, seed=0)
+
+
+def test_hadley_and_meteor_presets_use_measured_steepest_segments():
+    for preset in ("hadley-climb-out", "meteor-crater-climb"):
+        challenge = evolve.challenge_preset(preset)
+        segment = evolve.steepest_climb_points(challenge)
+        assert challenge.mission.start_xy == segment["start_xy"]
+        assert challenge.mission.goal_xy == segment["goal_xy"]
+        assert challenge.robots[0].start_xy == segment["start_xy"]
+        assert challenge.robots[0].goal_xy == segment["goal_xy"]
+        assert segment["rise_m"] > 0
+        assert segment["slope_deg"] >= (15 if preset == "hadley-climb-out" else 10)
+
+
+def test_calibration_uses_no_winner_and_twenty_to_eighty_percent_progress():
+    assert evolve.calibration_quality([
+        {"progress_percent": 20, "reached_goal": False},
+        {"progress_percent": 80, "reached_goal": False},
+    ])["qualifies"] is True
+    assert evolve.calibration_quality([
+        {"progress_percent": 80, "reached_goal": True},
+    ])["qualifies"] is False
+    assert evolve.calibration_quality([
+        {"progress_percent": 19.9, "reached_goal": False},
+    ])["qualifies"] is False
+    assert evolve.calibration_quality([
+        {"progress_percent": 80.1, "reached_goal": False},
+    ])["qualifies"] is False
+
+
+def test_real_terrain_height_scale_changes_measured_slopes_as_expected():
+    import numpy as np
+
+    from simgate.backends.mujoco_backend import make_heights
+
+    challenge = evolve.challenge_preset("hadley-climb-out")
+    heights, _ = make_heights(challenge)
+    scaled = challenge.model_copy(deep=True)
+    scaled.terrain.height_scale = 1.2
+    scaled_heights, _ = make_heights(scaled)
+    spacing = challenge.terrain.size_m / (heights.shape[0] - 1)
+    base_dy, base_dx = np.gradient(heights, spacing, spacing)
+    scaled_dy, scaled_dx = np.gradient(scaled_heights, spacing, spacing)
+    base_p95 = np.percentile(np.degrees(np.arctan(np.hypot(base_dx, base_dy))), 95)
+    scaled_p95 = np.percentile(np.degrees(np.arctan(np.hypot(scaled_dx, scaled_dy))), 95)
+    expected = np.degrees(np.arctan(1.2 * np.tan(np.radians(base_p95))))
+    assert scaled_p95 > base_p95
+    assert scaled_p95 == pytest.approx(expected, abs=1e-4)
+
+
+def test_terrain_margin_search_uses_six_runs_for_each_finder_search(monkeypatch):
+    from simgate import finder
+
+    calls = []
+
+    class FakeRunner:
+        def __init__(self, scene, robot_id, failure, budget):
+            self.budget = budget
+            self.evidence = []
+
+        @property
+        def left(self):
+            return self.budget - len(self.evidence)
+
+        def run(self, jobs):
+            rows = []
+            for setting, _ in jobs[:self.left]:
+                knob, value = setting["knob"], setting["value"]
+                calls.append((knob, value))
+                broke = value > 1.5 if knob == "height_scale" else value < 0.4
+                row = {**setting, "id": f"r{len(self.evidence) + 1}",
+                       "broke": broke, "failure": "missed the goal"}
+                self.evidence.append(row)
+                rows.append(row)
+            return rows
+
+    monkeypatch.setattr(finder, "Runner", FakeRunner)
+    challenge = evolve.challenge_preset("hadley-climb-out")
+    result = evolve.terrain_margin_search(challenge, evolve._rules(4)[0])
+    by_knob = {knob: [value for name, value in calls if name == knob]
+               for knob in ("height_scale", "friction")}
+
+    assert result["height_scale"]["available"] is True
+    assert result["friction"]["available"] is True
+    assert len(by_knob["height_scale"]) <= 6
+    assert len(by_knob["friction"]) <= 6
+    assert result["runs"] <= 12
+    assert "P95 slopes" in result["height_scale"]["text"]
+    assert "fails below" in result["friction"]["text"]
+
+
+def test_generation_replay_combines_recorded_robot_poses_on_one_scene():
+    import base64
+    import zlib
+
+    def packed_ghost(start_x):
+        frames = [
+            [0.0, [[start_x, 0, 0.2, 1, 0, 0, 0], [start_x, 0.4, 0.1, 1, 0, 0, 0]]],
+            [1.0, [[start_x + 1, 0, 0.2, 1, 0, 0, 0], [start_x + 1, 0.4, 0.1, 1, 0, 0, 0]]],
+        ]
+        return {
+            "geom_ids": [1, 2],
+            "data": base64.b64encode(zlib.compress(json.dumps(frames).encode())).decode(),
+        }
+
+    scene = {
+        "kind": "mujoco", "world": {"body": "mars", "surface": "regolith"},
+        "geoms": [
+            {"id": 0, "name": "ground", "type": "hfield", "hfield": {"data": [0.0]}},
+            {"id": 1, "name": "chassis", "type": "box", "rgba": [0.5, 0.5, 0.5, 1]},
+            {"id": 2, "name": "wheel", "type": "cylinder", "rgba": [0.2, 0.2, 0.2, 1]},
+        ],
+        "poses": [[0, 0, 0, 1, 0, 0, 0], [0, 0, 0.2, 1, 0, 0, 0], [0, 0.4, 0.1, 1, 0, 0, 0]],
+    }
+    results = [
+        {"id": "G0-A", "name": "Red Rover", "color": "#ef829f", "reached_goal": False,
+         "outcome": "stuck", "event": {"x": 1, "y": 2}},
+        {"id": "G0-B", "name": "Green Walker", "color": "#40d8a0", "reached_goal": True,
+         "outcome": "reached", "event": {"x": 3, "y": 4}},
+    ]
+    runs = {
+        "G0-A": {"race_scene": scene, "ghost": packed_ghost(0), "race_follow_geom": 1},
+        "G0-B": {"race_scene": scene, "ghost": packed_ghost(5), "race_follow_geom": 1},
+    }
+
+    replay = evolve._generation_replay(runs, results, 1.0)
+    track = replay["track"]
+    frames = json.loads(zlib.decompress(base64.b64decode(track["frames"])))
+
+    assert len(replay["scene"]["geoms"]) == 1
+    assert len(track["geoms"]) == 4
+    assert len(track["robots"]) == 2
+    assert len(track["failure_markers"]) == 1
+    assert track["failure_markers"][0]["label"].startswith("✕ stuck")
+    assert track["frame_count"] == len(frames)
+    assert len(frames[0][1]) == 5
+
+
+def test_director_uses_hadley_steep_climb_for_explicit_request():
+    from simgate.director import Director
+
+    plan = Director().plan("Design a robot that can climb out of Hadley Rille.")
+    challenge = evolve.challenge_preset("hadley-climb-out")
+
+    assert plan.workflow == "evolve"
+    assert plan.world.preset == "apollo15-hadley-rille"
+    assert plan.start.xy == challenge.mission.start_xy
+    assert plan.goal.xy == challenge.mission.goal_xy
+
+
+def test_director_uses_calibrated_challenge_as_demo_default():
+    from simgate.director import Director
+
+    plan = Director().plan("Design a robot for the calibrated default challenge.")
+
+    assert plan.workflow == "evolve"
+    assert plan.world.preset == "victoria-opportunity"
+    assert plan.evolution_challenge == "victoria-rim-boulders"
+    challenge = evolve.challenge_preset("victoria-rim-boulders")
+    assert plan.start.xy == challenge.mission.start_xy
+    assert plan.goal.xy == challenge.mission.goal_xy
+    assert plan.duration_s >= 2 * (
+        __import__("math").dist(plan.start.xy, plan.goal.xy) / 3.0
+    )
+
+
+def test_victoria_rim_boulders_uses_steep_climb_rocks_friction_and_generous_time():
+    challenge = evolve.challenge_preset("victoria-rim-boulders")
+    segment = evolve.steepest_climb_points(
+        challenge, start_height_percentile=30, goal_height_percentile=80,
+    )
+
+    assert challenge.terrain.preset == "victoria-opportunity"
+    assert challenge.mission.start_xy == segment["start_xy"]
+    assert challenge.mission.goal_xy == segment["goal_xy"]
+    assert challenge.obstacles[0].kind == "rock"
+    assert challenge.obstacles[0].placement == "path"
+    assert 0.15 <= challenge.obstacles[0].height_m <= 0.35
+    assert 12 <= challenge.obstacles[0].count <= 30
+    assert 0.45 <= challenge.environment.friction <= 0.65
+    assert challenge.duration_s >= 2 * (
+        __import__("math").dist(challenge.mission.start_xy, challenge.mission.goal_xy) / 3.0
+    )
+    assert challenge.duration_s == pytest.approx(90.0)
+    assert "friction is set to" in challenge.assumptions[-1]
+
+
+def test_victoria_boulder_calibration_rejects_out_of_range_physical_settings():
+    with pytest.raises(ValueError, match="Rock size"):
+        evolve.challenge_preset("victoria-rim-boulders", rock_size_m=0.36)
+    with pytest.raises(ValueError, match="density"):
+        evolve.challenge_preset("victoria-rim-boulders", rock_count=31)
+    with pytest.raises(ValueError, match="friction"):
+        evolve.challenge_preset("victoria-rim-boulders", friction=0.7)
+    with pytest.raises(ValueError, match="offset"):
+        evolve.challenge_preset("victoria-rim-boulders", start_offset_m=6.1)
+
+
+def test_failure_event_names_nearest_rock_and_reason_uses_its_size():
+    design = evolve._rules(4)[0]
+    run = {
+        "summary": {
+            "goal_reached": False, "start_distance_to_goal_m": 10, "closest_distance_m": 5,
+            "race_telemetry": {"samples": [
+                {"time_s": 0, "x": 1.0, "y": 2.0, "local_slope_deg": 17, "step_m": 0.2},
+                {"time_s": 5, "x": 1.0, "y": 2.0, "local_slope_deg": 17, "step_m": 0.2},
+            ]},
+        },
+        "race_scene": {
+            "course": [{"name": "obs0_rock", "kind": "rock", "height_m": 0.3,
+                        "geoms": ["obs0_rock_0"]}],
+            "geoms": [{"name": "obs0_rock_0"}],
+            "poses": [[1.1, 2.0, 0.1]],
+        },
+    }
+
+    result = evolve._score_race_result(design, run, 90)
+
+    assert result["outcome"] == "stuck"
+    assert result["event"]["rock"] == {"name": "Rock 1", "size_m": 0.3, "distance_m": 0.1}
+    assert "0.30 m rock" in evolve._failure_fact(result)
+
+
+def test_rock_margin_search_uses_finder_for_larger_rocks_and_friction(monkeypatch):
+    from simgate import finder
+
+    calls = []
+
+    class FakeRunner:
+        def __init__(self, scene, robot_id, failure, budget):
+            self.budget = budget
+            self.evidence = []
+
+        @property
+        def left(self):
+            return self.budget - len(self.evidence)
+
+        def run(self, jobs):
+            rows = []
+            for setting, _ in jobs[:self.left]:
+                knob, value = setting["knob"], setting["value"]
+                calls.append((knob, value))
+                broke = value > 1.5 if knob == "obstacle_scale" else value < 0.4
+                row = {**setting, "id": f"r{len(self.evidence) + 1}",
+                       "broke": broke, "failure": "stuck at rock"}
+                self.evidence.append(row)
+                rows.append(row)
+            return rows
+
+    monkeypatch.setattr(finder, "Runner", FakeRunner)
+    challenge = evolve.challenge_preset("victoria-rim-boulders")
+    result = evolve.terrain_margin_search(challenge, evolve._rules(4)[0])
+
+    assert result["rock_size"]["available"]
+    assert result["friction"]["available"]
+    assert "rock_size" in result and "height_scale" not in result
+    assert len([row for row in calls if row[0] == "obstacle_scale"]) <= 6
+    assert len([row for row in calls if row[0] == "friction"]) <= 6
+    assert "rocks" in result["rock_size"]["text"]
+    assert "friction" in result["friction"]["text"]

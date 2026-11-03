@@ -47,6 +47,48 @@ class SessionState:
 
 async def execute(plan: Plan, current: SceneSpec | None, director: "Director",
                   state: SessionState | None = None) -> WorkflowResult:
+    if plan.workflow == "evolve":
+        from .evolve import evolve
+
+        world = await _prepare_robot_world(plan, current, director)
+        if plan.start is not None:
+            for entry in world.spec.robots:
+                entry.start_xy, entry.start_place = plan.start.xy, plan.start.place
+                entry.start_structure = plan.start.structure
+        if world.spec.robots:
+            for entry in world.spec.robots:
+                if entry.start_xy is None and entry.start_place is None:
+                    entry.start_place = "lowest"
+                if entry.goal_xy is None and entry.goal_place is None and entry.goal_structure is None:
+                    entry.goal_place = "highest"
+            world.spec.fill_defaults()
+        if plan.evolution_challenge == "victoria-rim-boulders":
+            from .evolve import challenge_preset
+
+            challenge = challenge_preset("victoria-rim-boulders", duration_s=plan.duration_s or 90.0)
+            challenge.robot = world.spec.robot.model_copy(deep=True)
+            challenge.robots = [world.spec.robots[0].model_copy(deep=True)]
+            challenge.robots[0].robot = challenge.robot.model_copy(deep=True)
+            challenge.robots[0].start_xy = challenge.mission.start_xy
+            challenge.robots[0].start_place = None
+            challenge.robots[0].goal_xy = challenge.mission.goal_xy
+            challenge.robots[0].goal_place = None
+            world.spec = challenge
+        ready, message = await _check_and_repair(world, director, "Building the place for the robot-design race.")
+        if not ready or world.build is None:
+            return world, message
+        if len(world.spec.robots) != 1 or not world.spec.robots[0].mission().has_goal():
+            raise ValueError("Evolution needs one robot-terrain challenge with a start and goal.")
+        report = await _stream_evolution(
+            lambda on_event: evolve(world.spec, on_event=on_event),
+            director,
+        )
+        report["type"] = "evolution"
+        report["challenge_spec"] = world.spec.model_dump(mode="json")
+        report["challenge_scene"] = world.build.scene
+        report["challenge_code"] = world.build.code
+        world.report = report
+        return world, report["report"]
     if plan.workflow == "traversability":
         from .traversability import map_report
 
@@ -259,6 +301,45 @@ async def _analysis(plan: Plan, current: SceneSpec | None, director: "Director",
     report = await _stream_steps(job, director, parent)
     world.report = report
     return world, report.get("conclusion") or report.get("message", "")
+
+
+async def _stream_evolution(job, director: "Director") -> dict:
+    """Run the bounded evolution in a worker while streaming team and generation updates."""
+    loop = asyncio.get_running_loop()
+    queue: asyncio.Queue = asyncio.Queue()
+
+    def notify(event: dict) -> None:
+        loop.call_soon_threadsafe(queue.put_nowait, event)
+
+    def run() -> None:
+        try:
+            queue_result = job(notify)
+            loop.call_soon_threadsafe(queue.put_nowait, {"type": "_complete", "report": queue_result})
+        except Exception as error:
+            loop.call_soon_threadsafe(queue.put_nowait, {"type": "_error", "error": error})
+
+    task = asyncio.create_task(asyncio.to_thread(run))
+    while True:
+        event = await queue.get()
+        if event["type"] == "_complete":
+            await task
+            return event["report"]
+        if event["type"] == "_error":
+            await task
+            raise event["error"]
+        if event["type"] == "agent":
+            await director._emit_agent_step(
+                event["agent"], "rules", "evolve", director._root_id,
+                event["message"], event["message"], event["status"],
+            )
+        elif event["type"] == "generation":
+            await director.emit({"type": "evolution_generation", "generation": event["generation"]})
+        elif event["type"] == "race_scene":
+            await director.emit({"type": "evolution_race_scene", "scene": event["scene"]})
+        elif event["type"] == "tree":
+            await director.emit({
+                "type": "evolution_tree", "family_tree": event["family_tree"], "designs": event["designs"],
+            })
 
 
 async def _find_failures(plan: Plan, current: SceneSpec | None, director: "Director", state: SessionState) -> WorkflowResult:

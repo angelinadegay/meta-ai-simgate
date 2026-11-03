@@ -13,13 +13,26 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-# The tests see an empty uploads folder, never the files you uploaded while using the app. It sits inside the real
-# uploads folder (git-ignored) so project-relative mesh paths still resolve, and goes away when the run ends.
-if not os.getenv("SIMGATE_UPLOADS_DIR"):
-    _real_uploads = Path(__file__).resolve().parent.parent / "simgate" / "library" / "uploads"
-    _real_uploads.mkdir(parents=True, exist_ok=True)
-    os.environ["SIMGATE_UPLOADS_DIR"] = tempfile.mkdtemp(dir=_real_uploads, prefix=".test-session-")
-    atexit.register(shutil.rmtree, os.environ["SIMGATE_UPLOADS_DIR"], ignore_errors=True)
+# Tests always use an empty uploads folder, regardless of the developer's app configuration.
+_real_uploads = Path(__file__).resolve().parent.parent / "simgate" / "library" / "uploads"
+_real_uploads.mkdir(parents=True, exist_ok=True)
+_previous_uploads_dir = os.environ.get("SIMGATE_UPLOADS_DIR")
+_test_uploads_dir = tempfile.mkdtemp(dir=_real_uploads, prefix=".test-session-")
+os.environ["SIMGATE_UPLOADS_DIR"] = _test_uploads_dir
+from simgate.library import uploads as _uploads  # noqa: E402
+
+_uploads.UPLOADS_DIR = Path(_test_uploads_dir)
+
+
+def _cleanup_test_uploads():
+    shutil.rmtree(_test_uploads_dir, ignore_errors=True)
+    if _previous_uploads_dir is None:
+        os.environ.pop("SIMGATE_UPLOADS_DIR", None)
+    else:
+        os.environ["SIMGATE_UPLOADS_DIR"] = _previous_uploads_dir
+
+
+atexit.register(_cleanup_test_uploads)
 
 from simgate import agents  # noqa: E402
 from simgate.backends.mujoco_backend import MuJoCoSimulator  # noqa: E402
@@ -304,10 +317,13 @@ def test_model_plans_get_a_finish_line_and_a_named_goal():
         config.MOCK_MODE, llm.chat = original_mock, original_chat
 
 
-def test_robot_entry_errors_list_kinds_and_library_ids():
+def test_robot_entry_errors_list_kinds_and_library_ids(monkeypatch, tmp_path):
     import pytest
 
     from simgate.plan import RobotPlan
+    from simgate.library import uploads
+
+    monkeypatch.setattr(uploads, "UPLOADS_DIR", tmp_path / "uploads")
 
     for bad in ({"kind": "humanoid"}, {"kind": "library"}, {}, {"robot_id": "go3"}, {"kind": "rover", "robot_id": "g1"}):
         with pytest.raises(ValueError) as error:
@@ -1095,10 +1111,13 @@ def test_build_custom_retries_and_emits_attempt_steps():
         config.BUILDER_MAX_RETRIES = original_retries
 
 
-def test_plan_prompt_offers_built_in_robots_only_as_kinds():
+def test_plan_prompt_offers_built_in_robots_only_as_kinds(monkeypatch, tmp_path):
     import json
 
     from simgate.director import _plan_system
+    from simgate.library import uploads
+
+    monkeypatch.setattr(uploads, "UPLOADS_DIR", tmp_path / "uploads")
 
     prompt = _plan_system()
     listed = prompt.split("Available library robots and policies:\n", 1)[1].splitlines()[0]

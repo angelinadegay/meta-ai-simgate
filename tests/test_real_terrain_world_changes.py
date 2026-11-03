@@ -57,7 +57,18 @@ def test_earth_gravity_option_keeps_gale_elevation():
     assert any(event["type"] == "scene" for event in events)
 
 
-def test_earth_terrain_option_uses_generated_hills():
+def test_earth_terrain_option_uses_generated_hills(monkeypatch, tmp_path):
+    import numpy as np
+
+    from simgate import terrain_data
+
+    monkeypatch.setattr(terrain_data, "TERRAIN_DIR", tmp_path / "terrains")
+    monkeypatch.setattr(terrain_data, "_uploaded_dir", lambda: tmp_path / "uploads" / "terrain")
+    monkeypatch.setattr(terrain_data, "load_preset", lambda name: (
+        np.zeros((32, 32)),
+        {"label": "Gale Crater", "body": "mars", "surface": "rock", "size_m": 10.0,
+         "relief_m": 0.0, "typical_slope_deg": 0.0, "credit": "Test fixture"},
+    ))
     session, events = run_flow("Earth terrain instead")
 
     assert session.spec.environment.body == "earth"

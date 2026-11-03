@@ -154,6 +154,17 @@
   .msg .cost-note { display: block; margin-top: 4px; color: var(--muted); font-size: 11px; font-family: 'JetBrains Mono', monospace; }
   .analysis-lines { margin: 6px 0 0; color: var(--muted); font-size: 11.5px; }
   .analysis-text { margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--line); }
+  .evolution-generation { margin-top: 10px; padding: 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel-2); }
+  .evolution-race { display: block; width: 100%; max-height: 260px; background: #101525; border-radius: 7px; }
+  .evolution-tree { display: grid; gap: 6px; margin-top: 8px; }
+  .evolution-node { display: grid; grid-template-columns: 28px 1fr; gap: 3px 8px; padding: 7px; border: 1px solid var(--line); border-radius: 7px; }
+  .evolution-node.winner { border-color: var(--ok); box-shadow: inset 3px 0 var(--ok); }
+  #evolutionWinner .evolution-node { grid-template-columns: minmax(0, 1fr); }
+  .evolution-silhouette { grid-row: span 3; color: var(--accent); font-size: 20px; }
+  .evolution-muted { color: var(--muted); font-size: 11px; }
+  .evolution-live { color: var(--muted); font-size: 11px; margin-top: 5px; }
+  .evolution-buttons { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
+  .evolution-buttons[hidden] { display: none; }
   .design-table { width: 100%; border-collapse: collapse; margin-bottom: 6px; }
   .design-table th { text-align: left; color: var(--muted); font-weight: 500; font-size: 11px; }
   .design-table td, .design-table th { padding: 2px 4px; border-bottom: 1px solid var(--line); }
@@ -491,6 +502,10 @@
         </div>
       </form>
       <div class="hints" id="examples" aria-label="Example prompts"></div>
+      <div class="hints">
+        <button class="chip primary" id="designRobotHome" type="button">Design a robot for this place</button>
+        <button class="chip" id="replayEvolutionHome" type="button" hidden>Replay saved evolution</button>
+      </div>
     </section>
     <div id="homeExplore">
       <section class="section">
@@ -627,6 +642,13 @@
       <div class="card" id="diagnosisCard" hidden><h3>Diagnosis</h3><div id="diagnosisRows"></div><div class="analysis-lines" id="diagnosisDecisions"></div><div class="analysis-text" id="diagnosisConclusion"></div><div class="cost-line" id="diagnosisCost"></div></div>
       <div class="card" id="redesignCard" hidden><h3>Redesign</h3><div id="redesignBody"></div>
         <div class="card-actions" id="redesignActions"><button type="button" class="chip primary" id="useDesign">Use this design</button><button type="button" class="chip" id="showRuns">Show runs</button></div><div class="cost-line" id="redesignCost"></div></div>
+      <div class="card" id="evolutionCard" hidden><h3>Robot evolution</h3>
+        <div id="evolutionSummary"></div><div id="evolutionLive" class="evolution-live"></div>
+        <div id="evolutionGenerations"></div><h4>Family tree</h4><div id="evolutionTree" class="evolution-tree"></div>
+        <div id="evolutionWinner"></div><p id="evolutionHonesty" class="honesty"></p>
+        <div id="evolutionCost" class="cost-line"></div>
+        <div class="evolution-buttons"><button type="button" class="chip" id="replayEvolution">Replay saved evolution</button></div>
+      </div>
       </section>
       <section class="panel-section" data-panel-section="library" hidden>
         <details id="libraryPanel">
@@ -678,7 +700,7 @@ import { decorateIndoor, apartmentThumbnail } from "/static/vendor/indoor-visual
 import { createMissionFlag, disposeMissionMarkers } from "/static/vendor/mission-markers.js";
 
 const $ = (id) => document.getElementById(id);
-const AGENT_COLORS = { Director: "--director", Planner: "--planner", Router: "--router", Builder: "--builder", Checker: "--checker", Simulator: "--simulator", Explainer: "--explainer", "Stress planner": "--planner", "Batch runner": "--simulator" };
+const AGENT_COLORS = { Director: "--director", Planner: "--planner", Router: "--router", Builder: "--builder", Checker: "--checker", Simulator: "--simulator", Explainer: "--explainer", Analyst: "--explainer", "Stress planner": "--planner", "Batch runner": "--simulator" };
 const EXAMPLES = [
   ["Robot on Mars", "Can a humanoid robot walk on Mars?"],
   ["Test an earthquake", "How would a building behave during an earthquake?"],
@@ -719,6 +741,14 @@ let detailsMode = false;
 let agentActivity = new Map();
 let agentStepHistory = new Map();
 let savedWorlds = readSavedWorlds();
+let savedEvolution = null;
+let currentEvolution = null;
+let evolutionAnimation = null;
+let evolutionRaceScene = null;
+readSavedEvolution().then(report => {
+  savedEvolution = report;
+  $("replayEvolutionHome").hidden = !report;
+}).catch(error => addMsg(`Could not load the saved evolution replay: ${error.message}`, "err"));
 let lastRequestText = "";
 let preserveLaunchMessage = false;
 let latestInsight = null;
@@ -727,6 +757,33 @@ function readSavedWorlds() {
     const saved = JSON.parse(localStorage.getItem("simgate.savedWorlds") || "[]");
     return Array.isArray(saved) ? saved : [];
   } catch { return []; }
+}
+async function readSavedEvolution() {
+  const raw = localStorage.getItem("simgate.savedEvolution");
+  if (!raw) return null;
+  let saved = JSON.parse(raw);
+  if (saved?.encoding === "deflate-base64") {
+    if (typeof DecompressionStream === "undefined")
+      throw new Error("This browser cannot decode the compressed evolution replay.");
+    const bytes = Uint8Array.from(atob(saved.data), char => char.charCodeAt(0));
+    const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream("deflate"));
+    saved = JSON.parse(await new Response(stream).text());
+  }
+  return saved?.challenge_spec && Array.isArray(saved.generations) ? saved : null;
+}
+async function saveSavedEvolution(report) {
+  if (typeof CompressionStream === "undefined")
+    throw new Error("This browser cannot compress the full evolution replay for local storage.");
+  const stream = new Blob([JSON.stringify(report)]).stream().pipeThrough(new CompressionStream("deflate"));
+  const bytes = new Uint8Array(await new Response(stream).arrayBuffer());
+  let binary = "";
+  for (let offset = 0; offset < bytes.length; offset += 0x8000)
+    binary += String.fromCharCode(...bytes.subarray(offset, offset + 0x8000));
+  localStorage.setItem("simgate.savedEvolution", JSON.stringify({
+    encoding: "deflate-base64", data: btoa(binary),
+  }));
+  savedEvolution = report;
+  $("replayEvolutionHome").hidden = false;
 }
 
 // ── Chat timeline ───────────────────────────────────────────────────────
@@ -750,11 +807,11 @@ let activeRequestProgress = null;
 const agentPositions = {
   Director: [55, 38], Builder: [175, 38], Checker: [295, 38],
   Simulator: [295, 115], Explainer: [175, 115], "Stress planner": [55, 115],
-  Designer: [55, 190], "Batch runner": [175, 190],
+  Designer: [55, 190], "Batch runner": [175, 190], Analyst: [295, 190],
 };
 const HIDDEN_UNTIL_USED = new Set(["Stress planner", "Designer", "Batch runner"]);
-const AGENT_ORDER = ["Director", "Builder", "Checker", "Simulator", "Hunter", "Explainer", "Designer", "Batch runner", "Stress planner"];
-const AGENT_ICONS = { Director: "✧", Builder: "▦", Checker: "◈", Simulator: "▷", Hunter: "◎", Explainer: "✺", Designer: "✦", "Batch runner": "▤", "Stress planner": "⌁" };
+const AGENT_ORDER = ["Director", "Builder", "Checker", "Simulator", "Hunter", "Explainer", "Designer", "Analyst", "Batch runner", "Stress planner"];
+const AGENT_ICONS = { Director: "✧", Builder: "▦", Checker: "◈", Simulator: "▷", Hunter: "◎", Explainer: "✺", Designer: "✦", Analyst: "◉", "Batch runner": "▤", "Stress planner": "⌁" };
 const AGENT_DESCRIPTIONS = {
   Director: "The organizer · I translate your idea into a clear plan and coordinate everyone.",
   Builder: "The maker · I turn your description into a world you can explore.",
@@ -763,6 +820,7 @@ const AGENT_DESCRIPTIONS = {
   Hunter: "The curious detective · I search the conditions until we discover where things stop working.",
   Explainer: "The storyteller · I turn measurements and evidence into plain-language answers.",
   Designer: "The inventor · I test possible improvements and show you their trade-offs.",
+  Analyst: "The evidence reader · I explain failures from measured simulation telemetry.",
   "Batch runner": "Runs bounded comparisons and replays measured outcomes.",
   "Stress planner": "Chooses compatible conditions for a stress test.",
 };
@@ -808,14 +866,15 @@ function updateEdges() {
     const visible = [edge.dataset.from, edge.dataset.to].every((name) => agentNodes.get(name)?.group.style.display !== "none");
     edge.style.display = visible ? "" : "none";
   }
-  const thirdRow = ["Designer", "Batch runner"].some((name) => agentNodes.get(name)?.group.style.display !== "none");
+  const thirdRow = ["Designer", "Batch runner", "Analyst"].some((name) => agentNodes.get(name)?.group.style.display !== "none");
   $("agentGraph").setAttribute("viewBox", `0 0 360 ${thirdRow ? 235 : 160}`);   // grow only when that row is used
 }
 function initAgentGraph() {
   const svg = $("agentGraph"), ns = "http://www.w3.org/2000/svg";
   svg.replaceChildren();
   for (const [from, to] of [["Director", "Builder"], ["Builder", "Checker"], ["Checker", "Simulator"], ["Simulator", "Explainer"],
-    ["Director", "Stress planner"], ["Explainer", "Batch runner"], ["Designer", "Batch runner"]]) {
+    ["Director", "Stress planner"], ["Explainer", "Batch runner"], ["Designer", "Batch runner"],
+    ["Simulator", "Analyst"], ["Analyst", "Designer"]]) {
     const edge = document.createElementNS(ns, "path");
     edge.setAttribute("d", edgePath(agentPositions[from], agentPositions[to]));
     edge.classList.add("agent-edge"); edge.dataset.from = from; edge.dataset.to = to; svg.appendChild(edge);
@@ -1207,6 +1266,7 @@ function renderHomeRobots() {
 }
 function renderHome() {
   renderHomeWorlds(); renderHomeRobots(); renderChooser();
+  $("replayEvolutionHome").hidden = !savedEvolution;
 }
 function renderChooser() {
   const chooser = $("chooser"), hasChoice = Boolean(selectedHomeWorld || selectedHomeRobot);
@@ -1247,6 +1307,9 @@ function launchSavedWorld(entry) {
 }
 $("homeForm").onsubmit = (event) => { event.preventDefault(); const text = $("homeInput").value.trim(); if (text) { $("homeInput").value = ""; send(text); } };
 $("form").onsubmit = (e) => { e.preventDefault(); const t = $("input").value.trim(); if (t) { send(t); $("input").value = ""; } };
+$("designRobotHome").onclick = () => fillHomePrompt("Design a robot that can climb out of Victoria Crater.");
+$("replayEvolutionHome").onclick = replaySavedEvolution;
+$("replayEvolution").onclick = replaySavedEvolution;
 $("homeBrand").onclick = () => showHome("explore");
 $("navExplore").onclick = () => showHome("explore");
 $("navMyWorlds").onclick = () => showHome("myworlds");
@@ -1630,6 +1693,22 @@ ws.onmessage = (m) => {
       renderTraversability(ev.report); setStatus(ev.report.unreliable ? "Map uncertain" : "Map ready");
       setRequestProgress("Measured map and route evidence are ready.", "done");
       addInsight("Where can it go?", ev.report.summary, "analysis"); showPanel("analysis"); break;
+    case "evolution_generation":
+      renderEvolutionGeneration(ev.generation, true);
+      $("evolutionLive").textContent = `Generation ${ev.generation.generation} recorded · replaying race telemetry…`;
+      $("evolutionCard").hidden = false; showPanel("analysis"); break;
+    case "evolution_race_scene":
+      evolutionRaceScene = ev.scene; break;
+    case "evolution_tree":
+      renderEvolutionTree(ev.family_tree, ev.designs);
+      $("evolutionLive").textContent = "Family tree updated · next generation is ready.";
+      break;
+    case "evolution":
+      renderEvolution(ev.report, ev.replay === true);
+      setStatus(ev.report.success ? "Verified winner" : "Evolution complete");
+      setRequestProgress(ev.replay ? "Saved evolution replay loaded from recorded evidence." : "Evolution complete; race evidence and family tree are ready.", "done");
+      addInsight(ev.report.success ? "Robot design verified" : "Robot evolution complete", ev.report.report, "analysis");
+      showPanel("analysis"); break;
     case "redesign": setStatus("Ready"); setRequestProgress("Design search complete. Results are ready.", "done"); renderRedesign(ev.report); addInsight("Design search complete", detailForReport(ev.report), "analysis"); break;
     case "batch_start":
       setRequestProgress("Testing scene conditions…");
@@ -1676,6 +1755,7 @@ ws.onmessage = (m) => {
       agentActivity = new Map(); agentStepHistory = new Map(); renderAgentBar(); currentSpec = null; currentMetrics = null;
       currentRedesignRobotId = null; current = null; frames = []; $("empty").hidden = false; $("checksCard").hidden = true; $("metricsCard").hidden = true;
       $("diagnosisCard").hidden = true; $("redesignCard").hidden = true; $("envelopeCard").hidden = true;
+      $("evolutionCard").hidden = true;
       break;
     case "library_selected":
       $("libraryStatus").textContent = `Selected ${ev.robot} · ${ev.policy} · ${ev.world}.`;
@@ -1749,6 +1829,213 @@ function renderTraversability(report) {
     button.type = "button"; button.onclick = () => replay(run.id); $("mapReplays").appendChild(button);
   }
   showCost("mapCost", report.cost);
+}
+function evolutionSvg(tag, attrs = {}, text = "") {
+  const node = document.createElementNS("http://www.w3.org/2000/svg", tag);
+  for (const [key, value] of Object.entries(attrs)) node.setAttribute(key, String(value));
+  if (text) node.textContent = text;
+  return node;
+}
+function evolutionPoints(row) {
+  const points = (row.samples || []).filter(sample => Number.isFinite(Number(sample.x)) && Number.isFinite(Number(sample.y)))
+    .map(sample => ({ x: Number(sample.x), y: Number(sample.y), t: Number(sample.time_s) || 0 }));
+  if (points.length) return points;
+  const event = row.event || {};
+  return Number.isFinite(Number(event.x)) && Number.isFinite(Number(event.y))
+    ? [{ x: Number(event.x), y: Number(event.y), t: Number(event.time_s) || 0 }] : [];
+}
+function renderEvolutionGeneration(generation, append = false) {
+  const container = $("evolutionGenerations");
+  if (!append) container.replaceChildren();
+  const existing = [...container.children].find(node => node.dataset.generation === String(generation.generation));
+  if (existing) existing.remove();
+  const card = document.createElement("section"); card.className = "evolution-generation";
+  card.dataset.generation = String(generation.generation);
+  const title = textEl("strong", `Generation ${generation.generation}`);
+  const play = textEl("button", "Replay race", "chip"); play.type = "button";
+  const heading = document.createElement("div"); heading.className = "card-actions"; heading.append(title, play); card.appendChild(heading);
+  const rows = generation.results || [];
+  const svg = evolutionSvg("svg", { viewBox: "0 0 560 250", class: "evolution-race", role: "img",
+    "aria-label": `Generation ${generation.generation} robot race paths` });
+  svg.appendChild(evolutionSvg("rect", { x: 0, y: 0, width: 560, height: 250, rx: 8, fill: "#101525" }));
+  svg.appendChild(evolutionSvg("path", { d: "M32 218 H538 M32 20 V218", stroke: "#475069", "stroke-width": 1, fill: "none" }));
+  const raw = rows.map(row => ({ row, points: evolutionPoints(row) }));
+  const allPoints = raw.flatMap(item => item.points);
+  const minX = Math.min(0, ...allPoints.map(point => point.x)), maxX = Math.max(0, ...allPoints.map(point => point.x));
+  const minY = Math.min(0, ...allPoints.map(point => point.y)), maxY = Math.max(0, ...allPoints.map(point => point.y));
+  const px = x => 38 + (x - minX) / (maxX - minX || 1) * 490;
+  const py = y => 210 - (y - minY) / (maxY - minY || 1) * 176;
+  const markers = [];
+  for (const { row, points } of raw) {
+    const color = /^#[\da-f]{6}$/i.test(row.color || "") ? row.color : "#63d9bd";
+    const isWinner = row.verified_winner === true;
+    if (points.length) {
+      svg.appendChild(evolutionSvg("path", {
+        d: points.map((point, index) => `${index ? "L" : "M"}${px(point.x).toFixed(1)},${py(point.y).toFixed(1)}`).join(" "),
+        fill: "none", stroke: color, "stroke-width": isWinner ? 4 : 2.5, "stroke-opacity": 0.9,
+      }));
+      const event = row.event || {};
+      if (!row.reached_goal && Number.isFinite(Number(event.x)) && Number.isFinite(Number(event.y))) {
+        const fx = px(Number(event.x)), fy = py(Number(event.y));
+        svg.appendChild(evolutionSvg("path", { d: `M${fx - 6},${fy - 6} L${fx + 6},${fy + 6} M${fx + 6},${fy - 6} L${fx - 6},${fy + 6}`,
+          stroke: "#ff6d79", "stroke-width": 3, "stroke-linecap": "round" }));
+        svg.appendChild(evolutionSvg("text", { x: fx + 8, y: fy - 7, fill: "#ffb8bd", "font-size": 10 },
+          `${row.outcome} · ${row.name}`));
+      }
+      const marker = evolutionSvg("g", {});
+      const labelOffset = (markers.length - (raw.length - 1) / 2) * 10;
+      marker.appendChild(evolutionSvg("circle", { r: 7, fill: color, stroke: "#fff", "stroke-width": 1.5 }));
+      marker.appendChild(evolutionSvg("text", { x: 10, y: 4 + labelOffset, fill: "#fff", "font-size": 10, "font-weight": 700 }, row.name || row.id));
+      svg.appendChild(marker); markers.push({ marker, points, row, px, py });
+      svg.appendChild(evolutionSvg("text", { x: px(points[0].x) + 7, y: py(points[0].y) - 7, fill: color, "font-size": 9 }, row.id));
+    }
+    const eventFacts = [
+      row.event?.rock ? `${row.event.rock.name} (${Number(row.event.rock.size_m).toFixed(2)} m rock)` : "",
+      row.event?.local_slope_deg != null ? `${Number(row.event.local_slope_deg).toFixed(1)}° slope` : "",
+      row.event?.x != null && row.event?.y != null ? `(${Number(row.event.x).toFixed(1)}, ${Number(row.event.y).toFixed(1)})` : "",
+    ].filter(Boolean).join(" · ");
+    const result = textEl("div", `${isWinner ? "🏆 " : ""}${row.color ? "● " : ""}${row.id} · ${row.name} · ${row.kind} · ${row.outcome} · ${row.progress_percent}%${row.event?.time_s != null ? ` · ${row.event.time_s}s` : ""}${eventFacts ? ` · ${eventFacts}` : ""}`, "evolution-muted");
+    if (row.color) result.style.color = color;
+    if (isWinner) result.style.fontWeight = "700";
+    card.appendChild(result);
+  }
+  card.appendChild(svg);
+  let animationFrame = 0;
+  play.onclick = () => {
+    if (generation.race_replay && (currentEvolution?.race_scene || evolutionRaceScene)) {
+      playEvolutionRace(generation).catch(error => addMsg(`Could not replay the 3D race: ${error.message}`, "err"));
+      return;
+    }
+    if (evolutionAnimation) cancelAnimationFrame(evolutionAnimation);
+    const began = performance.now(), duration = 6000;
+    const animate = now => {
+      const progress = Math.max(0, Math.min(1, (now - began) / duration));
+      for (const item of markers) {
+        const index = Math.min(item.points.length - 1, Math.floor(progress * (item.points.length - 1)));
+        const point = item.points[index];
+        item.marker.setAttribute("transform", `translate(${item.px(point.x)} ${item.py(point.y)})`);
+      }
+      if (progress < 1) evolutionAnimation = requestAnimationFrame(animate);
+      else evolutionAnimation = null;
+    };
+    animationFrame = requestAnimationFrame(animate);
+    evolutionAnimation = animationFrame;
+  };
+  container.appendChild(card);
+  if (append) play.click();
+}
+async function playEvolutionRace(generation) {
+  const replayScene = currentEvolution?.race_scene || evolutionRaceScene;
+  const track = generation.race_replay;
+  if (!replayScene || !track || track.encoding !== "deflate-base64" || typeof DecompressionStream === "undefined")
+    throw new Error("The saved race is missing its 3D scene or this browser cannot decode its track.");
+  const bytes = Uint8Array.from(atob(track.frames), char => char.charCodeAt(0));
+  const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream("deflate"));
+  const packedFrames = JSON.parse(await new Response(stream).text());
+  if (!Array.isArray(packedFrames) || !packedFrames.length) throw new Error("The 3D race track is empty.");
+  const scene = JSON.parse(JSON.stringify(replayScene));
+  const firstDynamicId = scene.geoms.length;
+  const dynamicGeoms = (track.geoms || []).map((geom, index) => ({ ...geom, id: firstDynamicId + index }));
+  scene.geoms.push(...dynamicGeoms);
+  scene.robots = track.robots || {};
+  scene.failure_markers = track.failure_markers || [];
+  scene.follow_geom = Object.values(scene.robots)[0]?.follow_geom ?? scene.follow_geom;
+  const raceFrames = packedFrames.map(([t, poses]) => ({ t, poses }));
+  scene.poses = raceFrames[0].poses;
+  showWorkbench(); loadScene(scene); showPanel("analysis");
+  frames = raceFrames; idx = 0; acc = 0; playing = true; streaming = false; batchPlayback = false;
+  followCam = true; followTransitionRemaining = 0;
+  playbackRate = 1 / (track.frame_step_s || 0.2); evolutionPlayback = true;
+  $("player").hidden = false; $("scrub").max = frames.length - 1; $("scrub").value = 0;
+  $("play").textContent = "❚❚"; $("time").textContent = `${frames[0].t.toFixed(2)} s`;
+  resetTrail(); applyFrame(frames[0]); addTrailPoint(frames[0]);
+  $("note").textContent = `3D replay · Generation ${generation.generation} · independent same-seed runs`;
+}
+function readableParameter(name) {
+  return name.replaceAll("_", " ").replace(/\b\w/g, letter => letter.toUpperCase());
+}
+function renderEvolutionTree(edges, designs) {
+  if (!edges?.length) {
+    const winner = currentEvolution?.winner;
+    const message = winner
+      ? `${winner.id} reached the goal and verified in generation 0; no children were needed.`
+      : "No parent-child links yet; the first generation is still being evaluated.";
+    $("evolutionTree").replaceChildren(textEl("div", message, "evolution-muted"));
+    return;
+  }
+  const designMap = new Map((designs || []).map(row => [row.id, row]));
+  for (const edge of edges || []) {
+    const child = designMap.get(edge.child_id) || {};
+    const existing = [...$("evolutionTree").children].find(node => node.dataset.child === edge.child_id);
+    if (existing) existing.remove();
+    const node = document.createElement("div"); node.className = `evolution-node${child.verified_winner ? " winner" : ""}`;
+    node.dataset.child = edge.child_id;
+    node.appendChild(textEl("span", child.kind === "walker" ? "W" : "R", "evolution-silhouette"));
+    node.appendChild(textEl("strong", `${edge.parent_id} → ${edge.child_id} · ${child.name || "design"}`));
+    const changes = Object.entries(edge.changes || {}).map(([key, value]) =>
+      `${readableParameter(key)} ${value.from} → ${value.to}`).join(" · ");
+    node.appendChild(textEl("span", changes || "No parameter change recorded.", "evolution-muted"));
+    node.appendChild(textEl("span", `${edge.reason || ""}${edge.result ? ` · Result: ${edge.result.outcome}, ${edge.result.progress_percent}%` : ""}`, "evolution-muted"));
+    $("evolutionTree").appendChild(node);
+  }
+}
+function renderEvolution(report, replay = false) {
+  if (evolutionAnimation) cancelAnimationFrame(evolutionAnimation);
+  evolutionAnimation = null;
+  currentEvolution = report;
+  evolutionRaceScene = report.race_scene || evolutionRaceScene;
+  $("evolutionCard").hidden = false;
+  $("evolutionLive").textContent = "";
+  const winner = report.winner;
+  $("evolutionSummary").replaceChildren(textEl("strong",
+    `${report.generations?.length || 0} generation${report.generations?.length === 1 ? "" : "s"} · ${winner ? `verified winner ${winner.id} ${winner.name}` : "no verified winner"}`));
+  const conditions = report.challenge_conditions;
+  if (conditions) {
+    const rocks = conditions.rocks || [];
+    $("evolutionSummary").appendChild(textEl("div",
+      `Challenge: friction ${Number(conditions.friction).toFixed(2)} · ${rocks.length
+        ? rocks.map(rock => `${rock.count} rocks at ${Number(rock.size_m).toFixed(2)} m`).join(", ")
+        : "no path rocks"} · ${Number(conditions.duration_s).toFixed(1)} s time limit`,
+      "evolution-muted"));
+  }
+  $("evolutionGenerations").replaceChildren();
+  for (const generation of report.generations || []) renderEvolutionGeneration(generation);
+  $("evolutionTree").replaceChildren();
+  const designs = new Map((report.generations || []).flatMap(generation => generation.results || []).map(row => [row.id, row]));
+  renderEvolutionTree(report.family_tree, [...designs.values()]);
+  $("evolutionWinner").replaceChildren();
+  const verification = report.verification || winner?.verification;
+  const margin = report.margin;
+  if (winner) {
+    const card = document.createElement("div"); card.className = "evolution-node winner";
+    card.append(textEl("strong", `🏆 ${winner.id} · ${winner.name}`),
+      textEl("span", `Verification: ${verification?.message || verification?.text || "not available"}`),
+      textEl("span", `Margin: ${margin?.text || margin?.reason || "not available"}`, "evolution-muted"));
+    $("evolutionWinner").appendChild(card);
+  } else {
+    $("evolutionWinner").appendChild(textEl("p", report.report || "No candidate reached a verified goal."));
+  }
+  $("evolutionHonesty").textContent = report.honesty || "";
+  showCost("evolutionCost", report.cost);
+  if (!replay) {
+    saveSavedEvolution(report).catch(error =>
+      addMsg(`The evolution report is ready, but could not be saved for replay: ${error.message}`, "err"));
+  }
+}
+async function replaySavedEvolution() {
+  const report = savedEvolution || await readSavedEvolution();
+  if (!report) { addMsg("There is no saved evolution to replay yet."); return; }
+  if (!report.challenge_scene || !report.challenge_spec) {
+    addMsg("The saved evolution is incomplete and cannot be replayed.", "err"); return;
+  }
+  showWorkbench(); addMsg("Replay saved evolution", "user");
+  currentSpec = report.challenge_spec; updateSceneContext(report.challenge_spec);
+  evolutionRaceScene = report.race_scene || null;
+  loadScene(report.challenge_scene);
+  $("code").textContent = report.challenge_code || "";
+  $("codeBtn").hidden = !detailsMode;
+  renderEvolution(report, true); setStatus("Saved replay"); showPanel("analysis");
+  addMsg("Replayed saved evolution from recorded telemetry; no simulations or model calls were used.");
 }
 function textEl(tag, text, cls) { const el = document.createElement(tag); el.textContent = text; if (cls) el.className = cls; return el; }
 function renderDiagnosis(r) {
@@ -2158,6 +2445,7 @@ function resize() { const r = $("view").getBoundingClientRect(); renderer.setSiz
 addEventListener("resize", resize); resize();
 
 let current = null, frames = [], playing = true, streaming = false, idx = 0, acc = 0, followCam = true;
+let playbackRate = 30, evolutionPlayback = false;
 const meshes = [];
 let structureVisualRoot = null, structureSceneToken = 0;
 let missionMarkers = null;
@@ -2168,6 +2456,7 @@ let hiddenBaseGeomIds = [];
 let cameraRobotId = null;
 let cameraChosenByUser = false;
 const robotTrails = new Map(), robotLabels = new Map();
+let evolutionFailureLabels = [];
 const ROBOT_COLORS = [0x22d3ee, 0xf59e0b, 0xa78bfa, 0x34d399, 0xf87171, 0x60a5fa];
 
 // Path trail: where the robot's body has been, drawn up to the current playback frame.
@@ -2400,6 +2689,10 @@ renderer.domElement.addEventListener("pointerup", (e) => {
 });
 
 function clearWorld() {
+  for (const label of evolutionFailureLabels) {
+    world.remove(label); label.material.map?.dispose(); label.material.dispose();
+  }
+  evolutionFailureLabels = [];
   traversabilityVisual = null; $("mapToggle").hidden = true; $("mapCard").hidden = true;
   structureSceneToken++; structureVisualRoot = null;
   missionMarkers = null;
@@ -2808,6 +3101,7 @@ function focusStructureVisuals(index = null) {
 function loadScene(s) {
   batchIsActive = false; batchResults.clear(); $("reportCard").hidden = true;
   $("leaderboardCard").hidden = true;
+  playbackRate = 30; evolutionPlayback = false;
   clearWorld(); current = s; frames = []; idx = 0; $("empty").hidden = true; $("player").hidden = true; $("metricsCard").hidden = true;
   setWorld(s.world || { body: s.structure?.body || "earth" });
   terrainMesh = null; resetTrail();
@@ -2857,7 +3151,8 @@ function loadScene(s) {
       const geometry = new THREE.BufferGeometry();
       geometry.setAttribute("position", new THREE.BufferAttribute(new Float32Array(TRAIL_MAX * 3), 3));
       geometry.setDrawRange(0, 0);
-      const color = ROBOT_COLORS[index % ROBOT_COLORS.length];
+      const color = /^#[\da-f]{6}$/i.test(info.color || "")
+        ? Number.parseInt(info.color.slice(1), 16) : ROBOT_COLORS[index % ROBOT_COLORS.length];
       const path = new THREE.Line(geometry, new THREE.LineBasicMaterial({ color }));
       path.frustumCulled = false; world.add(path);
       const ribbon = makeRibbon(color); world.add(ribbon.mesh);
@@ -2867,6 +3162,12 @@ function loadScene(s) {
       robotLabels.set(id, label);
     }
     renderRobotCameras(s.robots || {});
+    for (const marker of s.failure_markers || []) {
+      const color = /^#[\da-f]{6}$/i.test(marker.color || "") ? Number.parseInt(marker.color.slice(1), 16) : 0xf87171;
+      const label = makeRobotLabel(marker.label || `✕ ${marker.outcome || "failed"}`, color);
+      label.position.set(marker.x, marker.y, terrainHeightAt(s, marker.x, marker.y) + 1.0);
+      world.add(label); evolutionFailureLabels.push(label);
+    }
     applyFrame({ t: 0, poses: s.poses });
     const target = meshes[cameraGeom()];
     const start = target ? target.getWorldPosition(new THREE.Vector3()) : new THREE.Vector3();
@@ -3108,7 +3409,13 @@ function tick() {
     applyBatchFrame(idx);
   } else if (playing && frames.length) {
     acc += dt;
-    while (acc >= 1 / 30) { acc -= 1 / 30; if (idx < frames.length - 1) idx++; else if (!streaming) { playing = false; $("play").textContent = "▶"; } }
+    while (acc >= 1 / playbackRate) {
+      acc -= 1 / playbackRate;
+      if (idx < frames.length - 1) {
+        idx++;
+        if (evolutionPlayback) addTrailPoint(frames[idx]);
+      } else if (!streaming) { playing = false; $("play").textContent = "▶"; }
+    }
     applyFrame(frames[idx]);
   }
   controls.update(); renderer.render(scene, camera); requestAnimationFrame(tick);

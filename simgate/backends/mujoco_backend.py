@@ -81,7 +81,7 @@ def make_heights(spec: SceneSpec, start_xy: tuple[float, float] | None = None) -
             H += (0.6 + t.roughness) * (0.35 * np.exp(-((d - 1.0) ** 2) / 0.05) - 0.5 * np.exp(-(d**2) / 0.4))
     if t.kind == "real":
         # Real elevation data (e.g. NASA HiRISE), already in metres with row 0 at -y.
-        H += resample(scene_heights(t), GRID)   # an uploaded heightmap may be resized for this scene
+        H += resample(scene_heights(t), GRID) * t.height_scale
     if t.kind in ("rocky", "hills", "craters", "slope", "real") and t.roughness > 0:
         # Small-scale bumps (coarse random grid, bilinearly upsampled); "rocky" gets the most.
         # On real terrain these stand in for sub-metre roughness the orbital data can't resolve.

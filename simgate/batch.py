@@ -66,6 +66,7 @@ class Variation(BaseModel):
     push_n: float | None = Field(default=None, gt=0, le=1000)
     seed: int | None = Field(default=None, ge=0)
     roughness: float | None = Field(default=None, ge=0, le=1)   # small bumps on generated or real terrain
+    height_scale: float | None = Field(default=None, ge=0.1, le=3.0)
     perturb_seed: int | None = Field(default=None, ge=0)   # reliability: a ±1 cm / ±1° start nudge (0 = none)
     # Single-change experiments (Prove why) and design changes (Make it pass).
     remove_obstacle: str | None = Field(default=None, pattern=r"^obs\d+_[a-z]+$")
@@ -85,7 +86,7 @@ class Variation(BaseModel):
 
 
 GEOMETRY_KNOBS = ("slope_deg", "obstacle_scale", "seed", "roughness", "remove_obstacle", "flatten_terrain",
-                  "robot", "robot_kind")
+                  "height_scale", "robot", "robot_kind")
 
 
 def obstacle_entry_index(spec: SceneSpec, name: str) -> int:
@@ -174,6 +175,10 @@ def _validate_variation(base_spec: SceneSpec, raw: dict) -> tuple[Variation, Sce
         if spec.terrain is None or spec.terrain.kind == "flat":
             raise ValueError("roughness has no effect on flat ground.")
         spec.terrain.roughness = knobs["roughness"]
+    if "height_scale" in knobs:
+        if spec.terrain is None or spec.terrain.kind != "real":
+            raise ValueError("height_scale applies only to real elevation terrain.")
+        spec.terrain.height_scale = knobs["height_scale"]
     if "perturb_seed" in knobs:
         spec.perturb_seed = knobs["perturb_seed"] or None
     if "push_n" in knobs:
@@ -383,8 +388,8 @@ def _run_worker(run_id: int, label: str, base_spec_json: str, raw_variation: dic
         if spec.domain != "robot_terrain":
             raise ValueError("Stress tests currently support robot scenes only.")
         sim = agents.route(spec)
-        build = sim.build(spec, view=False)   # never drawn: its replay re-simulates it
-        ghost_allowed = record and not any(key in changes for key in GEOMETRY_KNOBS)
+        build = sim.build(spec, view=bool(record and race_telemetry))
+        ghost_allowed = record and (race_telemetry or not any(key in changes for key in GEOMETRY_KNOBS))
         ghost_ids, chassis_index = _robot_geom_ids(build.code) if ghost_allowed else ([], -1)
         ghost_frames = []
         frame_number = 0
@@ -398,7 +403,8 @@ def _run_worker(run_id: int, label: str, base_spec_json: str, raw_variation: dic
             run = sim.run(spec, build, record=record)
         for chunk in run:
             for frame in chunk:
-                if ghost_allowed and frame_number % 2 == 0:
+                ghost_stride = 4 if race_telemetry else 2
+                if ghost_allowed and frame_number % ghost_stride == 0:
                     robot_poses = [
                         [round(float(value), 3) for value in frame["poses"][geom_id]]
                         for geom_id in ghost_ids
@@ -430,6 +436,8 @@ def _run_worker(run_id: int, label: str, base_spec_json: str, raw_variation: dic
             "ghost": _encode_ghost(ghost_ids, ghost_frames) if ghost_allowed else None,
             "ghost_status": "available" if ghost_allowed else "not in ghost view" if record else
                             "not recorded (a replay re-simulates the same seed)",
+            **({"race_scene": build.scene, "race_follow_geom": ghost_ids[chassis_index]}
+               if record and race_telemetry else {}),
         }
     except Exception as exc:
         return _result_error(run_id, label, changes, f"{type(exc).__name__}: {exc}")

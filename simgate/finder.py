@@ -31,6 +31,7 @@ StepCallback = Callable[[dict], None]
 KNOBS: dict[str, dict[str, Any]] = {
     "slope_deg": {"name": "slope", "harsh": 30.0},
     "friction": {"name": "friction", "harsh": 0.1},
+    "height_scale": {"name": "terrain height scale", "harsh": 2.0},
     "gravity": {"name": "gravity", "harsh": 1.62},
     "push_n": {"name": "sideways push", "harsh": 80.0},
     "payload": {"name": "payload", "harsh": 0.5},              # a share of the robot's mass
@@ -65,6 +66,8 @@ def show(knob: str, value: float | None) -> str:
         return f"{value:.1f}°"
     if knob in ("friction", "roughness"):
         return f"{value:.2f}"
+    if knob == "height_scale":
+        return f"×{value:.2f}"
     if knob == "gravity":
         return f"{value:.2f} m/s²"
     if knob == "push_n":
@@ -114,6 +117,8 @@ def scene_knobs(spec: SceneSpec, robot, gravity_asked: bool = False) -> tuple[di
         fits["friction"] = env.friction or 0.8
     else:
         skipped["friction"] = "friction is already at the bottom of its range"
+    if terrain is not None and terrain.kind == "real":
+        fits["height_scale"] = terrain.height_scale
     if not gravity_asked and (env.body != "earth" or (terrain is not None and terrain.kind == "real")):
         skipped["gravity"] = f"the scene is on {env.body.title()}, so its gravity stays"
     elif (env.gravity or 9.81) <= KNOBS["gravity"]["harsh"]:
@@ -182,6 +187,8 @@ def change(knob: str, value: float, context: dict) -> dict:
         return {"slope_deg": round(value, 3)}
     if knob == "friction":
         return {"friction": round(value, 4)}
+    if knob == "height_scale":
+        return {"height_scale": round(value, 4)}
     if knob == "gravity":
         return {"gravity": round(value, 4)}
     if knob == "push_n":
@@ -196,9 +203,9 @@ def change(knob: str, value: float, context: dict) -> dict:
     return {"speed_scale": round(value, 4), "robot_id": context["robot_id"]}
 
 
-def harshness(knob: str, value: float, base: float) -> float:
+def harshness(knob: str, value: float, base: float, harsh: float | None = None) -> float:
     """0 at the scene's value, 1 at the harsh end."""
-    harsh = KNOBS[knob]["harsh"]
+    harsh = KNOBS[knob]["harsh"] if harsh is None else harsh
     return (value - base) / (harsh - base) if harsh != base else 0.0
 
 
@@ -259,36 +266,53 @@ class Runner:
 FIRST_RUNS = 2           # every condition's harsh end and one halving, before the extra runs are given out
 
 
-def allot(state: dict[str, dict], base: dict[str, float], left: int) -> dict[str, int]:
+def allot(
+    state: dict[str, dict], base: dict[str, float], left: int,
+    harsh_values: dict[str, float] | None = None,
+) -> dict[str, int]:
     """Each condition's run cap once all have had FIRST_RUNS: the runs left go to the tightest first (the one whose
     bracket is closest to the scene as it is), up to SEARCH_RUNS each, so its limit gets the finest bracket."""
     caps = {knob: s["runs"] for knob, s in state.items()}
     open_ = [knob for knob, s in state.items() if not s["done"] and s["fail"] is not None]
-    for knob in sorted(open_, key=lambda k: harshness(k, (state[k]["ok"] + state[k]["fail"]) / 2, base[k])):
+    harsh_values = harsh_values or {}
+    for knob in sorted(
+        open_,
+        key=lambda k: harshness(
+            k, (state[k]["ok"] + state[k]["fail"]) / 2, base[k], harsh_values.get(k),
+        ),
+    ):
         extra = min(SEARCH_RUNS - state[knob]["runs"], left)
         caps[knob] += extra
         left -= extra
     return caps
 
 
-def search(runner: Runner, knobs: list[str], context: dict, on_step: StepCallback | None) -> list[dict]:
+def search(
+    runner: Runner, knobs: list[str], context: dict, on_step: StepCallback | None,
+    harsh_values: dict[str, float] | None = None,
+) -> list[dict]:
     """Binary-search every condition at once (one change per run): its harsh end first, then halve the bracket
     between the last value that was OK and the first that failed. Each gets FIRST_RUNS runs, then the tightest gets
     the extra runs of the search's share first (at most SEARCH_RUNS per condition)."""
     base = context["base"]
+    harsh_values = harsh_values or {}
+
+    def harsh_for(knob: str) -> float:
+        return harsh_values.get(knob, KNOBS[knob]["harsh"])
+
     state = {knob: {"ok": base[knob], "fail": None, "ok_run": "r1", "fail_run": None, "failure": None, "runs": 0,
                     "done": False, "crashed": 0} for knob in knobs}
     caps = {knob: FIRST_RUNS for knob in knobs}
     for step in range(SEARCH_RUNS):
         if step == FIRST_RUNS:
-            caps = allot(state, base, runner.left)
+            caps = allot(state, base, runner.left, harsh_values)
         active = [knob for knob in knobs if not state[knob]["done"] and state[knob]["runs"] < caps[knob]]
         if not active:
             break
         jobs = []
         for knob in active:
             s = state[knob]
-            value = KNOBS[knob]["harsh"] if s["fail"] is None else (s["ok"] + s["fail"]) / 2
+            value = harsh_for(knob) if s["fail"] is None else (s["ok"] + s["fail"]) / 2
             jobs.append(({"phase": 1, "knob": knob, "value": value}, change(knob, value, context)))
         _emit(on_step, "Batch runner", "search",
               f"Search step {step + 1}: " + ", ".join(f"{KNOBS[j[0]['knob']]['name']} {show(j[0]['knob'], j[0]['value'])}"
@@ -317,13 +341,13 @@ def search(runner: Runner, knobs: list[str], context: dict, on_step: StepCallbac
         never = s["fail"] is None
         step = None if never else abs(s["fail"] - s["ok"])
         limits.append({
-            "knob": knob, "name": KNOBS[knob]["name"], "baseline": base[knob], "harsh": KNOBS[knob]["harsh"],
+            "knob": knob, "name": KNOBS[knob]["name"], "baseline": base[knob], "harsh": harsh_for(knob),
             "last_ok": s["ok"], "first_fail": s["fail"], "failure": s["failure"], "never_broke": never,
             "step": step, "ok_run": s["ok_run"], "fail_run": s["fail_run"], "runs": s["runs"], "crashed": s["crashed"],
-            "distance": 1.0 + (1 - harshness(knob, s["ok"], base[knob])) if never
-            else round(harshness(knob, (s["ok"] + s["fail"]) / 2, base[knob]), 4),
+            "distance": 1.0 + (1 - harshness(knob, s["ok"], base[knob], harsh_for(knob))) if never
+            else round(harshness(knob, (s["ok"] + s["fail"]) / 2, base[knob], harsh_for(knob)), 4),
             "shown": {"baseline": show(knob, base[knob]), "last_ok": show(knob, s["ok"]),
-                      "first_fail": show(knob, s["fail"]), "harsh": show(knob, KNOBS[knob]["harsh"]),
+                      "first_fail": show(knob, s["fail"]), "harsh": show(knob, harsh_for(knob)),
                       "step": "–" if step is None else "±" + show(knob, step).replace(" of its mass", "").replace(" of its speed", "")},
         })
     return sorted(limits, key=lambda limit: limit["distance"])
@@ -437,7 +461,8 @@ HUNT_FIRST, HUNT_MORE = 6, 4          # combinations in the first round, and in 
 HUNT_LOW, HUNT_HIGH = 0.7, 0.9        # each condition at 70–90% of its own single limit
 NEVER_HIGH = 0.9                      # a condition that never broke: up to 90% of its range
 HUNT_TOLERANCE = 0.01                 # in harshness, for values the model rounded
-UNITS = {"slope_deg": "degrees", "friction": "friction coefficient", "gravity": "m/s²", "push_n": "newtons sideways",
+UNITS = {"slope_deg": "degrees", "friction": "friction coefficient", "height_scale": "terrain height multiplier",
+         "gravity": "m/s²", "push_n": "newtons sideways",
          "payload": "share of the robot's mass", "obstacle_scale": "times its climb limit", "roughness": "0 to 1",
          "speed": "times the scene's speed", "speed_slower": "times the scene's speed"}
 SIBLINGS = {frozenset({"speed", "speed_slower"})}   # one physical condition: never both in a combination

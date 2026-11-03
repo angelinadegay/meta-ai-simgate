@@ -215,10 +215,18 @@ challenge = SceneSpec(
 designs = propose_generation0(challenge)
 ```
 
-`simgate.evolve.challenge_preset("victoria-climb-out")` creates the 90-second
-Victoria Crater floor-to-rim mission with a 2 m goal radius. Pass generation-zero
-designs to `race_generation(challenge, designs, seed)` to run each candidate as a
-parallel batch variation on the same terrain seed, start and goal. The race runs
+`simgate.evolve.challenge_preset` provides Victoria Crater, Apollo 15 Hadley Rille,
+and Meteor Crater challenges. Hadley and Meteor start and finish on the steepest
+20 m uphill segment measured from their real elevation grids. The Victoria
+boulder challenge uses the steepest floor-to-rim climb, a dense path field of
+0.15–0.35 m rocks, and loose-regolith friction in the 0.45–0.65 range. Its
+time limit is at least twice the slowest design's straight-line travel time.
+Pass generation-zero designs to
+`race_generation(challenge, designs, seed)` to run each candidate as a parallel
+batch variation on the same terrain seed, start and goal. Candidate bodies and
+downsampled 3D poses are retained against one shared terrain scene, so both live
+and saved generations can replay as a colored 3D race. These are independent
+same-seed simulations, not a coupled multi-robot physics run. The race runs
 through its time limit and classifies outcomes from simulation telemetry: reached,
 flipped, less than 0.1 m of movement for at least five seconds (`stuck`, or
 `slipped` when the window's mean contact slip ratio is at least 0.5), or still
@@ -230,24 +238,59 @@ simulation results for the specified world, not a physical-robot guarantee.
 failure-guided children. Each child inherits one raced parent and changes at most
 two in-range robot parameters; already-raced duplicates are rejected. If Designer
 output is unavailable or invalid, deterministic mutations respond to stuck, flipped,
-slipped, and too-slow outcomes. `evolve(challenge, max_generations=4, n=4, seed=0)`
-runs generations sequentially, verifies each apparent winner on three new terrain
-and start seeds, and accepts it only when at least two runs reach the goal. The
-verification includes the shared Wilson 95% interval. An unreliable apparent
-winner is rejected and evolution continues only when a full next generation and
-three possible verification runs fit the shared 16-simulation-run budget.
+slipped, and too-slow outcomes. `evolve(challenge, max_generations=5, n=4, seed=0)`
+runs up to five generations and at most 20 candidate races, verifies apparent
+winners on five new terrain and start seeds, and accepts a winner only when at
+least four runs reach the goal. Verification includes the shared Wilson 95% interval;
+verification simulations are counted separately from the 20-race limit.
 
-For a verified winner, `margin_search` reuses Finder's binary search on the most
-limiting supported feature (slope, obstacle height, or friction), with at most six
-runs including a baseline; these count toward the same 16-run budget. It does not
-replace measured real terrain with a synthetic slope; if the limiting feature
-cannot be varied in that challenge, the result says the margin is unavailable.
+Run `python scripts/calibrate_challenge.py --seed 0` to calibrate the deterministic
+rules-based generation-zero set on Victoria Crater. Calibration changes only the
+rock size and density, loose-soil friction, or start position along the wall;
+the generous time limit is never shortened. It targets no reaches and 20–80%
+best progress, and prints each attempted setting and adjustment.
+
+For a verified winner, two independent Finder binary searches measure its margin:
+larger rocks (up to six runs) and lower friction (up to six runs), each including
+a baseline. These extra simulations are reported separately from candidate races.
 The report includes a code-generated
 honesty line: real elevation accuracy comes from that terrain card, and designs
 are simplified procedural robots. Results include per-generation race results,
 verification and margin evidence, the parent/child tree with old/new parameter
 values, failure-linked mutation reasons and outcomes, closest-progress report if
 none succeeds, and tracked runs, elapsed time, and model calls.
+
+## Design a robot for this place
+
+Choose **Design a robot for this place** on the home page or ask **"Design a robot
+that can climb out of Victoria Crater."** The `evolve` workflow builds the
+requested place, then the Designer proposes bounded rover and walker candidates
+while the Simulator races each generation side by side. Race paths animate with
+design colours and names; failures are marked at their measured location. Between
+generations, the family tree shows each parent's child, changed parameters,
+failure-linked reason and (after racing) result. The final card reports the
+verified winner, five-seed verification, rock/friction margins, honesty statement
+and cost.
+
+The complete report, shared race scene and recorded 3D race tracks are saved in
+this browser's local storage. **Replay saved evolution** restores the scene,
+family tree and race replays without new model calls or simulations. This
+browser-local replay is not a server-side archive and is unavailable in another
+browser profile or after its site data is cleared.
+
+The live display animates recorded telemetry after each parallel race batch
+completes; it is not a real-time renderer of robot bodies during simulation.
+The winning procedural design and all results remain simulation evidence, not a
+physical robot guarantee.
+
+Run the configured Meta-model demo and capture the browser views:
+
+```powershell
+.\.venv\Scripts\python.exe scripts\run_evolution_example.py --calibration reports\evolution-e7-live\calibration.json
+.\.venv\Scripts\python.exe scripts\run_evolution_example.py --screenshots-only
+```
+
+The report, event log and screenshots are written to `reports/evolution-e7-live/`.
 
 ## Project status
 

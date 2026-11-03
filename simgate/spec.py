@@ -31,6 +31,7 @@ class Terrain(BaseModel):
     preset_size_m: Optional[float] = Field(None, ge=1.0, le=1000.0)
     preset_relief_m: Optional[float] = Field(None, ge=0.0, le=500.0)
     structure_crop_size_m: Optional[float] = Field(None, ge=20.0, le=1000.0)
+    height_scale: float = Field(1.0, ge=0.1, le=3.0)  # counterfactual vertical scaling for real-terrain tests
 
 
 class Robot(BaseModel):
@@ -236,6 +237,9 @@ class SceneSpec(BaseModel):
                 self.assumptions.append(
                     f"Terrain: real elevation data, {meta['label']} ({meta['size_m']:.0f} m square, "
                     f"{meta['relief_m']:.1f} m of relief, typical slope {meta.get('typical_slope_deg', '?')}°). Credit: {meta['credit']}.")
+            if t.height_scale != 1.0:
+                self.assumptions.append(
+                    f"Counterfactual terrain height scaling: ×{t.height_scale:g}; the source elevation data is unchanged.")
         if env.gravity is None:
             g = presets.gravity_for(env.body)
             env.gravity = g if g is not None else 9.81

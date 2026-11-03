@@ -39,6 +39,8 @@ class Director:
                        f"Do you want {real_change['target_body'].title()} gravity on this same terrain as a what-if, "
                       f"{real_change['target_body'].title()} terrain instead, or Keep {real_change['current_body'].title()}?"),
             )
+        if evolve_requested(text):
+            return _evolve_plan(text, world_state)
         if (design := _use_design_plan(text, state)) is not None:
             return design
         if (resize := _resize_plan(text, world_state)) is not None:
@@ -79,6 +81,8 @@ class Director:
                     _guard_traversability_stops(plan, text)
                     if re.search(r"\bsummit\b", text, re.I):
                         plan.goal = GoalPlan(place="highest")
+                if evolve_requested(text):
+                    plan = _evolve_plan(text, world_state)
                 self.guard_notes += [note for robot in [*plan.robots, *(plan.changes.robots or [])] for note in robot._notes]
                 guarded = _analysis_plan(text, world_state, state, only_after_failure=True)
                 if guarded is not None and guarded.workflow != plan.workflow:
@@ -120,6 +124,8 @@ class Director:
         self.guard_notes.extend(_apply_text_guards(plan, text))
         if traversability_requested(text):
             plan = _traversability_plan(text, world_state)
+        if evolve_requested(text):
+            plan = _evolve_plan(text, world_state)
         _guard_follow_up(plan, follow, self.guard_notes)
         return _guard_duration(plan, text, world_state, self.guard_notes)
 
@@ -260,6 +266,10 @@ class Director:
         if self.step_callback is not None:
             await self.step_callback({"type": "step", **payload})
 
+    async def emit(self, event: dict[str, Any]) -> None:
+        if self.step_callback is not None:
+            await self.step_callback(event)
+
     async def _finish_root(self, message: str) -> None:
         if self._root_id is not None:
             await self._emit_step(
@@ -299,6 +309,9 @@ def _plan_system() -> str:
 Return only one JSON object matching the Plan schema below. Do not return tools or a sequence of actions.
 
 Workflows:
+- evolve: propose, race, and verify procedural robots for this place.
+  Cues: "design a robot for", "what robot could", "invent a robot", "evolve", or "best robot for this place".
+  It runs the bounded evolution experiment now. Use a current robot scene or name a place and goal.
 - traversability: measure where a robot can go, verify with spot runs, plan and drive a safe route.
   Cues: "where can it go", "can it reach", "is it safe to walk", "safe route", "plan a route",
   "map where it can drive", "show where it can go", or "walk safely". Works with a new or existing scene.
@@ -447,6 +460,86 @@ def _plan_world_state(world_state: World | SceneSpec | dict[str, Any] | None) ->
         }
         return json.dumps(compact, separators=(",", ":"))
     return json.dumps(world_state, separators=(",", ":"), default=str)[:12000]
+
+
+def evolve_requested(text: str) -> bool:
+    return bool(re.search(
+        r"\bdesign a robot\b|\bwhat robot could\b|\binvent a robot\b|\bevolve\b|"
+        r"\bbest robot for (?:this|the) place\b",
+        text, re.I,
+    ))
+
+
+def _evolve_plan(text: str, world_state) -> Plan:
+    current = _current_spec(world_state)
+    if current is None:
+        terrain_challenge = (
+            "hadley-climb-out" if re.search(r"\bhadley\b|\brille\b", text, re.I) else
+            "meteor-crater-climb" if re.search(r"\bmeteor crater\b", text, re.I) else
+            "calibrated-default" if re.search(r"\bcalibrated default\b", text, re.I) else
+            "victoria-rim-boulders" if re.search(r"\bvictoria\b|\bcrater\b", text, re.I) else None
+        )
+        if terrain_challenge is not None:
+            from .evolve import challenge_preset
+            from .plan import RobotPlan
+            evolution_challenge = None
+
+            if terrain_challenge == "calibrated-default":
+                from .evolve import DEFAULT_CHALLENGE, DEFAULT_CHALLENGE_DURATION_S
+
+                challenge = challenge_preset(
+                    DEFAULT_CHALLENGE, duration_s=DEFAULT_CHALLENGE_DURATION_S,
+                )
+                if DEFAULT_CHALLENGE == "victoria-rim-boulders":
+                    evolution_challenge = DEFAULT_CHALLENGE
+            else:
+                challenge = challenge_preset(terrain_challenge)
+                if terrain_challenge == "victoria-rim-boulders":
+                    evolution_challenge = terrain_challenge
+            start = (GoalPlan(xy=challenge.mission.start_xy) if challenge.mission.start_xy is not None
+                     else GoalPlan(place=challenge.mission.start_place))
+            goal = (GoalPlan(xy=challenge.mission.goal_xy) if challenge.mission.goal_xy is not None
+                    else GoalPlan(place=challenge.mission.goal_place))
+            return Plan(
+                workflow="evolve", summary=f"Design a robot for {challenge.title}",
+                evolution_challenge=evolution_challenge,
+                world=WorldPlan(
+                    body=challenge.environment.body, surface=challenge.environment.surface,
+                    terrain_kind="real", preset=challenge.terrain.preset, roughness=0.0,
+                ),
+                robots=[RobotPlan(kind="rover")],
+                obstacles=challenge.obstacles,
+                start=start, goal=goal,
+                duration_s=challenge.duration_s, run_now=True,
+            )
+        plan = _rule_plan_with_title(f"Create a robot scene for {text}", None)
+        _apply_text_guards(plan, text)
+    else:
+        plan = Plan(workflow="evolve", summary=f"Design a robot for {current.title}")
+    plan.workflow = "evolve"
+    plan.run_now = True
+    plan.then = None
+    if plan.world.terrain_kind == "real":
+        plan.world.roughness = 0.0
+    if plan.world.preset in {"victoria-opportunity", "real-victoria-opportunity"}:
+        plan.duration_s = 90.0
+    if plan.start is None and (current is None or not current.mission or
+                               (current.mission.start_xy is None and current.mission.start_place is None)):
+        plan.start = GoalPlan(place="lowest")
+    if plan.goal is None and (current is None or not current.mission or not current.mission.has_goal()):
+        plan.goal = GoalPlan(place="highest")
+    if current is None and not plan.robots:
+        from .plan import RobotPlan
+
+        plan.robots = [RobotPlan(kind="rover")]
+    if current is not None and current.terrain is not None and current.terrain.kind == "real":
+        from .terrain_data import load_preset
+
+        _, metadata = load_preset(current.terrain.preset)
+        if metadata.get("label", "").lower().startswith("victoria crater"):
+            plan.start = plan.start or GoalPlan(place="lowest")
+            plan.goal = plan.goal or GoalPlan(place="highest")
+    return plan
 
 
 def traversability_requested(text: str) -> bool:
