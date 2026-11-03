@@ -667,6 +667,7 @@ import { OrbitControls } from "/static/vendor/OrbitControls.js";
 import { buildStructureVisuals, setStructureDetails, measureStructureVisuals } from "/static/vendor/structures.js";
 import { buildTerrainHorizon } from "/static/vendor/terrain-horizon.js";
 import { frameBase, advanceFollowTransition } from "/static/vendor/base-camera.js";
+import { createMissionFlag, disposeMissionMarkers } from "/static/vendor/mission-markers.js";
 
 const $ = (id) => document.getElementById(id);
 const AGENT_COLORS = { Director: "--director", Planner: "--planner", Router: "--router", Builder: "--builder", Checker: "--checker", Simulator: "--simulator", Explainer: "--explainer", "Stress planner": "--planner", "Batch runner": "--simulator" };
@@ -1565,6 +1566,7 @@ ws.onmessage = (m) => {
     case "spec": currentSpec = ev.spec; updateSceneContext(ev.spec); break;
     case "scene": setRequestProgress("Scene built; checking the physics…"); showWorkbench(); currentMetrics = null; latestInsight = null; loadScene(ev.scene); updateSceneContext(); $("code").textContent = ev.code; $("codeBtn").hidden = !detailsMode;
       $("startBtn").hidden = $("goalBtn").hidden = ev.scene.kind !== "mujoco"; setStatus("Analysing", "finding"); break;
+    case "mission_updated": updateMissionInPlace(ev); break;
     case "checks":
       renderChecks(ev.checks);
       const failedChecks = (ev.checks || []).filter((check) => !check.passed && !check.advisory);
@@ -2070,6 +2072,7 @@ addEventListener("resize", resize); resize();
 let current = null, frames = [], playing = true, streaming = false, idx = 0, acc = 0, followCam = true;
 const meshes = [];
 let structureVisualRoot = null, structureSceneToken = 0;
+let missionMarkers = null;
 let followTransitionRemaining = 0, baseOverview = false;
 controls.addEventListener("start", () => { followCam = false; followTransitionRemaining = 0; baseOverview = false; });
 let batchPlayback = false, batchTimeline = [], batchGhostRuns = [], activeBatchRunId = null, ghostGroup = null;
@@ -2296,13 +2299,14 @@ renderer.domElement.addEventListener("pointerup", (e) => {
   const hit = ray.intersectObject(terrainMesh)[0]; if (!hit) return;
   const p = world.worldToLocal(hit.point.clone());
   const x = Math.round(p.x * 10) / 10, y = Math.round(p.y * 10) / 10;
-  if (!sendEvent({ type: `set_${pickMode}`, x, y })) return;
+  if (!sendEvent({ type: `set_${pickMode}`, x, y, ...(pickMode === "start" && cameraRobotId ? { robot_id: cameraRobotId } : {}) })) return;
   addMsg(`Set ${pickMode} at (${x}, ${y})`, "user");
   setPick(pickMode);   // one click, then back to orbiting
 });
 
 function clearWorld() {
   structureSceneToken++; structureVisualRoot = null;
+  missionMarkers = null;
   $("structureCards").replaceChildren(); $("structuresPanel").hidden = true;
   clearGhosts(); world.remove(trail, trailRibbon.mesh, followRing, ...flagCloths);
   while (world.children.length) {
@@ -2580,6 +2584,45 @@ function addGoalFlags(sceneData) {
   });
 }
 
+function updateMissionMarkers(sceneData) {
+  if (missionMarkers) disposeMissionMarkers(missionMarkers);
+  missionMarkers = new THREE.Group(); missionMarkers.name = "mission_markers";
+  const entries = Object.values(sceneData.robots || {});
+  const missions = entries.length ? entries.map(entry => entry.mission) : [sceneData.mission];
+  const seenGoals = new Set();
+  for (const mission of missions) {
+    if (!mission) continue;
+    if (mission.start) {
+      const [x, y] = mission.start;
+      missionMarkers.add(createMissionFlag("start", x, y, terrainHeightAt(sceneData, x, y)));
+    }
+    if (mission.goal) {
+      const key = mission.goal.join(","); if (seenGoals.has(key)) continue; seenGoals.add(key);
+      const [x, y] = mission.goal;
+      missionMarkers.add(createMissionFlag("goal", x, y, mission.goal_z ?? terrainHeightAt(sceneData, x, y)));
+    }
+  }
+  world.add(missionMarkers);
+}
+
+function updateMissionInPlace(event) {
+  if (!current || current.kind !== "mujoco") return;
+  current.mission = event.mission;
+  if (Object.keys(event.robots || {}).length) current.robots = event.robots;
+  for (const [id, pose] of Object.entries(event.moved_poses || {})) {
+    current.poses[Number(id)] = pose;
+    const mesh = meshes[Number(id)]; if (!mesh) continue;
+    mesh.position.set(...pose.slice(0, 3)); mesh.quaternion.set(pose[4], pose[5], pose[6], pose[3]);
+  }
+  playing = false; streaming = false; frames = []; idx = 0; acc = 0;
+  baseOverview = false; followCam = false; followTransitionRemaining = 0;
+  batchPlayback = false; clearGhosts(); resetTrail();
+  for (const path of robotTrails.values()) { path.count = 0; path.geometry.setDrawRange(0, 0); path.ribbon.mesh.geometry.setDrawRange(0, 0); }
+  $("player").hidden = true; $("metricsCard").hidden = true; $("leaderboardCard").hidden = true;
+  currentMetrics = null; latestInsight = null;
+  updateMissionMarkers(current); updateSceneContext();
+}
+
 function renderStructureShaking(report) {
   for (const result of report.structures || []) {
     const article = document.querySelector(`#structureCards article[data-request-index="${result.request_index}"]`);
@@ -2684,6 +2727,7 @@ function loadScene(s) {
         m.add(buildTerrainHorizon(g.hfield, m));
       }
       if (m && /^struct\d+_(habitat|lander|bridge)_/.test(g.name || "")) m.visible = false;
+      if (m && /goal_(flag|zone)/.test(g.name || "")) m.visible = false;
       meshes[g.id] = m; if (m) world.add(m);
     }
     renderStructureCards(s.structures || []);
@@ -2707,7 +2751,7 @@ function loadScene(s) {
       });
       if (!qualityHigh) setQuality(false);
     });
-    world.add(trail, trailRibbon.mesh); addStartPads(s); addFollowRing(); addGoalFlags(s);
+    world.add(trail, trailRibbon.mesh); updateMissionMarkers(s); addFollowRing();
     robotTrails.clear(); robotLabels.clear();
     const robotEntries = Object.entries(s.robots || {});
     for (let index = 0; index < robotEntries.length; index++) {

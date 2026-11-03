@@ -45,7 +45,24 @@ def _distances(spec: SceneSpec) -> list[tuple[str, Robot, float]]:
 
 def time_limit(spec: SceneSpec) -> tuple[float, str] | None:
     """The time limit and the sentence that explains it, or None without a goal."""
-    rows = _distances(spec)
+    return _time_limit_for_distances(_distances(spec))
+
+
+def time_limit_from_missions(spec: SceneSpec, missions: dict[str, dict]) -> tuple[float, str] | None:
+    """Use already-resolved mission coordinates; do not regenerate terrain for map edits."""
+    rows = []
+    for entry in spec.robots:
+        mission = missions.get(entry.id)
+        if not mission or mission.get("goal") is None:
+            continue
+        route = [mission["start"], *mission.get("waypoints", []), mission["goal"]]
+        distance = sum(math.dist(start, end) for start, end in zip(route, route[1:]))
+        rows.append((entry.label if len(spec.robots) > 1 else "the robot", entry.robot,
+                     max(0.0, distance - mission.get("radius", 1.0))))
+    return _time_limit_for_distances(rows)
+
+
+def _time_limit_for_distances(rows: list[tuple[str, Robot, float]]) -> tuple[float, str] | None:
     if not rows:
         return None
     label, robot, metres = max(rows, key=lambda row: row[2] / nominal_speed(row[1]))

@@ -379,6 +379,12 @@ mislabelled as photographic orthoimagery. Raw IMG/TIFF files under `assets/nasa/
   - In words: *"walk to the summit"* or *"drive from the west to the crater floor"*.
   - With coordinates: *"goal at (5, 3)"*.
   - By clicking: press **Set start** or **Set goal** and click the terrain. This doesn't call the model.
+    Small green S and amber G flags mark the selected start and goal. Start placement relocates the selected
+    robot (the first robot by default); goal placement changes the shared target without teleporting robots. Terrain, obstacles, structures, scene
+    meshes and camera stay in place: map clicks update the existing model/robot state, not a new world.
+    The updated placement is checked against the existing world; points outside the physics area are rejected.
+    Automatic time limits are refreshed from the new route and robot speed without regenerating terrain;
+    a duration explicitly supplied by the user is preserved. The reply shows the resulting time budget.
 - Named places (lowest, highest, center, north, south, east, west) are found on the actual terrain, so
   the model never guesses coordinates.
 - The robot starts facing the goal and steers straight at it. The rover turns by spinning its wheels at

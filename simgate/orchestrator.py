@@ -651,40 +651,22 @@ class Session:
             self.library_selection = None
             await self.build_and_check(spec)
 
-    async def set_point(self, which: str, x: float, y: float) -> None:
-        """Start or goal picked by clicking on the terrain: changes the spec directly, no model call needed."""
+    async def set_point(self, which: str, x: float, y: float, robot_id: str | None = None) -> None:
+        """Move start/goal in the existing world without rebuilding terrain or structures."""
         try:
-            if self.spec is None or self.spec.domain != "robot_terrain":
+            if self.spec is None or self.spec.domain != "robot_terrain" or self.build is None or self.sim is None:
                 await self.emit({"type": "question", "message": "Describe a robot scene first, then click the terrain to set its start or goal."})
                 return
-            from .tools import World
-
-            world = World(self.spec.model_copy(deep=True))
-            director = Director(self.emit)
-            director._root_id = director._id()
-            await self.emit({
-                "type": "step", "id": director._root_id, "parent_id": None,
-                "agent": "Director", "model": "rules", "tool": None, "args": {},
-                "thought": f"Applying the map click as a {which} position.",
-                "result": "", "status": "working", "ms": 0,
-            })
-            if which == "start":
-                name = "set_start"
-                args = {"robot_id": world.spec.robots[0].id, "xy": [x, y]}
-            else:
-                name = "set_goal"
-                args = {"robot_id": "all", "xy": [x, y]}
-            await director._mock_call(world, name, args, f"Setting the {which} from the map.")
-            await director._mock_call(world, "build_and_check", {}, "Rebuilding and checking the clicked position.")
-            await director._finish_root(f"{which.capitalize()} set to ({x:.1f}, {y:.1f}) m.")
-            self.spec, self.sim, self.build, self.checks = world.spec, world.simulator, world.build, list(world.checks)
+            updated, build, patch = await asyncio.to_thread(self.sim.update_mission_point, self.spec, self.build, which, x, y, robot_id)
+            checks = await asyncio.to_thread(self.sim.validate, updated, build)
+            self.spec, self.build, self.checks = updated, build, checks
             self._forget_runs()
             await self.emit({"type": "spec", "spec": self.spec.model_dump()})
-            if self.build is not None:
-                await self.emit({"type": "scene", "scene": self.build.scene, "code": self.build.code, "language": self.build.language})
-                await self.emit({"type": "checks", "checks": [check.__dict__ for check in world.checks]})
+            await self.emit({"type": "mission_updated", **patch})
+            await self.emit({"type": "checks", "checks": [check.__dict__ for check in self.checks]})
             self.awaiting_approval = not blocking_failures(self.checks)
-            await self.emit({"type": "question", "message": "Does this look right? Say \"run\" to start, or tell me what to change.",
+            timing = f" {patch['timing_note']}" if patch.get("timing_note") else f" Kept the current {self.spec.duration_s:g} s time limit."
+            await self.emit({"type": "question", "message": f"Moved the {which} to ({x:.1f}, {y:.1f}) m. Terrain and objects are unchanged.{timing} Say \"run\" to start.",
                              "stress_test_available": True})
         except Exception as e:  # noqa: BLE001
             await self.emit({"type": "error", "message": f"{type(e).__name__}: {e}"})

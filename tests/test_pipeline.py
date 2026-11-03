@@ -1456,7 +1456,8 @@ def test_click_to_set_goal():
 
     s, events = asyncio.run(scenario())
     assert s.spec.mission.goal_xy == [4.0, -3.0] and s.awaiting_approval
-    assert [e for e in events if e["type"] == "scene"][-1]["scene"]["mission"]["goal"] == (4.0, -3.0)
+    assert [e for e in events if e["type"] == "mission_updated"][-1]["mission"]["goal"] == [4.0, -3.0]
+    assert len([e for e in events if e["type"] == "scene"]) == 1
 
 
 def course_run(robot, obstacles, terrain=None):

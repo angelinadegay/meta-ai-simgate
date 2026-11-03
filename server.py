@@ -187,7 +187,7 @@ async def ws(socket: WebSocket):
             elif msg.get("type") == "structure_action":
                 await session.handle_structure_action(msg.get("operation", ""), msg.get("structure_index"))
             elif msg.get("type") in ("set_start", "set_goal"):
-                await session.set_point(msg["type"][4:], float(msg["x"]), float(msg["y"]))
+                await session.set_point(msg["type"][4:], float(msg["x"]), float(msg["y"]), msg.get("robot_id"))
             elif msg.get("type") == "show_design":
                 await session.show_design(msg.get("robot_id"))
             elif msg.get("type") == "restore_scene":

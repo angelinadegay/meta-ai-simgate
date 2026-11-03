@@ -589,6 +589,8 @@ class TerrainProbe:
         self.cx, self.cy = float(model.geom_pos[g][0]), float(model.geom_pos[g][1])
         adr = int(model.hfield_adr[h])
         heights = model.hfield_data[adr : adr + nrow * ncol].reshape(nrow, ncol) * ztop  # row 0 = -y, col 0 = -x
+        self.heights = heights
+        self.cz = float(model.geom_pos[g][2])
         self.dx, self.dy = 2 * self.hx / (ncol - 1), 2 * self.hy / (nrow - 1)
         self.gy, self.gx = np.gradient(heights, self.dy, self.dx)          # dz/dy along rows, dz/dx along columns
         self.nrow, self.ncol, self.ok = nrow, ncol, True
@@ -1550,7 +1552,93 @@ class MuJoCoSimulator(Simulator):
 
     def _make(self, build: BuildResult):
         model = _model_from_xml(build.code)
-        return model, mujoco.MjData(model)
+        data = mujoco.MjData(model)
+        if "initial_qpos" in build.scene:
+            positions = np.asarray(build.scene["initial_qpos"], dtype=float)
+            if positions.shape != (model.nq,) or not np.isfinite(positions).all():
+                raise ValueError("The saved robot start state does not match this model.")
+            data.qpos[:] = positions
+            mujoco.mj_forward(model, data)
+        return model, data
+
+    def update_mission_point(self, spec: SceneSpec, build: BuildResult, which: str, x: float, y: float,
+                             robot_id: str | None = None):
+        """Update mission/state on the existing model; never generate terrain or re-place objects."""
+        import copy
+
+        if which not in {"start", "goal"} or not math.isfinite(x) or not math.isfinite(y):
+            raise ValueError("Choose a finite start or goal position.")
+        model, data = self._make(build)
+        probe = TerrainProbe(model)
+        if not probe.ok or abs(x - probe.cx) > probe.hx or abs(y - probe.cy) > probe.hy:
+            raise ValueError("The selected point is outside the physics terrain.")
+        updated = spec.model_copy(deep=True)
+        scene = copy.deepcopy(build.scene)
+        entries = ([entry for entry in updated.robots if entry.id == (robot_id or updated.robots[0].id)]
+                   if which == "start" else updated.robots)
+        if not entries:
+            raise ValueError("The selected robot does not exist in this scene.")
+        moved = {}
+        for entry in entries:
+            mission = copy.deepcopy(scene.get("robots", {}).get(entry.id, {}).get("mission") or scene["mission"])
+            ground_z = probe._bilinear(probe.heights, x, y) + probe.cz
+            if which == "start":
+                radius = footprint_radius(entry.robot)
+                if abs(x - probe.cx) + radius >= probe.hx or abs(y - probe.cy) + radius >= probe.hy:
+                    raise ValueError("The robot's start footprint must fit inside the physics terrain.")
+                ground_z = height_at(probe.heights, 2 * probe.hx, x - probe.cx, y - probe.cy, radius) + probe.cz
+                entry.start_xy, entry.start_place, entry.start_structure = [x, y], None, None
+                mission["start"] = [x, y]
+                if entry.start_heading_deg is None and mission.get("goal") is not None:
+                    goal = mission["goal"]
+                    mission["heading_deg"] = math.degrees(math.atan2(goal[1] - y, goal[0] - x))
+                root_name = scene.get("robots", {}).get(entry.id, {}).get("root_body_name", "rover")
+                root = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, root_name)
+                if root < 0:
+                    raise ValueError("The selected robot does not exist in the compiled scene.")
+                joint = int(model.body_jntadr[root])
+                if joint < 0 or model.jnt_type[joint] != mujoco.mjtJoint.mjJNT_FREE:
+                    raise ValueError("This robot has no movable free-root start state.")
+                address = int(model.jnt_qposadr[joint])
+                margin = 0.1 if entry.robot.kind == "rover" else 0.05 if entry.robot.kind == "walker" else 0.0
+                data.qpos[address:address + 3] = [x, y, ground_z + support_height_offset(entry.robot) + margin]
+                heading = math.radians(mission["heading_deg"])
+                data.qpos[address + 3:address + 7] = [math.cos(heading / 2), 0, 0, math.sin(heading / 2)]
+                mujoco.mj_forward(model, data)
+                poses = self._poses(model, data)
+                for geom in range(model.ngeom):
+                    if int(model.body_rootid[int(model.geom_bodyid[geom])]) == root:
+                        scene["poses"][geom] = poses[geom]
+                        moved[str(geom)] = poses[geom]
+                scene["initial_qpos"] = data.qpos.tolist()
+            else:
+                entry.goal_xy, entry.goal_place, entry.goal_structure = [x, y], None, None
+                mission["goal"] = [x, y]
+                for key in ("goal_structure", "goal_z", "waypoints"):
+                    mission.pop(key, None)
+            if entry.id == updated.robots[0].id:
+                scene["mission"] = mission
+            if entry.id in scene.get("robots", {}):
+                scene["robots"][entry.id]["mission"] = mission
+            self.missions[entry.id] = mission
+        self.mission = scene["mission"]
+        updated.robot = updated.robots[0].robot.model_copy(deep=True)
+        updated.mission = updated.robots[0].mission()
+        timing_note = None
+        if not updated.time_limit_given:
+            from ..timing import time_limit_from_missions
+
+            resolved = {entry.id: scene.get("robots", {}).get(entry.id, {}).get("mission") or scene["mission"]
+                        for entry in updated.robots}
+            limit = time_limit_from_missions(updated, resolved)
+            if limit is not None:
+                updated.duration_s, timing_note = limit
+                updated.assumptions = [note for note in updated.assumptions if not note.startswith("Gave the robot")]
+                updated.assumptions.append(timing_note)
+        result = BuildResult(code=build.code, language=build.language, scene=scene, notes=list(build.notes))
+        return updated, result, {"which": which, "mission": scene["mission"], "robots": scene.get("robots", {}),
+                                 "moved_poses": moved, "code_unchanged": True, "duration_s": updated.duration_s,
+                                 "timing_note": timing_note}
 
     def _policy_runner(
         self,
