@@ -1,3 +1,5 @@
+import json
+
 import pytest
 
 from simgate import evolve
@@ -116,3 +118,172 @@ def test_race_rejects_out_of_space_and_library_candidates():
     designs[0]["robot"]["unbounded_knob"] = 1
     with pytest.raises(ValueError, match="Unknown robot settings"):
         evolve._validate_race_designs(designs)
+
+
+def _generation_results(designs, *, progress=40, outcome="stuck", slope=12):
+    return [{
+        **design, "reached_goal": False, "progress_percent": progress,
+        "time_s": 90, "outcome": outcome,
+        "event": {"x": -2.0, "y": 3.0, "local_slope_deg": slope, "step_m": 0.22},
+    } for design in designs]
+
+
+def test_next_generation_keeps_elite_and_generates_unique_bounded_children(monkeypatch):
+    monkeypatch.setattr(evolve.config, "MOCK_MODE", True)
+    designs = evolve._rules(4)
+    raced = _generation_results(designs)
+    expected_elite = max(raced, key=lambda row: row["progress_percent"])
+    next_designs = evolve.next_generation({"generation": 0, "results": raced}, n=4)
+
+    assert next_designs[0]["id"] == expected_elite["id"]
+    assert next_designs[0]["robot"] == expected_elite["robot"]
+    assert len(next_designs) == 4
+    assert len({row["color"] for row in next_designs}) == 4
+    assert {row["robot"]["kind"] for row in next_designs} == {"rover", "walker"}
+    for child in next_designs[1:]:
+        assert child["parent_id"] in {row["id"] for row in raced}
+        assert 1 <= len(child["changes"]) <= 2
+        assert child["changed_parameters"] == list(child["changes"])
+        assert child["reason"] and "stuck" in child["reason"]
+        assert evolve._fingerprint(child["robot"]) not in {
+            evolve._fingerprint(row["robot"]) for row in raced
+        }
+
+
+def test_child_validation_rejects_more_than_two_parameters_and_clamps():
+    rows = _generation_results(evolve._rules(4))
+    elite = rows[0]
+    with pytest.raises(ValueError, match="one or two"):
+        evolve._validate_children([{
+            "parent_id": rows[1]["id"], "name": "Too many",
+            "reason": "A reason linked to failure.",
+            "changes": {"leg_length": .3, "stride_deg": 18, "gait_freq_hz": 2},
+        }], rows, elite, 1, 1, set())
+    children = evolve._validate_children([{
+        "parent_id": rows[1]["id"], "name": "Clamped",
+        "reason": "Longer legs address the stuck result.",
+        "changes": {"leg_length": 9},
+    }], rows, elite, 1, 1, set())
+    assert children[0]["robot"]["leg_length"] == .4
+    assert children[0]["changes"] == {"leg_length": .4}
+    duplicate = dict(rows[1]["robot"])
+    duplicate["leg_length"] = .3
+    with pytest.raises(ValueError, match="already raced"):
+        evolve._validate_children([{
+            "parent_id": rows[1]["id"], "name": "Duplicate",
+            "reason": "The original parameters did not address its failure.",
+            "changes": {"leg_length": .3},
+        }], rows, elite, 1, 1, {evolve._fingerprint(duplicate)})
+
+
+def test_designer_receives_failure_facts_and_returns_three_children(monkeypatch):
+    monkeypatch.setattr(evolve.config, "MOCK_MODE", False)
+    rows = _generation_results(evolve._rules(4))
+    captured = []
+
+    def fake_chat_json(messages, model, parse):
+        context = json.loads(messages[1]["content"])
+        captured.append((context, model))
+        children = [
+            {"parent_id": "G0-B", "name": f"Child {index}",
+             "reason": f"G0-B was stuck at the measured step; increase leg length {index}.",
+             "changes": {"leg_length": .29 + .02 * index}}
+            for index in range(3)
+        ]
+        return parse({"children": children}), [{"valid": True}]
+
+    monkeypatch.setattr(evolve.llm, "chat_json", fake_chat_json)
+    next_designs = evolve.next_generation({"generation": 0, "results": rows}, n=4)
+
+    assert len(next_designs) == 4
+    assert len(captured) == 1
+    facts = captured[0][0]["FACTS"]
+    assert {fact["id"] for fact in facts} == {row["id"] for row in rows}
+    assert all(fact["outcome"] == "stuck" and fact["event"]["local_slope_deg"] == 12 for fact in facts)
+    assert captured[0][1] == evolve.config.BUILDER_MODEL
+    assert all(child["source"] == "model" for child in next_designs[1:])
+
+
+@pytest.mark.parametrize(("kind", "outcome", "expected"), [
+    ("rover", "stuck", {"wheel_radius", "wheel_width"}),
+    ("walker", "stuck", {"leg_length", "stride_deg"}),
+    ("rover", "flipped", {"chassis_width", "wheel_radius"}),
+    ("walker", "flipped", {"chassis_width", "leg_length"}),
+    ("rover", "slipped", {"wheels", "drive_speed"}),
+    ("walker", "slipped", {"chassis_width", "gait_freq_hz"}),
+    ("rover", "too slow", {"drive_speed", "wheel_radius"}),
+    ("walker", "too slow", {"gait_freq_hz", "stride_deg"}),
+])
+def test_fallback_mutations_match_failure_class(kind, outcome, expected):
+    design = next(row for row in evolve._rules(4) if row["robot"]["kind"] == kind)
+    changes, _ = evolve._fallback_change(
+        {**design, "outcome": outcome}, outcome, 0,
+    )
+    assert set(changes) == expected
+
+
+def test_evolve_stops_immediately_when_any_design_reaches_goal(monkeypatch):
+    monkeypatch.setattr(evolve, "propose_generation0", lambda challenge, n: evolve._rules(n))
+    calls = []
+
+    def fake_race(challenge, designs, seed):
+        calls.append(designs)
+        rows = _generation_results(designs)
+        rows[0].update(reached_goal=True, outcome="reached", time_s=21, progress_percent=100)
+        return {"results": rows}
+
+    monkeypatch.setattr(evolve, "race_generation", fake_race)
+    report = evolve.evolve(_challenge(), max_generations=4, n=4, seed=3)
+
+    assert len(calls) == 1
+    assert report["success"] is True
+    assert len(report["generations"]) == 1
+    assert report["family_tree"] == []
+    assert report["report"].startswith("Goal reached by ")
+
+
+def test_evolve_reports_closest_failure_and_links_family_tree(monkeypatch):
+    monkeypatch.setattr(evolve.config, "MOCK_MODE", True)
+    monkeypatch.setattr(evolve, "propose_generation0", lambda challenge, n: evolve._rules(n))
+    generation = 0
+
+    def fake_race(challenge, designs, seed):
+        nonlocal generation
+        rows = _generation_results(designs, progress=40, slope=12)
+        if generation:
+            for row in rows:
+                row["progress_percent"] = 60
+                row["event"]["local_slope_deg"] = 18
+            child = next(row for row in rows if row["id"] == "G1-A")
+            child["progress_percent"] = 78
+            child["event"]["local_slope_deg"] = 24
+        generation += 1
+        from simgate import cost
+
+        cost.add_runs(len(rows))
+        return {"results": rows}
+
+    monkeypatch.setattr(evolve, "race_generation", fake_race)
+    report = evolve.evolve(_challenge(), max_generations=2, n=4, seed=3)
+
+    assert report["success"] is False
+    assert "closest: G1-A, 78% of the way, stuck" in report["report"]
+    assert "24°" in report["report"]
+    assert len(report["family_tree"]) == 3
+    assert all(edge["parent_id"].startswith("G0-") for edge in report["family_tree"])
+    assert all(edge["child_id"].startswith("G1-") and edge["result"] for edge in report["family_tree"])
+    assert all(
+        all(set(change) == {"from", "to"} for change in edge["changes"].values())
+        for edge in report["family_tree"]
+    )
+    assert all(
+        any(f"{key} " in edge["reason"] for key in edge["changes"])
+        for edge in report["family_tree"]
+    )
+    assert report["cost"]["runs"] == 8
+    assert report["cost"]["model_calls"] == 0
+
+
+def test_evolution_enforces_the_sixteen_race_budget():
+    with pytest.raises(ValueError, match="limited to 16"):
+        evolve.evolve(_challenge(), max_generations=5, n=4, seed=0)

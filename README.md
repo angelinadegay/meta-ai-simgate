@@ -226,6 +226,17 @@ moving at the limit (`too slow`). Results include best distance closed, event ti
 and location, local slope and step, plus a deterministic ranking. These are
 simulation results for the specified world, not a physical-robot guarantee.
 
+`next_generation(results, n=4)` preserves the top-ranked elite and proposes three
+failure-guided children. Each child inherits one raced parent and changes at most
+two in-range robot parameters; already-raced duplicates are rejected. If Designer
+output is unavailable or invalid, deterministic mutations respond to stuck, flipped,
+slipped, and too-slow outcomes. `evolve(challenge, max_generations=4, n=4, seed=0)`
+runs generations sequentially, stops on the first goal reach, and caps the total at
+16 candidate runs. Its result includes per-generation race results, the parent/child
+tree with old/new parameter values, failure-linked mutation reasons and outcomes,
+closest-progress report if none succeeds,
+and tracked runs, elapsed time, and model calls.
+
 ## Project status
 
 This is a **prototype**. It was built before the hackathon building period started, to test the idea and

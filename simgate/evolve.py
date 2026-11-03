@@ -29,6 +29,7 @@ COLORS = ("#40d8a0", "#f2bc55", "#718cff", "#ef829f",
 RACE_STUCK_WINDOW_S = 5.0
 RACE_NO_PROGRESS_M = 0.1
 RACE_HIGH_SLIP_RATIO = 0.5
+MAX_EVOLUTION_RUNS = 16
 
 SYSTEM = """You are the Designer proposing generation-zero procedural robots for a place.
 Propose exactly the requested number, including at least one rover and one walker.
@@ -39,6 +40,15 @@ DESIGN_SPACE lists numeric ranges, except wheels and legs which are discrete cho
 Use only the knobs for that kind. Vary designs rather than repeating them.
 Return JSON only: {"designs":[{"name":"short name","reason":"one-line design rationale",
 "robot":{"kind":"rover or walker","<allowed knob>":0}}]}."""
+
+MUTATION_SYSTEM = """You are the Designer improving already-raced procedural robots.
+The best design is kept unchanged; propose exactly the requested number of children.
+Each child must name one parent_id and change one or two allowed parameters of that parent's
+kind only. Return only actual parameter differences in `changes`; never change kind or the
+world. Tie the one-line reason to that parent's measured outcome and failure location from FACTS.
+Use allowed numeric ranges and discrete values only. Return JSON:
+{"children":[{"parent_id":"G0-A","name":"short name","reason":"failure-linked reason",
+"changes":{"wheel_radius":0.28}}]}"""
 
 
 def place_facts(challenge: SceneSpec) -> dict[str, Any]:
@@ -304,6 +314,7 @@ def _score_race_result(design: dict, run: dict, time_limit_s: float) -> dict:
     return {
         "id": design["id"], "name": design["name"], "color": design.get("color"),
         "kind": design["robot"]["kind"], "reached_goal": reached,
+        "robot": design["robot"],
         "progress_percent": round(progress, 1),
         "time_s": round(float(event_time if event_time is not None else time_limit_s), 2),
         "outcome": outcome, "event": event, "reason": design.get("reason"),
@@ -365,3 +376,358 @@ def race_generation(challenge: SceneSpec, designs: list[dict], seed: int) -> dic
                  "radius_m": base.mission.goal_radius_m},
         "results": results,
     }
+
+
+def _result_rows(results: dict | list[dict]) -> list[dict]:
+    rows = results.get("results") if isinstance(results, dict) else results
+    if not isinstance(rows, list) or not rows:
+        raise ValueError("Generation results must include at least one raced design.")
+    return rows
+
+
+def _fingerprint(robot: dict) -> tuple:
+    kind = robot["kind"]
+    return (kind, *sorted((key, robot[key]) for key in DESIGN_SPACE[kind]))
+
+
+def _failure_fact(parent: dict) -> str:
+    event = parent.get("event") or {}
+    where = []
+    if event.get("step_m") is not None and event["step_m"] > 0.01:
+        where.append(f"a {event['step_m']:.2f} m local step")
+    if event.get("local_slope_deg") is not None:
+        where.append(f"{event['local_slope_deg']:g}° slope")
+    if event.get("x") is not None and event.get("y") is not None:
+        where.append(f"({event['x']:g}, {event['y']:g})")
+    return " at " + ", ".join(where) if where else " at an unmeasured location"
+
+
+def _change_description(parent: dict, changes: dict) -> str:
+    return ", ".join("{} {} -> {}".format(key, parent["robot"][key], value)
+                     for key, value in changes.items())
+
+
+def _bounded_changes(parent: dict, changes: dict) -> tuple[dict, dict]:
+    if not isinstance(changes, dict) or not 1 <= len(changes) <= 2:
+        raise ValueError("Each child must change one or two parameters.")
+    kind = parent["robot"]["kind"]
+    allowed = DESIGN_SPACE[kind]
+    if set(changes) - set(allowed):
+        raise ValueError(f"Child changes must use {kind} design parameters only.")
+    robot = dict(parent["robot"])
+    applied = {}
+    for key, raw in changes.items():
+        if isinstance(raw, bool) or not isinstance(raw, (int, float)) or not math.isfinite(raw):
+            raise ValueError(f"{key} must be a finite number.")
+        low, high = allowed[key]
+        if key in ("wheels", "legs"):
+            if raw not in (low, high):
+                raise ValueError(f"{key} must be 4 or 6.")
+            value = int(raw)
+        else:
+            value = min(high, max(low, float(raw)))
+        if value != robot[key]:
+            robot[key] = value
+            applied[key] = value
+    if not applied:
+        raise ValueError("A child must differ from its parent after clamping.")
+    return Robot.model_validate(robot).model_dump(mode="json"), applied
+
+
+def _validate_children(
+    suggestions: list[dict],
+    parents: list[dict],
+    elite: dict,
+    n_children: int,
+    generation: int,
+    raced_fingerprints: set[tuple],
+) -> list[dict]:
+    if not isinstance(suggestions, list) or len(suggestions) != n_children:
+        raise ValueError(f"Designer must propose exactly {n_children} children.")
+    by_id = {row["id"]: row for row in parents}
+    seen = set(raced_fingerprints)
+    seen.add(_fingerprint(elite["robot"]))
+    children = []
+    child_colors = [color for color in COLORS if color != elite.get("color")]
+    for index, suggestion in enumerate(suggestions):
+        if not isinstance(suggestion, dict) or suggestion.get("parent_id") not in by_id:
+            raise ValueError("Each child must name a raced parent_id.")
+        parent = by_id[suggestion["parent_id"]]
+        reason = _text(suggestion.get("reason"), "Child reason", 200)
+        name = _text(suggestion.get("name"), "Child name", 40)
+        robot, changes = _bounded_changes(parent, suggestion.get("changes"))
+        fingerprint = _fingerprint(robot)
+        if fingerprint in seen:
+            raise ValueError("Child duplicates a design already raced.")
+        seen.add(fingerprint)
+        children.append({
+            "id": f"G{generation}-{chr(ord('A') + index)}",
+            "color": child_colors[index], "name": name, "reason": reason,
+            "robot": robot, "parent_id": parent["id"],
+            "changes": changes, "changed_parameters": list(changes),
+            "parameter_changes": {
+                key: {"from": parent["robot"][key], "to": value} for key, value in changes.items()
+            },
+            "source": "model", "tested": False,
+        })
+    if {elite["robot"]["kind"], *(row["robot"]["kind"] for row in children)} != {"rover", "walker"}:
+        raise ValueError("The next generation must include at least one rover and one walker.")
+    return children
+
+
+def _fallback_change(parent: dict, outcome: str, attempt: int) -> tuple[dict, str]:
+    robot = parent["robot"]
+    kind = robot["kind"]
+    space = DESIGN_SPACE[kind]
+    if outcome == "stuck":
+        if kind == "rover":
+            changes = {"wheel_radius": robot["wheel_radius"] + 0.05 + 0.02 * attempt,
+                       "wheel_width": robot["wheel_width"] + 0.02 * attempt}
+            why = "try larger wheels and more contact width"
+        else:
+            changes = {"leg_length": robot["leg_length"] + 0.04 + 0.02 * attempt,
+                       "stride_deg": robot["stride_deg"] + 1.0 * attempt}
+            why = "try longer legs and stride"
+    elif outcome == "flipped":
+        lower = "wheel_radius" if kind == "rover" else "leg_length"
+        lower_delta = 0.02 + 0.01 * attempt
+        if attempt % 3 == 2:
+            changes = {"chassis_width": robot["chassis_width"] + 0.06,
+                       "mass_kg": robot["mass_kg"] + 2.0 + attempt}
+            why = "try a wider, heavier stance; chassis height is not a design parameter"
+        elif attempt % 3 == 1:
+            changes = {"mass_kg": robot["mass_kg"] + 2.0 + attempt,
+                       lower: robot[lower] - lower_delta}
+            why = "add mass and lower the chassis with smaller wheels or shorter legs"
+        else:
+            changes = {"chassis_width": robot["chassis_width"] + 0.06 + 0.02 * (attempt // 3),
+                       lower: robot[lower] - lower_delta}
+            why = "widen the stance and lower the chassis with smaller wheels or shorter legs"
+    elif outcome == "slipped":
+        if kind == "rover":
+            changes = {"drive_speed": robot["drive_speed"] * (0.8 - 0.05 * attempt)}
+            if robot["wheels"] < 6:
+                changes["wheels"] = 6
+                why = "increase to six wheel contacts and slow down"
+            else:
+                changes["wheel_width"] = robot["wheel_width"] + 0.02 + 0.01 * attempt
+                why = "widen the tires and slow down; the design already has six wheels"
+        else:
+            changes = {"gait_freq_hz": robot["gait_freq_hz"] * (0.8 - 0.05 * attempt)}
+            if robot["legs"] < 6:
+                changes["legs"] = 6
+                why = "increase to six leg contacts and slow down"
+            else:
+                changes["chassis_width"] = robot["chassis_width"] + 0.02 + 0.01 * attempt
+                why = "widen the stance and slow down; the design already has six legs"
+    else:
+        speed = "drive_speed" if kind == "rover" else "gait_freq_hz"
+        changes = {speed: robot[speed] * (1.15 + 0.05 * attempt)}
+        second = "wheel_radius" if kind == "rover" else "stride_deg"
+        changes[second] = robot[second] + (0.02 if second == "wheel_radius" else 1.0) * (attempt + 1)
+        why = "try a faster drive and larger step response"
+    clamped = {}
+    for key, value in changes.items():
+        low, high = space[key]
+        if key in ("wheels", "legs"):
+            clamped[key] = value
+        else:
+            clamped[key] = min(high, max(low, value))
+    return clamped, why
+
+
+def _fallback_children(
+    parents: list[dict], elite: dict, n_children: int, generation: int,
+    raced_fingerprints: set[tuple], fallback_reason: str,
+) -> list[dict]:
+    seen = set(raced_fingerprints)
+    seen.add(_fingerprint(elite["robot"]))
+    failures = [row for row in parents if not row.get("reached_goal")]
+    if not failures:
+        failures = parents
+    children = []
+    child_colors = [color for color in COLORS if color != elite.get("color")]
+    for index in range(n_children):
+        target_kind = "walker" if elite["robot"]["kind"] == "rover" else "rover"
+        candidates = sorted(failures, key=lambda row: (
+            row["robot"]["kind"] != target_kind,
+            -float(row.get("progress_percent", 0)),
+            row["id"],
+        ))
+        if candidates:
+            offset = index % len(candidates)
+            candidates = candidates[offset:] + candidates[:offset]
+        accepted = None
+        for parent in candidates:
+            for attempt in range(8):
+                outcome = parent.get("outcome", "too slow")
+                changes, mutation_reason = _fallback_change(parent, outcome, attempt)
+                try:
+                    robot, applied = _bounded_changes(parent, changes)
+                except ValueError:
+                    continue
+                fingerprint = _fingerprint(robot)
+                if fingerprint in seen or robot["kind"] == elite["robot"]["kind"] and \
+                        not any(row["robot"]["kind"] != elite["robot"]["kind"] for row in children) \
+                        and index == n_children - 1:
+                    continue
+                seen.add(fingerprint)
+                accepted = {
+                    "id": f"G{generation}-{chr(ord('A') + index)}",
+                    "color": child_colors[index], "name": f"{parent['name']} {index + 1}",
+                    "reason": f"{parent['id']} was {outcome}{_failure_fact(parent)}; {mutation_reason} "
+                              f"({_change_description(parent, applied)}).",
+                    "robot": robot, "parent_id": parent["id"],
+                    "changes": applied, "changed_parameters": list(applied),
+                    "parameter_changes": {
+                        key: {"from": parent["robot"][key], "to": value} for key, value in applied.items()
+                    },
+                    "source": "rules", "fallback_reason": fallback_reason, "tested": False,
+                }
+                break
+            if accepted:
+                break
+        if accepted is None:
+            raise ValueError("No unique bounded fallback mutation remains for this generation.")
+        children.append(accepted)
+    if {elite["robot"]["kind"], *(row["robot"]["kind"] for row in children)} != {"rover", "walker"}:
+        raise ValueError("The next generation must include at least one rover and one walker.")
+    return children
+
+
+def next_generation(results: dict | list[dict], n: int = 4) -> list[dict]:
+    """Keep the ranked elite and request n-1 bounded, failure-guided children."""
+    if isinstance(n, bool) or not isinstance(n, int) or not 2 <= n <= len(COLORS):
+        raise ValueError("A generation needs 2-8 designs.")
+    rows = _result_rows(results)
+    parents = _validate_race_designs(rows)
+    ordered = sorted(parents, key=lambda row: (
+        not row.get("reached_goal", False),
+        row.get("time_s", float("inf")) if row.get("reached_goal") else
+        -float(row.get("progress_percent", 0)),
+        row["id"],
+    ))
+    elite = {**ordered[0], "tested": True}
+    generation = int(results.get("generation", 0)) + 1 if isinstance(results, dict) else 1
+    if not 1 <= generation <= 8:
+        raise ValueError("Generation IDs are limited to G1-G8.")
+    raced_designs = results.get("raced_designs", rows) if isinstance(results, dict) else rows
+    raced_fingerprints = {
+        _fingerprint(row["robot"]) for row in raced_designs
+        if isinstance(row, dict) and isinstance(row.get("robot"), dict)
+        and row["robot"].get("kind") in DESIGN_SPACE
+    }
+    fallback_reason = "Designer unavailable or child validation failed; used bounded rule mutations."
+    children = None
+    if not config.MOCK_MODE:
+        from openai import OpenAIError
+
+        payload = [{
+            "id": row["id"], "name": row["name"], "robot": row["robot"],
+            "outcome": row.get("outcome"), "progress_percent": row.get("progress_percent"),
+            "event": row.get("event"), "reason": row.get("reason"),
+            "goal_reached": row.get("reached_goal"),
+        } for row in parents]
+        messages = [
+            {"role": "system", "content": MUTATION_SYSTEM + "\nDESIGN_SPACE: " + json.dumps(DESIGN_SPACE)},
+            {"role": "user", "content": json.dumps({
+                "elite_id": elite["id"], "n_children": n - 1,
+                "generation": generation, "FACTS": payload,
+            })},
+        ]
+        try:
+            children, attempts = llm.chat_json(
+                messages, config.BUILDER_MODEL,
+                lambda reply: _validate_children(reply.get("children"), parents, elite,
+                                                 n - 1, generation, raced_fingerprints),
+            )
+        except OpenAIError as error:
+            fallback_reason = f"Designer request failed ({type(error).__name__}); used bounded rule mutations."
+            logger.warning("%s", fallback_reason)
+        else:
+            if children is None:
+                logger.warning("Generation %s child proposals failed validation: %s", generation, attempts)
+    if children is None:
+        children = _fallback_children(parents, elite, n - 1, generation,
+                                      raced_fingerprints, fallback_reason)
+    else:
+        child_colors = [color for color in COLORS if color != elite.get("color")]
+        for index, child in enumerate(children):
+            child["color"] = child_colors[index]
+    return [elite, *children]
+
+
+def _failure_report(row: dict) -> str:
+    event = row.get("event") or {}
+    location = []
+    if event.get("x") is not None and event.get("y") is not None:
+        location.append(f"near ({event['x']:g}, {event['y']:g})")
+    if event.get("local_slope_deg") is not None:
+        location.append(f"at a measured {event['local_slope_deg']:g}° slope")
+    if event.get("step_m") is not None and event["step_m"] > 0.01:
+        location.append(f"at a {event['step_m']:.2f} m local step")
+    where = " " + " ".join(location) if location else " at an unmeasured location"
+    return f"closest: {row['id']}, {row['progress_percent']:g}% of the way, {row['outcome']}{where}."
+
+
+def evolve(challenge: SceneSpec, max_generations: int = 4, n: int = 4, seed: int = 0) -> dict:
+    """Propose, race, and mutate generations until success or the bounded race budget is spent."""
+    if isinstance(max_generations, bool) or not isinstance(max_generations, int) or not 1 <= max_generations <= 8:
+        raise ValueError("max_generations must be an integer from 1 to 8.")
+    if isinstance(n, bool) or not isinstance(n, int) or not 2 <= n <= len(COLORS):
+        raise ValueError("A generation needs 2-8 designs.")
+    if max_generations * n > MAX_EVOLUTION_RUNS:
+        raise ValueError(f"Evolution is limited to {MAX_EVOLUTION_RUNS} races.")
+    from . import cost
+
+    with cost.track() as spent:
+        designs = propose_generation0(challenge, n)
+        generations, family_tree, all_raced = [], [], []
+        success = False
+        for generation in range(max_generations):
+            race = race_generation(challenge, designs, seed)
+            race["generation"] = generation
+            generations.append(race)
+            current_by_id = {design["id"]: design for design in designs}
+            for result in race["results"]:
+                source = current_by_id[result["id"]]
+                result.update(
+                    robot=source["robot"], reason=source.get("reason"),
+                    color=source.get("color"), source=source.get("source"),
+                )
+                all_raced.append({**result, "generation": generation})
+            if any(row["reached_goal"] for row in race["results"]):
+                success = True
+                break
+            if generation + 1 < max_generations:
+                next_designs = next_generation({
+                    "generation": generation,
+                    "results": race["results"],
+                    "raced_designs": all_raced,
+                }, n)
+                for child in next_designs[1:]:
+                    family_tree.append({
+                        "parent_id": child["parent_id"], "child_id": child["id"],
+                        "generation": generation + 1, "changes": child["parameter_changes"],
+                        "reason": child["reason"], "source": child.get("source"),
+                        "result": None,
+                    })
+                designs = next_designs
+        by_id = {row["id"]: row for row in all_raced}
+        for edge in family_tree:
+            edge["result"] = {
+                key: by_id[edge["child_id"]].get(key)
+                for key in ("outcome", "progress_percent", "reached_goal", "event")
+            } if edge["child_id"] in by_id else None
+        best = max(all_raced, key=lambda row: (
+            bool(row["reached_goal"]), float(row.get("progress_percent", 0)),
+            -float(row.get("time_s", float("inf"))) if row["reached_goal"] else 0,
+        ))
+        report = (f"Goal reached by {next(row['id'] for row in all_raced if row['reached_goal'])}."
+                  if success else _failure_report(best))
+        return {
+            "challenge": challenge.title, "success": success,
+            "generations": generations, "family_tree": family_tree,
+            "best": best, "report": report,
+            "cost": spent.snapshot(),
+        }
