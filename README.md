@@ -231,11 +231,23 @@ failure-guided children. Each child inherits one raced parent and changes at mos
 two in-range robot parameters; already-raced duplicates are rejected. If Designer
 output is unavailable or invalid, deterministic mutations respond to stuck, flipped,
 slipped, and too-slow outcomes. `evolve(challenge, max_generations=4, n=4, seed=0)`
-runs generations sequentially, stops on the first goal reach, and caps the total at
-16 candidate runs. Its result includes per-generation race results, the parent/child
-tree with old/new parameter values, failure-linked mutation reasons and outcomes,
-closest-progress report if none succeeds,
-and tracked runs, elapsed time, and model calls.
+runs generations sequentially, verifies each apparent winner on three new terrain
+and start seeds, and accepts it only when at least two runs reach the goal. The
+verification includes the shared Wilson 95% interval. An unreliable apparent
+winner is rejected and evolution continues only when a full next generation and
+three possible verification runs fit the shared 16-simulation-run budget.
+
+For a verified winner, `margin_search` reuses Finder's binary search on the most
+limiting supported feature (slope, obstacle height, or friction), with at most six
+runs including a baseline; these count toward the same 16-run budget. It does not
+replace measured real terrain with a synthetic slope; if the limiting feature
+cannot be varied in that challenge, the result says the margin is unavailable.
+The report includes a code-generated
+honesty line: real elevation accuracy comes from that terrain card, and designs
+are simplified procedural robots. Results include per-generation race results,
+verification and margin evidence, the parent/child tree with old/new parameter
+values, failure-linked mutation reasons and outcomes, closest-progress report if
+none succeeds, and tracked runs, elapsed time, and model calls.
 
 ## Project status
 

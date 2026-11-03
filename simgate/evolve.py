@@ -670,6 +670,199 @@ def _failure_report(row: dict) -> str:
     return f"closest: {row['id']}, {row['progress_percent']:g}% of the way, {row['outcome']}{where}."
 
 
+def _validate_winner_design(design: dict) -> dict:
+    if not isinstance(design, dict) or not isinstance(design.get("robot"), dict):
+        raise ValueError("Winner verification requires a design with a robot object.")
+    raw_robot = design["robot"]
+    kind = raw_robot.get("kind")
+    if kind not in DESIGN_SPACE:
+        raise ValueError("Only procedural rover and walker designs can be verified.")
+    if any(isinstance(raw_robot.get(key), bool) for key in DESIGN_SPACE[kind]):
+        raise ValueError("Winner design parameters must not be booleans.")
+    robot = Robot.model_validate(raw_robot)
+    if robot.kind not in DESIGN_SPACE:
+        raise ValueError("Only procedural rover and walker designs can be verified.")
+    for key, (low, high) in DESIGN_SPACE[robot.kind].items():
+        value = getattr(robot, key)
+        if not low <= value <= high:
+            raise ValueError(f"{design.get('id', 'Design')} has {key} outside the {robot.kind} design space.")
+    name = _text(design.get("name") or design.get("id"), "Design name", 40)
+    return {**design, "name": name, "robot": robot.model_dump(mode="json")}
+
+
+def verify_winner(challenge: SceneSpec, design: dict) -> dict:
+    """Re-run a candidate on three new terrain/start seeds and report its Wilson interval."""
+    from . import batch, cost, reliability
+
+    candidate = _validate_winner_design(design)
+    if not isinstance(challenge, SceneSpec) or challenge.domain != "robot_terrain":
+        raise ValueError("Winner verification requires a robot-terrain SceneSpec.")
+    base = challenge.model_copy(deep=True).fill_defaults()
+    if base.terrain is None or len(base.robots) != 1:
+        raise ValueError("Winner verification requires one robot and a terrain.")
+    seed = base.terrain.seed
+    robot = {key: value for key, value in candidate["robot"].items()
+             if key not in {"kind", "robot_id", "policy_id"}}
+    variations = [{
+        "label": f"Verification seed {index}",
+        "seed": seed + index,
+        "perturb_seed": index,
+        "robot_kind": candidate["robot"]["kind"],
+        "robot": robot,
+    } for index in range(1, 4)]
+    with cost.track():
+        runs = batch.run_batch(base, variations, baseline=False, record=False)
+    if len(runs) != 3:
+        raise RuntimeError(f"Winner verification expected 3 runs, received {len(runs)}.")
+    scored, passed = [], 0
+    for run in runs:
+        if run.get("error"):
+            raise RuntimeError(f"Winner verification run failed: {run['error']}")
+        summary = run.get("summary") or {}
+        reached = bool(summary.get("goal_reached"))
+        passed += int(reached)
+        start_distance = summary.get("start_distance_to_goal_m")
+        closest = summary.get("closest_distance_m")
+        progress = 100.0 if reached else (
+            max(0.0, min(100.0, 100.0 * (start_distance - closest) / start_distance))
+            if isinstance(start_distance, (int, float)) and start_distance > 0
+            and isinstance(closest, (int, float)) else 0.0
+        )
+        scored.append({
+            "run_id": run.get("id"), "seed": run.get("changes", {}).get("seed"),
+            "reached_goal": reached, "outcome": summary.get("outcome"),
+            "progress_percent": round(progress, 1),
+            "time_s": summary.get("time_to_goal_s"),
+            "final_distance_m": summary.get("final_distance_m"),
+        })
+    low, high = reliability.wilson(passed, len(runs))
+    return {
+        "passed": passed, "total": len(runs), "reliable": passed >= 2,
+        "wilson_95": [round(low, 3), round(high, 3)],
+        "text": reliability.ci_text(passed, len(runs)),
+        "message": f"{candidate['name']} reaches the goal {passed} of 3 times ({reliability.ci_text(passed, 3)}).",
+        "results": scored,
+    }
+
+
+def _margin_knob(challenge: SceneSpec, failures: list[dict]) -> str | None:
+    from . import finder
+
+    scene = challenge.model_copy(deep=True).fill_defaults()
+    robot = scene.robots[0].robot
+    fits, _ = finder.scene_knobs(scene, robot)
+    scores = {"slope_deg": 0, "obstacle_scale": 0, "friction": 0}
+    for row in failures:
+        if row.get("reached_goal"):
+            continue
+        outcome = row.get("outcome")
+        event = row.get("event") or {}
+        if outcome in {"slipped"}:
+            scores["friction"] += 3
+        if event.get("local_slope_deg") is not None:
+            scores["slope_deg"] += max(1, int(float(event["local_slope_deg"]) // 5))
+        if event.get("step_m") is not None and float(event["step_m"]) > 0.03:
+            scores["obstacle_scale"] += 2
+    available = [knob for knob in scores if knob in fits]
+    if not available or max(scores[knob] for knob in available) == 0:
+        return None
+    return max(available, key=lambda knob: (scores[knob], -("slope_deg", "obstacle_scale", "friction").index(knob)))
+
+
+def _margin_text(limit: dict, obstacles: tuple[float, float] | None = None) -> str:
+    if limit["never_broke"]:
+        return f"It did not fail within Finder's tested {limit['name']} range."
+    boundary = (float(limit["last_ok"]) + float(limit["first_fail"])) / 2
+    uncertainty = abs(float(limit["first_fail"]) - float(limit["last_ok"])) / 2
+    knob = limit["knob"]
+    if knob == "slope_deg":
+        delta = max(0.0, boundary - float(limit["baseline"]))
+        return f"It would fail if the slope were about {delta:.1f}° steeper (±{uncertainty:.1f}°)."
+    if knob == "friction":
+        return f"It would fail if friction dropped below about {boundary:.2f} (±{uncertainty:.2f})."
+    if knob == "obstacle_scale" and obstacles is not None:
+        current, climb = obstacles
+        rock_boundary = boundary * climb
+        rock_uncertainty = uncertainty * climb
+        return (f"It would fail if the rock were about {max(0.0, rock_boundary - current):.2f} m taller "
+                f"(±{rock_uncertainty:.2f} m).")
+    return f"It would fail near {boundary:.2f} for {limit['name']} (±{uncertainty:.2f})."
+
+
+def margin_search(
+    challenge: SceneSpec, design: dict, failures: list[dict] | None = None, budget: int = 6,
+) -> dict:
+    """Use Finder's one-condition binary search, including baseline, in at most six runs."""
+    from . import finder
+
+    if isinstance(budget, bool) or not isinstance(budget, int) or not 1 <= budget <= 6:
+        raise ValueError("Margin search budget must be an integer from 1 to 6.")
+    candidate = _validate_winner_design(design)
+    scene = challenge.model_copy(deep=True).fill_defaults()
+    if scene.terrain is None or len(scene.robots) != 1:
+        return {"available": False, "reason": "Margin search needs one robot on a terrain.", "runs": 0}
+    entry = scene.robots[0]
+    entry.robot = Robot.model_validate(candidate["robot"])
+    scene.robot = entry.robot.model_copy(deep=True)
+    knob = _margin_knob(scene, failures or [])
+    if knob is None:
+        if scene.terrain.kind == "real" and any(
+            (row.get("event") or {}).get("local_slope_deg") is not None
+            for row in failures or []
+        ):
+            reason = ("The limiting feature was slope, but this real elevation map cannot be steepened "
+                      "without replacing measured terrain.")
+        else:
+            reason = "No supported limiting feature is adjustable in this challenge."
+        return {"available": False, "reason": reason, "runs": 0}
+    if knob == "slope_deg" and scene.terrain.kind == "flat":
+        scene = finder.prepare(scene, [knob])
+    fits, _ = finder.scene_knobs(scene, entry.robot)
+    if knob not in fits:
+        return {"available": False, "reason": f"Finder cannot search {knob} for this challenge.", "runs": 0}
+    obstacle_context = finder._obstacle_context(scene, entry.robot)
+    context = {
+        "base": fits, "robot_id": entry.id, "mass": entry.robot.mass_kg,
+        "obstacles": obstacle_context,
+    }
+    scene = finder.prepare(scene, [knob])
+    runner = finder.Runner(scene, entry.id, "task", budget=budget)
+    baseline = runner.run([({"phase": 0, "knob": knob, "value": fits[knob]}, {})])[0]
+    if baseline["broke"] is not False:
+        return {
+            "available": False, "reason": "The design did not pass the baseline margin run.",
+            "knob": knob, "runs": len(runner.evidence), "evidence": runner.evidence,
+        }
+    limit = finder.search(runner, [knob], context, None)[0]
+    result = {
+        "available": True, "knob": knob, "name": limit["name"],
+        "last_ok": limit["last_ok"], "first_fail": limit["first_fail"],
+        "step": limit["step"], "never_broke": limit["never_broke"],
+        "runs": len(runner.evidence), "evidence": runner.evidence,
+    }
+    result["text"] = _margin_text(limit, obstacle_context)
+    return result
+
+
+def _honesty_line(challenge: SceneSpec) -> str:
+    scene = challenge.model_copy(deep=True).fill_defaults()
+    if scene.terrain is not None and scene.terrain.kind == "real":
+        from .terrain_data import load_preset, load_structure_patch
+
+        _, metadata = (load_structure_patch(scene.terrain.preset, scene.terrain.structure_crop_size_m)
+                       if scene.terrain.structure_crop_size_m is not None else load_preset(scene.terrain.preset))
+        accuracy = metadata.get("accuracy_note") or (
+            f"{metadata['meters_per_pixel']:g} m per source pixel"
+            if metadata.get("meters_per_pixel") is not None else "not specified in terrain metadata"
+        )
+        accuracy = accuracy.rstrip(" .")
+        return (f"Tested in simulation on real elevation data (accuracy: {accuracy}). "
+                "Designs are simplified procedural robots.")
+    terrain = scene.terrain.kind if scene.terrain is not None else "unspecified"
+    return (f"Tested in simulation on {terrain} terrain (not real elevation data). "
+            "Designs are simplified procedural robots.")
+
+
 def evolve(challenge: SceneSpec, max_generations: int = 4, n: int = 4, seed: int = 0) -> dict:
     """Propose, race, and mutate generations until success or the bounded race budget is spent."""
     if isinstance(max_generations, bool) or not isinstance(max_generations, int) or not 1 <= max_generations <= 8:
@@ -677,15 +870,26 @@ def evolve(challenge: SceneSpec, max_generations: int = 4, n: int = 4, seed: int
     if isinstance(n, bool) or not isinstance(n, int) or not 2 <= n <= len(COLORS):
         raise ValueError("A generation needs 2-8 designs.")
     if max_generations * n > MAX_EVOLUTION_RUNS:
-        raise ValueError(f"Evolution is limited to {MAX_EVOLUTION_RUNS} races.")
+        raise ValueError(f"Evolution is limited to {MAX_EVOLUTION_RUNS} simulation runs.")
     from . import cost
 
     with cost.track() as spent:
         designs = propose_generation0(challenge, n)
         generations, family_tree, all_raced = [], [], []
         success = False
+        runs_used = 0
+        winner = None
+        winner_verification = None
+        winner_margin = None
+        rejected_winners = []
+        budget_stop = None
         for generation in range(max_generations):
+            if runs_used + n + 3 > MAX_EVOLUTION_RUNS:
+                budget_stop = (f"Evolution stopped with {runs_used}/{MAX_EVOLUTION_RUNS} runs used; "
+                               f"{n} races plus 3 verification runs would exceed the budget.")
+                break
             race = race_generation(challenge, designs, seed)
+            runs_used += len(race["results"])
             race["generation"] = generation
             generations.append(race)
             current_by_id = {design["id"]: design for design in designs}
@@ -696,10 +900,56 @@ def evolve(challenge: SceneSpec, max_generations: int = 4, n: int = 4, seed: int
                     color=source.get("color"), source=source.get("source"),
                 )
                 all_raced.append({**result, "generation": generation})
-            if any(row["reached_goal"] for row in race["results"]):
-                success = True
+            reached = [row for row in race["results"] if row["reached_goal"]]
+            for result in reached:
+                verification_challenge = challenge.model_copy(deep=True)
+                if verification_challenge.terrain is not None:
+                    verification_challenge.terrain.seed = seed
+                verification = verify_winner(verification_challenge, result)
+                runs_used += verification["total"]
+                result["verification"] = verification
+                result["verified_winner"] = verification["reliable"]
+                raced_copy = next(row for row in reversed(all_raced) if row["id"] == result["id"])
+                raced_copy["verification"] = verification
+                raced_copy["verified_winner"] = verification["reliable"]
+                if verification["reliable"]:
+                    success = True
+                    winner = result
+                    winner_verification = verification
+                    margin_budget = min(6, MAX_EVOLUTION_RUNS - runs_used)
+                    winner_margin = (
+                        margin_search(verification_challenge, result, all_raced, budget=margin_budget)
+                        if margin_budget else {
+                            "available": False, "reason": "No runs remain for a margin search.", "runs": 0,
+                        }
+                    )
+                    runs_used += winner_margin.get("runs", 0)
+                    break
+                rejected_winners.append({
+                    "id": result["id"], "verification": verification,
+                })
+                result["race_reached_goal"] = True
+                result["reached_goal"] = False
+                failed_verifications = [run for run in verification["results"] if not run["reached_goal"]]
+                failure_classes = [run.get("outcome") for run in failed_verifications]
+                failure_classes = [
+                    {"fell": "flipped", "left_terrain": "stuck", "out_of_time": "too slow"}.get(item, item)
+                    for item in failure_classes
+                ]
+                result["outcome"] = max(
+                    (item for item in failure_classes if item in {"flipped", "stuck", "slipped", "too slow"}),
+                    key=failure_classes.count, default="too slow",
+                )
+                result["progress_percent"] = max(
+                    (float(run.get("progress_percent", 0)) for run in failed_verifications), default=0.0,
+                )
+                raced_copy.update({
+                    "race_reached_goal": True, "reached_goal": False,
+                    "outcome": result["outcome"], "progress_percent": result["progress_percent"],
+                })
+            if success:
                 break
-            if generation + 1 < max_generations:
+            if generation + 1 < max_generations and runs_used + n + 3 <= MAX_EVOLUTION_RUNS:
                 next_designs = next_generation({
                     "generation": generation,
                     "results": race["results"],
@@ -713,6 +963,9 @@ def evolve(challenge: SceneSpec, max_generations: int = 4, n: int = 4, seed: int
                         "result": None,
                     })
                 designs = next_designs
+            elif generation + 1 < max_generations:
+                budget_stop = (f"Evolution stopped with {runs_used}/{MAX_EVOLUTION_RUNS} runs used; "
+                               f"{n} more races plus 3 verification runs would exceed the budget.")
         by_id = {row["id"]: row for row in all_raced}
         for edge in family_tree:
             edge["result"] = {
@@ -723,11 +976,25 @@ def evolve(challenge: SceneSpec, max_generations: int = 4, n: int = 4, seed: int
             bool(row["reached_goal"]), float(row.get("progress_percent", 0)),
             -float(row.get("time_s", float("inf"))) if row["reached_goal"] else 0,
         ))
-        report = (f"Goal reached by {next(row['id'] for row in all_raced if row['reached_goal'])}."
-                  if success else _failure_report(best))
+        if success:
+            margin_text = winner_margin["text"] if winner_margin.get("available") else winner_margin.get("reason")
+            report = (f"Goal reached by {winner['id']} and verified "
+                      f"({winner_verification['text']}). {margin_text}")
+        else:
+            report = _failure_report(best)
+            if rejected_winners:
+                rejected = ", ".join(
+                    f"{row['id']} was unreliable ({row['verification']['text']})"
+                    for row in rejected_winners
+                )
+                report += f" Rejected apparent winner(s): {rejected}."
+            if budget_stop:
+                report += f" {budget_stop}"
         return {
             "challenge": challenge.title, "success": success,
             "generations": generations, "family_tree": family_tree,
-            "best": best, "report": report,
+            "best": best, "winner": winner, "verification": winner_verification,
+            "margin": winner_margin, "honesty": _honesty_line(challenge),
+            "rejected_winners": rejected_winners, "report": report,
             "cost": spent.snapshot(),
         }

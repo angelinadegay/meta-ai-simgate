@@ -223,10 +223,28 @@ def test_fallback_mutations_match_failure_class(kind, outcome, expected):
 
 
 def test_evolve_stops_immediately_when_any_design_reaches_goal(monkeypatch):
+    from simgate import cost
+
     monkeypatch.setattr(evolve, "propose_generation0", lambda challenge, n: evolve._rules(n))
+    def fake_verify(challenge, design):
+        cost.add_runs(3)
+        return {"reliable": True, "total": 3, "text": "passes 3/3 (95% CI 44–100%)"}
+
+    budgets = []
+
+    def fake_margin(challenge, design, failures, budget=6):
+        budgets.append(budget)
+        cost.add_runs(budget)
+        return {
+            "available": True, "text": "It would fail if the slope were about 4° steeper.", "runs": budget,
+        }
+
+    monkeypatch.setattr(evolve, "verify_winner", fake_verify)
+    monkeypatch.setattr(evolve, "margin_search", fake_margin)
     calls = []
 
     def fake_race(challenge, designs, seed):
+        cost.add_runs(len(designs))
         calls.append(designs)
         rows = _generation_results(designs)
         rows[0].update(reached_goal=True, outcome="reached", time_s=21, progress_percent=100)
@@ -240,6 +258,149 @@ def test_evolve_stops_immediately_when_any_design_reaches_goal(monkeypatch):
     assert len(report["generations"]) == 1
     assert report["family_tree"] == []
     assert report["report"].startswith("Goal reached by ")
+    assert "verified" in report["report"]
+    assert budgets == [6]
+    assert report["cost"]["runs"] == 13
+    assert report["cost"]["runs"] <= evolve.MAX_EVOLUTION_RUNS
+    assert report["honesty"].endswith("Designs are simplified procedural robots.")
+
+
+def test_verify_winner_rejects_one_of_three_and_reports_new_seeds(monkeypatch):
+    from simgate import batch
+
+    calls = {}
+
+    def fake_batch(scene, variations, **kwargs):
+        calls.update(scene=scene, variations=variations, kwargs=kwargs)
+        return [
+            {"id": f"run-{index}", "changes": variation,
+             "summary": {
+                 "goal_reached": index == 1, "outcome": "reached" if index == 1 else "stuck",
+                 "start_distance_to_goal_m": 10, "closest_distance_m": 5,
+             }}
+            for index, variation in enumerate(variations, start=1)
+        ]
+
+    monkeypatch.setattr(batch, "run_batch", fake_batch)
+    candidate = evolve._rules(4)[0]
+    result = evolve.verify_winner(_challenge(), candidate)
+
+    assert result["passed"] == 1
+    assert result["total"] == 3
+    assert result["reliable"] is False
+    assert [row["progress_percent"] for row in result["results"]] == [100, 50, 50]
+    assert result["wilson_95"][0] < result["wilson_95"][1]
+    assert [row["seed"] for row in calls["variations"]] == [1, 2, 3]
+    assert [row["perturb_seed"] for row in calls["variations"]] == [1, 2, 3]
+    assert calls["kwargs"] == {"baseline": False, "record": False}
+
+
+def test_margin_search_uses_at_most_six_finder_runs(monkeypatch):
+    from simgate import finder
+
+    class FakeRunner:
+        def __init__(self, scene, robot_id, failure, budget):
+            self.budget = budget
+            self.evidence = []
+
+        @property
+        def left(self):
+            return self.budget - len(self.evidence)
+
+        def run(self, jobs):
+            rows = []
+            for setting, _ in jobs[:self.left]:
+                row = {
+                    **setting, "id": f"r{len(self.evidence) + 1}",
+                    "broke": setting["value"] > 15, "failure": "fell",
+                }
+                self.evidence.append(row)
+                rows.append(row)
+            return rows
+
+    monkeypatch.setattr(finder, "Runner", FakeRunner)
+    candidate = evolve._rules(4)[0]
+    failure = {
+        "reached_goal": False, "outcome": "stuck",
+        "event": {"local_slope_deg": 12, "step_m": 0.02},
+    }
+
+    result = evolve.margin_search(_challenge(), candidate, [failure])
+    constrained = evolve.margin_search(_challenge(), candidate, [failure], budget=2)
+
+    assert result["available"] is True
+    assert result["knob"] == "slope_deg"
+    assert result["runs"] == 6
+    assert "steeper" in result["text"]
+    assert len(result["evidence"]) == result["runs"]
+    assert constrained["runs"] == 2
+
+
+def test_evolve_continues_after_an_unreliable_apparent_winner(monkeypatch):
+    monkeypatch.setattr(evolve, "propose_generation0", lambda challenge, n: evolve._rules(n))
+
+    def fake_next_generation(results, n):
+        children = evolve._rules(n)
+        for child in children[1:]:
+            child.update(
+                parent_id="G0-A", parameter_changes={"mass_kg": {"from": 10, "to": 12}},
+                reason="The verification runs stuck; add mass for stability.",
+            )
+        return children
+
+    monkeypatch.setattr(evolve, "next_generation", fake_next_generation)
+    verify_calls = []
+
+    def fake_verify(challenge, design):
+        verify_calls.append(design["id"])
+        return {
+            "reliable": False, "passed": 1, "total": 3, "text": "passes 1/3 (95% CI 6–79%)",
+            "results": [
+                {"reached_goal": False, "outcome": "stuck", "progress_percent": 45},
+                {"reached_goal": True, "outcome": "reached", "progress_percent": 100},
+                {"reached_goal": False, "outcome": "stuck", "progress_percent": 50},
+            ],
+        }
+
+    monkeypatch.setattr(evolve, "verify_winner", fake_verify)
+    race_calls = []
+
+    def fake_race(challenge, designs, seed):
+        race_calls.append(designs)
+        rows = _generation_results(designs)
+        if len(race_calls) == 1:
+            rows[0].update(reached_goal=True, outcome="reached", progress_percent=100)
+        return {"results": rows}
+
+    monkeypatch.setattr(evolve, "race_generation", fake_race)
+    report = evolve.evolve(_challenge(), max_generations=2, n=4, seed=3)
+
+    assert len(race_calls) == 2
+    assert verify_calls == ["G0-A"]
+    assert report["success"] is False
+    assert report["rejected_winners"][0]["id"] == "G0-A"
+    assert "unreliable" in report["report"]
+
+
+def test_honesty_line_uses_real_terrain_accuracy_metadata(monkeypatch):
+    from simgate import terrain_data
+
+    metadata = {
+        "label": "Victoria Crater", "size_m": 80.0, "relief_m": 5.0,
+        "typical_slope_deg": 9.5, "credit": "NASA", "body": "mars",
+        "surface": "regolith", "accuracy_note": "native-scale elevation retained.",
+    }
+    monkeypatch.setattr(terrain_data, "load_preset", lambda preset: (None, metadata))
+    challenge = _challenge().model_copy(update={
+        "terrain": Terrain(kind="real", preset="victoria-opportunity", roughness=0),
+    })
+
+    line = evolve._honesty_line(challenge)
+
+    assert line == (
+        "Tested in simulation on real elevation data (accuracy: native-scale elevation retained). "
+        "Designs are simplified procedural robots."
+    )
 
 
 def test_evolve_reports_closest_failure_and_links_family_tree(monkeypatch):
