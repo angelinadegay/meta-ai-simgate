@@ -215,6 +215,17 @@ challenge = SceneSpec(
 designs = propose_generation0(challenge)
 ```
 
+`simgate.evolve.challenge_preset("victoria-climb-out")` creates the 90-second
+Victoria Crater floor-to-rim mission with a 2 m goal radius. Pass generation-zero
+designs to `race_generation(challenge, designs, seed)` to run each candidate as a
+parallel batch variation on the same terrain seed, start and goal. The race runs
+through its time limit and classifies outcomes from simulation telemetry: reached,
+flipped, less than 0.1 m of movement for at least five seconds (`stuck`, or
+`slipped` when the window's mean contact slip ratio is at least 0.5), or still
+moving at the limit (`too slow`). Results include best distance closed, event time
+and location, local slope and step, plus a deterministic ranking. These are
+simulation results for the specified world, not a physical-robot guarantee.
+
 ## Project status
 
 This is a **prototype**. It was built before the hackathon building period started, to test the idea and

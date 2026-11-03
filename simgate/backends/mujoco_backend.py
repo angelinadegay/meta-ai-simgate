@@ -632,6 +632,21 @@ class TerrainProbe:
     def gradient(self, x: float, y: float) -> np.ndarray:
         return np.array([self._bilinear(self.gx, x, y), self._bilinear(self.gy, x, y)])
 
+    def step_height_m(self, x: float, y: float, radius_m: float = 0.5) -> float:
+        """Largest abrupt local height change around a point, excluding the median smooth grade."""
+        if not self.ok:
+            return 0.0
+        col = int(np.clip(round((x - self.cx + self.hx) / self.dx), 0, self.ncol - 1))
+        row = int(np.clip(round((y - self.cy + self.hy) / self.dy), 0, self.nrow - 1))
+        rx, ry = max(1, math.ceil(radius_m / self.dx)), max(1, math.ceil(radius_m / self.dy))
+        window = self.heights[max(0, row - ry):min(self.nrow, row + ry + 1),
+                              max(0, col - rx):min(self.ncol, col + rx + 1)]
+        differences = [np.abs(np.diff(window, axis=axis)).ravel() for axis in (0, 1) if window.shape[axis] > 1]
+        if not differences:
+            return 0.0
+        values = np.concatenate(differences)
+        return round(max(0.0, float(values.max() - np.median(values))), 3)
+
     def describe(self, x: float, y: float, heading: np.ndarray) -> dict:
         """Slope under (x, y), split relative to the robot's heading (a horizontal unit vector)."""
         g = self.gradient(x, y)
@@ -2309,9 +2324,11 @@ class MuJoCoSimulator(Simulator):
                 "push_duration_s": spec.disturbance.duration_s} if spec.disturbance else {}),
         }
 
-    def run(self, spec: SceneSpec, build: BuildResult, chunk_frames: int = 30, record: bool = True) -> Iterator[list[dict]]:
+    def run(self, spec: SceneSpec, build: BuildResult, chunk_frames: int = 30, record: bool = True,
+            race_telemetry: bool = False) -> Iterator[list[dict]]:
         """Simulate, yielding chunks of frames when ``record`` (a batch run that only needs the summary doesn't
-        record any: its replay re-simulates it with the same seed). Stops once the outcome is decided."""
+        record any: its replay re-simulates it with the same seed). Race telemetry keeps the run going to the
+        time limit and records motion, slip and terrain samples."""
         if len(spec.robots) > 1:
             yield from self._run_multi(spec, build, chunk_frames, record)
             return
@@ -2343,6 +2360,7 @@ class MuJoCoSimulator(Simulator):
         track = CourseTracker(model, build.scene, rover)
         nav_heading = np.array([1.0, 0.0])
         dist_log: list[tuple[float, float, np.ndarray]] = []    # (time, distance to goal, position) once per frame
+        race_samples: list[dict] = []
         path_len, last_xy = 0.0, None
         settled = False
         push_start = push_time(spec)
@@ -2427,12 +2445,24 @@ class MuJoCoSimulator(Simulator):
                 last_xy = xy
                 if nav.goal is not None:
                     dist_log.append((t_now, float(np.linalg.norm(nav.goal - xy)), xy))
+                if race_telemetry and f % 8 == 0:
+                    here = probe.describe(x, y, heading) if probe.ok else {"slope_deg": None}
+                    recent = [row for row in slip_log if t_now - 1.0 <= row[0] <= t_now]
+                    touching = sum(row[1] for row in recent)
+                    race_samples.append({
+                        "time_s": t_now, "x": round(x, 3), "y": round(y, 3),
+                        "distance_to_goal_m": round(float(np.linalg.norm(nav.goal - xy)), 3)
+                        if nav.goal is not None else None,
+                        "local_slope_deg": here["slope_deg"],
+                        "step_m": probe.step_height_m(x, y) if probe.ok else None,
+                        "slip_ratio": round(sum(row[2] for row in recent) / touching, 3) if touching else None,
+                    })
             if record:
                 frames.append({"t": round(f / FPS, 3), "poses": self._poses(model, data)})
                 if len(frames) >= chunk_frames:
                     yield frames
                     frames = []
-            if watch.decided is not None and f < n_frames - 1 and \
+            if not race_telemetry and watch.decided is not None and f < n_frames - 1 and \
                     (not record or f / FPS - watch.decided["at_s"] >= SHOW_AFTER_S):
                 stopped = {**watch.decided, "planned_s": spec.duration_s}
                 break                                    # the outcome is decided: no need to keep simulating
@@ -2462,6 +2492,7 @@ class MuJoCoSimulator(Simulator):
             "simulator": self.name,
             "duration_s": spec.duration_s,
             "distance_m": round(float(np.linalg.norm(end[:2] - start[:2])), 2),
+            "final_xy": [round(float(end[0]), 3), round(float(end[1]), 3)] if rover >= 0 else None,
             "forward_progress_m": round(float(end[0] - start[0]), 2),
             "lateral_drift_m": round(float(np.dot(end[:2] - start[:2], lateral_axis)), 2),
             "climbed_m": round(float(max_z - start[2]), 2),
@@ -2492,6 +2523,8 @@ class MuJoCoSimulator(Simulator):
             "friction": spec.environment.friction,
             "terrain": spec.terrain.model_dump(),
             "robot": spec.robot.model_dump(),
+            **({"race_telemetry": {"time_limit_s": spec.duration_s, "samples": race_samples}}
+               if race_telemetry else {}),
         }
 
     def summary(self) -> dict:

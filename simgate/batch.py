@@ -80,10 +80,12 @@ class Variation(BaseModel):
     waypoints: list[tuple[float, float]] | None = None
     navigation_grid: NavigationGrid | None = None
     robot: dict[str, Any] | None = None
+    robot_kind: str | None = Field(default=None, pattern=r"^(rover|walker)$")
     robot_id: str | None = None      # robot-level knobs apply to this robot only (default: every robot)
 
 
-GEOMETRY_KNOBS = ("slope_deg", "obstacle_scale", "seed", "roughness", "remove_obstacle", "flatten_terrain", "robot")
+GEOMETRY_KNOBS = ("slope_deg", "obstacle_scale", "seed", "roughness", "remove_obstacle", "flatten_terrain",
+                  "robot", "robot_kind")
 
 
 def obstacle_entry_index(spec: SceneSpec, name: str) -> int:
@@ -203,6 +205,11 @@ def _validate_variation(base_spec: SceneSpec, raw: dict) -> tuple[Variation, Sce
             return robot.model_copy(update={"command_speed_m_s": min(max(robot.command_speed_m_s * scale, 0.1), 1.0)})
 
         _update_robots(spec, target, slower)
+    if "robot_kind" in knobs:
+        from .spec import Robot
+
+        kind = knobs["robot_kind"]
+        _update_robots(spec, target, lambda robot: Robot.model_validate({**robot.model_dump(), "kind": kind}))
     if "robot" in knobs:
         from .spec import Robot
 
@@ -359,7 +366,8 @@ def _encode_ghost(geom_ids: list[int], frames: list[list]) -> dict:
     }
 
 
-def _run_worker(run_id: int, label: str, base_spec_json: str, raw_variation: dict | None, record: bool = True) -> dict:
+def _run_worker(run_id: int, label: str, base_spec_json: str, raw_variation: dict | None, record: bool = True,
+                race_telemetry: bool = False) -> dict:
     """One run. Without ``record`` no frames are kept (no ghost track): replaying it re-simulates the same seed."""
     changes = {key: value for key, value in raw_variation.items() if key != "label"} if raw_variation else {}
     try:
@@ -380,7 +388,15 @@ def _run_worker(run_id: int, label: str, base_spec_json: str, raw_variation: dic
         ghost_ids, chassis_index = _robot_geom_ids(build.code) if ghost_allowed else ([], -1)
         ghost_frames = []
         frame_number = 0
-        for chunk in sim.run(spec, build, record=record):
+        if race_telemetry:
+            from .backends.mujoco_backend import MuJoCoSimulator
+
+            if not isinstance(sim, MuJoCoSimulator):
+                raise TypeError("Race telemetry is supported only by the MuJoCo simulator.")
+            run = sim.run(spec, build, record=record, race_telemetry=True)
+        else:
+            run = sim.run(spec, build, record=record)
+        for chunk in run:
             for frame in chunk:
                 if ghost_allowed and frame_number % 2 == 0:
                     robot_poses = [
@@ -431,6 +447,7 @@ def run_batch(
     timeout: float = RUN_TIMEOUT_SECONDS,
     baseline: bool = True,
     record: bool = True,
+    race_telemetry: bool = False,
 ) -> list[dict]:
     """Run an unchanged baseline (unless ``baseline`` is False) and each valid variation in separate
     worker processes (every core but one, kept between batches). ``record=False`` keeps no frames: for analyses
@@ -438,6 +455,7 @@ def run_batch(
 
     Results are returned in baseline/input order and also sent to ``on_result`` as
     workers finish. Invalid variations become error rows without aborting the batch.
+    ``race_telemetry`` retains full-duration MuJoCo motion and slip samples for code-based race scoring.
     """
     raw_variations = list(variations)
     overflow = len(raw_variations) + 1 > MAX_BATCH_RUNS
@@ -483,7 +501,7 @@ def run_batch(
 
         cost.add_runs(len(jobs))
         for run_id, label, raw in jobs:
-            future = executor.submit(_run_worker, run_id, label, base_json, raw, record)
+            future = executor.submit(_run_worker, run_id, label, base_json, raw, record, race_telemetry)
             running[future] = (run_id, label, time.monotonic() + timeout)
 
         while running:
