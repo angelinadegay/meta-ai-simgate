@@ -8,6 +8,20 @@ what happened.
 SimGate is for people who aren't simulation engineers: students, researchers, hobbyists and engineers
 from other fields. They can test an idea against real physics without learning a simulator first.
 
+**Demo video:** `[ADD VIDEO LINK]`
+
+![The apartment map: the rover's safe route from the kitchen to the bedroom via the ramp, with the green, amber and red map and the plain-language answer](tests/screenshots/traversability/apartment-rover-map-routes.png)
+
+**What makes SimGate different:**
+- **It designs and tests robots.** Ask for a robot that can climb out of Victoria Crater, and it proposes designs,
+  races them on real NASA terrain and evolves the next generation from how each one failed.
+- **It proves why things fail.** It reruns a failure, tests one change at a time on fresh seeds, and names the cause
+  that the evidence supports.
+- **It never trusts one lucky run.** Winners are rerun on new seeds, and results come with pass rates and 95%
+  intervals. A design that passed once is reported as unreliable, not as a win.
+
+**Built with Meta models:** Muse Spark (planning, explanations) and Muse Wonder (robot designs).
+
 | Domain | Simulator | Good for |
 | --- | --- | --- |
 | `robot_terrain` | MuJoCo | Wheeled and legged robots on generated or real terrain: traction, tipping, climbing, reaching a goal, gravity on other worlds |
@@ -66,6 +80,18 @@ fails, Mars landers use a simple fallback shape and the log shows a warning.
 See [What is a Meta model here, and what isn't](#what-is-a-meta-model-here-and-what-isnt) for exactly which parts are
 models and which are code.
 
+## Try it in 5 minutes
+
+Open the app and type these into the prompt box, in order:
+
+1. *"Race a six-wheel rover and a six-legged walker to the top of the hills on Mars."*
+2. *"Why did the walker fail?"*
+3. *"Stress test the rover."*
+4. *"A 5-story steel building in a strong earthquake, 0.4 g shaking. Does it survive?"*
+5. *"In the apartment, can the rover get from the kitchen to the bedroom?"*
+6. Go back to the home page and click **Replay saved evolution**. The Victoria Crater design race plays back
+   instantly, with no simulations and no model calls.
+
 ---
 
 ## What is a Meta model here, and what isn't
@@ -87,329 +113,6 @@ version).
 
 No third-party trained models are used. Walking humanoid support (which needs a trained policy) is not part of this
 submission.
-
-## Structures in the world
-
-Build a measured Mars base, then run the rover mission:
-
-> Build a Mars base on Jezero: a habitat, a lander, and a bridge over a trench. Can the rover drive from the lander to the habitat?
-
-The scene keeps real Jezero elevations, selects a larger measured patch when needed, and places the habitat,
-lander and truss bridge inside the physics terrain. The rover starts beside the lander, crosses the bridge,
-aligns with the terrain-connected ramp, and targets the raised habitat airlock. Arrival requires both the
-goal's XY radius and its support-height tolerance; it does not mean entering an operable door or habitat.
-The Scene panel shows individual structural screening, assumptions, member utilisation and visual credit.
-
-**Configured-model validation, 2026-11-02:** planner/explainer `muse-spark-1.3`; configured builder
-`muse-wonder-1.0`, with `BUILDER_MODE=template` (no Builder model call). Mock mode was disabled.
-The final exact-prompt run used real Jezero, an 80.308 m measured patch, Mars gravity 3.71 m/s² and a 10 kg rover.
-
-| Structure | Screening result | Governing utilisation |
-| --- | --- | --- |
-| Habitat | Pass: stress and deflection | 66.30%, deflection at rib joint 7 (7.37 mm versus 11.11 mm limit) |
-| Lander | Pass: static legs and buckling | 0.83% static; 2.48% in the separately labelled 3× local-gravity landing what-if |
-| Bridge | Pass: yield, buckling and sag | 0.189%, yield in member 3 with the rover at mid-span |
-
-The rover cleared the trench and reached the airlock approach at **27.2 s**, finishing 0.34 m from the goal
-without flipping or leaving the terrain. Its budget was 51 simulated seconds; recorded playback ends at 28.7 s.
-The final request/build/run/explain sequence took **55.29 s wall time and 2 model calls** (1 planning, 1 explaining),
-with one mission simulation. Three live validation attempts used 6 model calls in total; diagnostic physics
-replays and screenshot capture made no model calls. A coarse gap-capability advisory remained visible;
-the bridge allowed the rover to cross. Screening is a linear-elastic 2D idealisation, not structural certification.
-
-![Measured Jezero base overview](tests/screenshots/mars-base-live/overview.png)
-![Recorded rover crossing the truss bridge at 9.167 s](tests/screenshots/mars-base-live/rover-on-bridge.png)
-![Recorded rover arriving at the raised airlock at 27.2 s](tests/screenshots/mars-base-live/arriving-at-airlock.png)
-
-Reproduce using your configured models (never prints credentials):
-
-```powershell
-.\.venv\Scripts\python.exe scripts/run_mars_base_example.py
-.\.venv\Scripts\python.exe scripts/run_mars_base_example.py --screenshots-only
-```
-
-The runner saves actual reports, cost events and replay frames under `tests/screenshots/mars-base-live/`.
-Screenshot-only mode uses those frames and refuses to fabricate a bridge pose or a raised-goal arrival.
-Browser capture uses the optional dependencies in `requirements-dev.txt` and locally installed Edge.
-The optional NASA InSight GLB remains local and uncommitted; it is credited only when loaded successfully.
-
-## Where can it go?
-
-Ask **"Where can it go?"**, **"Can it reach the bedroom?"**, **"Is it safe to walk?"**,
-**"Plan a safe route"**, or **"Map where it can drive"**. The Director selects the
-`traversability` workflow with a robot and optional start/goal. The Finder card also offers
-**Map where it can go here**. With no goal, the workflow measures and verifies a map without
-inventing a destination.
-
-The map uses 0.5 m cells outdoors and 0.25 m cells indoors. Features are measured over the robot's
-card footprint: slope, roughness, step, wall/obstacle clearance and surface friction. Limits
-belong to this robot under this world's gravity and surface conditions, not every world.
-Missing limits trigger a disclosed quick Finder scan of at most 16 simulations (indoors:
-step and friction). Successful baseline runs are retained: flat ground demonstrates zero slope,
-roughness and step, plus the world's own friction; a passed step baseline also retains its height.
-For each feature, green uses the strongest reliable pass or passed baseline (the lowest handled
-coefficient for friction, whose direction is reversed). Values beyond all demonstrated passes remain
-amber until measured; an unconfirmed search success alone does not establish a reliable boundary.
-
-- **Green:** all features within reliable measured limits, or a local successful spot correction.
-- **Amber:** an unreliable band or a value beyond every demonstrated reliable/baseline pass.
-- **Red:** a measured failure limit exceeded, insufficient width (robot width + 10 cm), or a failed spot correction.
-- **Grey:** walls, structures, blocked cells or off-world.
-
-Use **Map overlay** to toggle the soft floor/ground colours. Analysis shows the limits, percentages
-(excluding blocked cells), cost and verification evidence. White outlines mark spot-corrected cells;
-the report retains their run IDs. Click a check/cross marker or a replay chip to rerun its recorded
-scene, variation and seed. The mint ribbon shows the safe route or best partial approach; the dashed
-line is straight-to-goal. A partial route is shown but is not automatically driven as a full solution.
-
-Up to six short spots run in parallel: two per available colour, crossing about 3 m outdoors
-or 1.5 m indoors, including a doorway/step indoors where possible. Green should pass, red should
-fail; amber results are reported but unjudged. Disagreements correct the swept cells and are
-named in the card. Fewer than four green/red agreements flags the whole map **unreliable**,
-including when too few judged spots are available. Paired route runs use the same seed and
-normal speed; a successful route does not certify the surrounding map.
-
-The apartment's 6° ramp now joins the raised bedroom through a 1.6 m opening in its east wall:
-the ramp is 1.4 m wide, rises 0.512 m, and has a 1.2 m hall approach. The three 0.17 m steps remain
-in place and red for the rover; they are no longer the only access. Routed rovers brake before
-waypoint turns and align before moving forward. Clearance includes the footprint's turning sweep
-beside red terrain; actual heading progress during rotation is not mistaken for being stuck.
-These changes do not change the legacy straight-to-goal controller.
-
-An ordered request such as **"In the apartment, can the rover go from the kitchen to the living room,
-then to the bedroom?"** retains both stops and compares straight versus safe **per leg**.
-The map is measured and spot-checked once; legs use independent simulations starting at each stop,
-not a continuous mission or a claim that the second leg physically followed a successful first one.
-
-> Map from measured limits (step ±1 cm, slope ±1.9°, …); real places combine features, so the map is checked with spot runs below.
-
-### Live Meta-model examples
-
-Rerun with mock mode **disabled**, planner `muse-spark-1.3` and builder `muse-wonder-1.0` (builder mode
-`template`, so **no Builder model calls**). Reports, replay recipes, recorded route runs and cost events are saved
-under [reports/traversability-live](reports/traversability-live/summary.json); the Gusev and apartment runs are
-also the home page's demo runs. The card's top line is plain words built in code from the runs:
-
-- Apartment: "The rover can reach the bedroom via the ramp (41.7 s). The stairs are too high: 0.17 m, it handles
-  about 0.06 m."
-- Gusev: "The rover can reach the summit (40.6 s). Driving straight there works too."
-
-| World / robot | Green / amber / red | Spot agreement; corrections | Route result | Runs / wall time / model calls |
-| --- | --- | --- | --- | --- |
-| Gusev / rover | 100.0% / 0.0% / 0.0% | 2 of 2; none | Straight reached in 34.2 s; safe route reached in 40.6 s, 2% longer | 14 / 84 s / 1 |
-| Apartment / rover | 69.3% / 21.8% / 8.9% | 3 of 6; the north room step was predicted red, the rover crossed it, map corrected | Straight stuck at the stairs; safe route reached the bedroom via the ramp in 41.7 s | 17 / 43 s / 1 |
-| Apartment / rover, via living room (recorded before the T6 fixes) | 59.4% / 31.7% / 8.9% | 3 of 6; 1 step corrected | Kitchen → living room: straight 7.2 s, safe 7.5 s; living room → bedroom: straight stuck, safe 25.7 s via ramp | 18 / 15 s / 1 |
-
-**The maps are flagged unreliable** (fewer than 4 spot checks agreed). The apartment's quick scan measures slope
-up to 1.5× the ramp's angle, so the ramp is judged on evidence; its surface line lists the floor zones ("tile 0.6,
-wood 0.5, rug 0.8, wet patch 0.15") and spots are named by place ("hallway doorway", "kitchen tile", "bedroom
-platform edge"). A spot only counts for a step if its path crossed that step. The outdoor grid covers the measured
-80 m Gusev patch (160 × 160 cells), not the entire region; apartment maps are 56 × 40 cells. Route percentages
-compare travelled distance with the straight run (a failed straight run is truncated), not a detour against a
-completed direct trip. The standing-only G1 has no route examples: it can't walk.
-
-![Gusev rover map, straight and planned routes](tests/screenshots/traversability/mars-rover-map-routes.png)
-![Apartment rover map and route via the connected ramp](tests/screenshots/traversability/apartment-rover-map-routes.png)
-![Apartment rover map with both requested legs](tests/screenshots/traversability/apartment-rover-two-leg-map-routes.png)
-
-Reproduce the live evidence using configured Meta models, then capture/check the UI with local Edge
-and the optional development dependencies:
-
-```powershell
-.\.venv\Scripts\python.exe scripts\run_traversability_examples.py mars-rover apartment-rover
-.\.venv\Scripts\python.exe scripts\build_demos.py
-.\.venv\Scripts\python.exe -m pytest -q tests\test_traversability_browser.py
-```
-
-### Measured safe routes (Python API)
-
-`simgate.routing.plan_route(scene, corrected_map)` plans from the scene's start to its goal.
-Supply the corrected map returned by `simgate.traversability.verify`; explicit `start_xy`,
-`goal_xy`, and a scene `RobotEntry` can also be supplied. A* uses green cost 1, amber cost 5,
-small green slope/clearance penalties, and excludes red and grey cells. Wall clearance
-uses the robot footprint width. Smoothing cannot cross blocked cells or increase route risk.
-
-The result includes `found`, `path_xy`, `length_m`, and `reason`. When no route exists,
-`partial_path_xy` shows the closest reachable approach; the explanation names the blocking
-feature and measured limit when available. It does not silently drive a partial route.
-
-`simgate.routing.compare_routes(scene, corrected_map)` runs straight-to-goal and waypoint
-missions together using the parallel batch runner, with the same seed, world, robot settings,
-start, goal, and time budget. It returns both run records, the route, and a measured comparison
-in `text`; path percentages compare actual simulated travel, even when the straight run fails.
-Waypoint switching uses 1 m outdoors or 0.4 m indoors and checks the next segment against
-the route's clearance grid before cutting a corner. An unreliable source map remains labelled
-unreliable; route planning is not a safety certification.
-
-## Generation-zero robot designs (Python API)
-
-`simgate.evolve.propose_generation0(challenge, n=4)` accepts a robot-terrain `SceneSpec`
-and returns JSON-ready proposals, **without running, racing or ranking them**. The scene's
-title and mission describe the challenge; its world is unchanged. Choose 2-8 designs so each
-generation can include at least one procedural rover and one procedural walker.
-G1 and all library robot bodies are excluded from the design space.
-
-The Designer uses `BUILDER_MODEL` (Muse Wonder when configured), independently of
-`BUILDER_MODE`. It receives code-built `FACTS`: world gravity, surface/friction, relief and
-P95 slope sampled from the scene terrain, and `rock_sizes_m` from terrain metadata when present.
-Existing cards without rock measurements explicitly report them as unknown; they are not
-inferred from orbital elevations. Reasons are design hypotheses, not evidence that a robot works.
-
-`DESIGN_SPACE` is enforced in code: rover wheels 4/6, radius 0.10-0.40 m, width 0.05-0.20 m,
-wheel speed 3-12 rad/s; walker legs 4/6, length 0.12-0.40 m, gait 1-3 Hz, stride 8-25 degrees.
-Both kinds allow chassis length 0.4-1.2 m, width 0.3-0.9 m and mass 5-40 kg.
-Continuous values are clamped with recorded adjustments; invalid discrete choices, library
-parameters, duplicates after clamping/defaults, and generations missing either kind are rejected.
-
-Each proposal has `id` (`G0-A`, etc.), `color`, short `name`, one-line `reason`, a validated
-`robot` dictionary, `adjustments`, `source`, `fallback_reason`, and `tested=False`.
-Invalid JSON gets one corrective retry, then fixed diverse rules. Mock mode or endpoint failure
-also uses those rules; fallback provenance is explicit in the returned designs and application log.
-Invalid challenges or missing terrain data remain errors rather than fabricated place facts.
-
-```python
-from simgate.evolve import propose_generation0
-from simgate.spec import Environment, Mission, SceneSpec, Terrain
-
-challenge = SceneSpec(
-    domain="robot_terrain", title="Reach the Gusev summit",
-    environment=Environment(body="mars", surface="regolith"),
-    terrain=Terrain(kind="real", preset="gusev-columbia-hills", roughness=0),
-    mission=Mission(start_place="lowest", goal_place="highest"),
-)
-designs = propose_generation0(challenge)
-```
-
-`simgate.evolve.challenge_preset` provides Victoria Crater, Apollo 15 Hadley Rille,
-and Meteor Crater challenges. Hadley and Meteor start and finish on the steepest
-20 m uphill segment measured from their real elevation grids. The Victoria
-boulder challenge uses the steepest floor-to-rim climb, a dense path field of
-0.15–0.35 m rocks, and loose-regolith friction in the 0.45–0.65 range. Its
-time limit is at least twice the slowest design's straight-line travel time.
-Pass generation-zero designs to
-`race_generation(challenge, designs, seed)` to run each candidate as a parallel
-batch variation on the same terrain seed, start and goal. Candidate bodies and
-downsampled 3D poses are retained against one shared terrain scene, so both live
-and saved generations can replay as a colored 3D race. These are independent
-same-seed simulations, not a coupled multi-robot physics run. The race runs
-through its time limit and classifies outcomes from simulation telemetry: reached,
-flipped, less than 0.1 m of movement for at least five seconds (`stuck`, or
-`slipped` when the window's mean contact slip ratio is at least 0.5), or still
-moving at the limit (`too slow`). Results include best distance closed, event time
-and location, local slope and step, plus a deterministic ranking. These are
-simulation results for the specified world, not a physical-robot guarantee.
-
-`next_generation(results, n=4)` preserves the top-ranked elite and proposes three
-failure-guided children. Each child inherits one raced parent and changes at most
-two in-range robot parameters; already-raced duplicates are rejected. If Designer
-output is unavailable or invalid, deterministic mutations respond to stuck, flipped,
-slipped, and too-slow outcomes. `evolve(challenge, max_generations=5, n=4, seed=0)`
-runs up to five generations and at most 20 candidate races, verifies apparent
-winners on five new terrain and start seeds, and accepts a winner only when at
-least four runs reach the goal. Verification includes the shared Wilson 95% interval;
-verification simulations are counted separately from the 20-race limit.
-
-Run `python scripts/calibrate_challenge.py --seed 0` to calibrate the deterministic
-rules-based generation-zero set on Victoria Crater, then one model-designed
-generation zero. Calibration changes only the rock size and density, loose-soil
-friction, the start position along the wall, and the lander design constraints;
-the generous time limit is never shortened. A setting qualifies only if generation
-zero does not reach the rim, its best progress is 20–80%, **and** a legal
-reference design climbs out on the same course. The reference designs are the rover
-with the largest wheels and the walker with the longest legs that fit the lander
-limits (`feasibility_reference_designs`). The script prints each attempted setting,
-its feasibility evidence and the adjustment.
-
-### Lander design constraints and escalation
-The `victoria-rim-boulders` challenge carries mission-style design constraints
-(`RobotDesignConstraints`): `max_mass_kg`, `max_size_m` (stowed length × width;
-rover stowed length = chassis length + 2 × wheel radius, so wheel diameter counts)
-and an optional `max_power_proxy` (drive speed × mass). The Designer sees these
-limits and the stowed-size rule in FACTS, and each child gets its parent's
-remaining headroom. Code clamps generation-zero designs to the limits, rejects
-children and race candidates that break them, and the card shows e.g. "Must fit
-the lander: ≤ 12 kg, ≤ 0.8 × 0.5 m." Director cues "under X kg", "must weigh"
-and "fits in A×B m" set the constraints.
-
-The requested default was 0.6 × 0.5 m. Calibration showed that at 0.6 m no legal
-rover can fit wheels large enough to climb out (the 0.4 m minimum chassis leaves
-0.10 m wheels). The calibrated default is therefore ≤ 12 kg, ≤ 0.8 × 0.5 m, with
-twelve 0.20 m rocks on loose soil at friction 0.65.
-
-If a generation-zero design reaches the rim and passes five-seed verification,
-evolution does not stop. It reports "Gen 0 already climbs out. Raising the
-challenge to find its edge." and uses that design's rock-size margin search
-(friction if rocks never break it) to set the challenge where it fails, then keeps
-evolving. The card states both results: "Gen 0 climbed the original wall; evolved
-designs handle rocks up to X m (gen 0 failed at Y m)", or, if no child verifies,
-that no evolved design verified on the raised rocks.
-
-Small rover wheels get joint armature (`wheel_armature` in the MuJoCo backend).
-MuJoCo's explicit velocity servo is otherwise numerically unstable on tiny wheel
-inertia (0.10 m wheels flipped on flat ground). Wheels of about 0.14 m and up are
-unchanged.
-
-For a verified winner, two independent Finder binary searches measure its margin:
-larger rocks (up to six runs) and lower friction (up to six runs), each including
-a baseline. These extra simulations are reported separately from candidate races.
-The report includes a code-generated
-honesty line: real elevation accuracy comes from that terrain card, and designs
-are simplified procedural robots. Results include per-generation race results,
-verification and margin evidence, the parent/child tree with old/new parameter
-values, failure-linked mutation reasons and outcomes, closest-progress report if
-none succeeds, and tracked runs, elapsed time, and model calls.
-
-## Design a robot for this place
-
-Choose **Design a robot for this place** on the home page or ask **"Design a robot
-that can climb out of Victoria Crater."** The `evolve` workflow builds the
-requested place, then the Designer proposes bounded rover and walker candidates
-while the Simulator races each generation side by side. Race paths animate with
-design colours and names; failures are marked at their measured location. Between
-generations, the family tree shows each parent's child, changed parameters,
-failure-linked reason and (after racing) result. The final card reports the
-verified winner, five-seed verification, rock/friction margins, honesty statement
-and cost.
-
-The complete report, shared race scene and recorded 3D race tracks are saved in
-this browser's local storage. **Replay saved evolution** restores the scene,
-family tree and race replays without new model calls or simulations. This
-browser-local replay is not a server-side archive and is unavailable in another
-browser profile or after its site data is cleared. The live and saved result keep
-the recorded generation race visible instead of resetting the viewer to the
-pre-race challenge robot; the winner is supported by its race and five-seed
-verification, not by a separate follow-up scene run.
-
-The live display animates recorded telemetry after each parallel race batch
-completes; it is not a real-time renderer of robot bodies during simulation.
-The winning procedural design and all results remain simulation evidence, not a
-physical robot guarantee.
-
-Run the configured Meta-model demo and capture the browser views:
-
-```powershell
-.\.venv\Scripts\python.exe scripts\calibrate_challenge.py --output reports\evolution-e8-live\calibration.json
-.\.venv\Scripts\python.exe scripts\run_evolution_example.py --calibration reports\evolution-e8-live\calibration.json --output reports\evolution-e8-live
-.\.venv\Scripts\python.exe scripts\run_evolution_example.py --screenshots-only --output reports\evolution-e8-live
-```
-
-The demo prompt is "Design a robot under 12 kg that can climb out of Victoria Crater."
-The report, calibration, event log and screenshots are written to `reports/evolution-e8-live/`.
-The E7 run (no lander limits) remains in `reports/evolution-e7-live/`.
-
-## Project status
-
-This is a **prototype**. It was built before the hackathon building period started, to test the idea and
-learn the tools.
-
-| | Date |
-| --- | --- |
-| Prototype started | ____ |
-| Prototype state described in this README | ____ |
-| Hackathon building period | ____ to ____ |
-| Submission | ____ |
-
----
 
 ## What we built so far
 
@@ -1167,7 +870,7 @@ that test reports "skip" with the reason.
 | `redesign_finds_the_smallest_passing_design_and_keeps_the_world` | For a 0.15 m step the smallest passing design wins (bigger wheels or 6 wheels), the world is identical, robustness is reported; "keep 4 wheels" uses wheel radius |
 | `redesign_reports_the_limit_when_nothing_passes` | A 1.0 m wall: no design passes within 12 runs, and the limit is named |
 | `design_constraints_narrow_the_design_space` | "under 15 kg", "only change the wheels", "keep 4 wheels" and library robots narrow the knobs |
-| `explainer_tips_use_only_settings_the_robots_have` | FACTS list what each robot can change (rover: wheels, wheel size, wheel speed; walker: legs, leg length, gait; G1: walking speed and compatible policies); a tip naming another setting, such as a gait for the G1, is replaced by the rules tip |
+| `explainer_retries_and_removes_action_tips_and_raw_settings` | FACTS list what each robot can change (rover: wheels, wheel size, wheel speed; walker: legs, leg length, gait frequency, stride; G1: walking speed only, since its body comes from its model file); a tip naming another setting, such as a gait for the G1 or wheels for a walker, is removed |
 | `mock_explainer_tests_more_only_when_the_best_is_partly` | The mock Explainer tests more (combined or stronger) only when the best verdict is "partly" and reruns are left |
 | `model_explainer_decisions_are_validated_bounded_and_visible` | Fake model: a disallowed knob is dropped, "test more" runs exactly one follow-up within budget, every decision is a step |
 | `model_designer_candidates_are_clamped_and_stop_ends_early` | Fake Designer: out-of-range and unknown knobs are clamped or dropped visibly; "stop" ends the search |
@@ -1227,7 +930,7 @@ that test reports "skip" with the reason.
 | `g1_lying_on_the_ground_counts_as_fallen` | A standing G1 on a 5° slope (past what it holds) falls back and lies near 96°, and is reported as fell, with fall time and direction (humanoids count as fallen past 60°, not the rovers' 100°) |
 | `g1_gale_start_check_failure_offers_recovery_actions` | When the G1 can't stand at Gale's start, the question says how steep the ground is (no trained-policy wording) and offers flatter ground, gentler terrain, a 6-legged walker or run anyway |
 | `g1_on_gale_moves_implicit_start_flatter_and_reports_the_slope` | A G1 on Gale gets its start moved up to 5 m to flatter ground, and its stand check fails honestly with the footprint slope (~14°, past the couple of degrees a standing-only G1 holds) |
-| `g1_planner_and_library_selection_use_registered_cards` | G1 prompts and UI selections resolve to registered robot, policy and world cards |
+| `g1_planner_and_library_selection_use_registered_cards` | G1 prompts and UI selections resolve to registered robot, controller and world cards |
 | `library_selection_builds_and_checks_the_selected_robot` | After "Use selected setup", the next scene is built and checked as the selected G1, not built as a rover and relabelled |
 | `library_selection_sets_up_one_scene_only` | A Library setup applies to one scene; a later "race three rovers on Mars" gets three rovers on Mars, not the selected G1 and world |
 | `rules_planner_reads_a_unitree_robot_as_the_g1_and_refuses_racing_it` | "Unitree G1 humanoid" is one G1; "race a Unitree robot against a rover" is read as the G1 and refused, since it only stands |
@@ -1245,7 +948,7 @@ that test reports "skip" with the reason.
 | `inspector_flags_wrong_units` | A robot 8 mm tall gets the mm/inches warning and isn't listed |
 | `inspector_model_draft_is_checked_against_facts` | The Inspector agent's draft is checked against FACTS with one retry showing the exact errors, falls back to the rules when still wrong, and loses questions that FACTS already settle |
 | `uploaded_robots_race_with_name_prefixes_and_their_own_defaults` | An uploaded cart and dog race beside a standing G1 with prefixed names: the G1's joint defaults stay on the G1, visual meshes stay visual, the cart and dog move and the G1 stays up where it is |
-| `library_page_offers_uploads` | The Library's Upload buttons open a working form (drag-and-drop or file picker; name, credit and license required; robot picker for policies) and show Upload → Inspector/Adapter → Checker steps, question chips, "uploaded"/"not ready" badges and a Use button |
+| `library_page_offers_uploads` | The Library's Upload buttons open a working form (drag-and-drop or file picker; name, credit and license required; no option to upload an AI controller) and show Upload → Inspector/Adapter → Checker steps, question chips, "uploaded"/"not ready" badges and a Use button |
 | `library_endpoint_shows_uploads_with_their_state` | GET /library lists uploaded cards and each upload's state: listed, needs answers (with its questions), or not ready (with the failed checks) |
 | `an_uploaded_robot_is_usable_everywhere` | An uploaded cart is offered to the Director by id, planned by name, titled by its name, raced, run with its own climb limits, diagnosed, redesigned by command speed only, and stress-tested in worker processes |
 | `explainer_uses_code_facts_and_retries_contradictions` | The Explainer gets a FACTS block built in code (terrain, tilt words); a reply calling hills "flat" gets one retry with the exact problem, and a 56.9° tilt called stable twice falls back to the rules text |
@@ -1271,7 +974,7 @@ that test reports "skip" with the reason.
 | `surprising_needs_each_conditions_ok_value_rechecked_on_three_seeds` | A combined failure is surprising only when each condition's OK value passed on 3 seeds; when one fails on other seeds it is possibly surprising, with the reason |
 | `limit_sentences_come_from_a_template_and_the_explainer_only_interprets` | The limits are written in code, tightest first, each with how sure it is and the push's timing; the Explainer's interpretation may not repeat a limit's value or state a number not in FACTS |
 | `runs_stop_once_the_outcome_is_decided_and_batches_keep_no_frames` | A rover at a step stops as stuck, the G1 as reached or (pushed 2 s in) fell, each marked in the summary; a batch run keeps no frames, and its stop time still gives when it stopped making progress |
-| `batch_workers_reuse_one_pool_one_thread_each_and_build_without_the_view` | Every core but one, one pool kept between batches, one thread per worker (BLAS/OpenMP and ONNX), and a build without the browser view gives the same MJCF |
+| `batch_workers_reuse_one_pool_one_thread_each_and_build_without_the_view` | Every core but one, one pool kept between batches, one thread per worker (OpenMP, MKL and OpenBLAS), and a build without the browser view gives the same MJCF |
 | `quick_searches_three_conditions_and_gives_the_tightest_the_extra_runs` | Quick searches at most 3 named conditions; the tightest gets 5 runs and the finest bracket; the card shows ± |
 | `hunter_proposals_must_spread_out_and_the_rules_spread_too` | A proposal within 15% of each window of another is a duplicate; at least half must avoid the most tested pair; the rules' proposals pass the same check |
 | `every_phase_gets_a_share_and_the_hunter_decides_while_its_share_lasts` | The quick and thorough shares, with unused runs rolling forward; the Hunter makes the stop decision while runs are left; a spent share ends the hunt as the budget's decision |
@@ -1299,6 +1002,315 @@ mock mode making zero API calls, an API timeout mid-session falling back to labe
 `fetch_assets.py` checking size and hash and only warning on failure, every terrain preset loading without raw data,
 a structure patch without raw data keeping the shipped patch, and the saved demos replaying with zero simulations
 and zero model calls in both modes.
+
+## Structures in the world
+
+Build a measured Mars base, then run the rover mission:
+
+> Build a Mars base on Jezero: a habitat, a lander, and a bridge over a trench. Can the rover drive from the lander to the habitat?
+
+The scene keeps real Jezero elevations, selects a larger measured patch when needed, and places the habitat,
+lander and truss bridge inside the physics terrain. The rover starts beside the lander, crosses the bridge,
+aligns with the terrain-connected ramp, and targets the raised habitat airlock. Arrival requires both the
+goal's XY radius and its support-height tolerance; it does not mean entering an operable door or habitat.
+The Scene panel shows individual structural screening, assumptions, member utilisation and visual credit.
+
+**Configured-model validation, 2026-11-02:** planner/explainer `muse-spark-1.3`; configured builder
+`muse-wonder-1.0`, with `BUILDER_MODE=template` (no Builder model call). Mock mode was disabled.
+The final exact-prompt run used real Jezero, an 80.308 m measured patch, Mars gravity 3.71 m/s² and a 10 kg rover.
+
+| Structure | Screening result | Governing utilisation |
+| --- | --- | --- |
+| Habitat | Pass: stress and deflection | 66.30%, deflection at rib joint 7 (7.37 mm versus 11.11 mm limit) |
+| Lander | Pass: static legs and buckling | 0.83% static; 2.48% in the separately labelled 3× local-gravity landing what-if |
+| Bridge | Pass: yield, buckling and sag | 0.189%, yield in member 3 with the rover at mid-span |
+
+The rover cleared the trench and reached the airlock approach at **27.2 s**, finishing 0.34 m from the goal
+without flipping or leaving the terrain. Its budget was 51 simulated seconds; recorded playback ends at 28.7 s.
+The final request/build/run/explain sequence took **55.29 s wall time and 2 model calls** (1 planning, 1 explaining),
+with one mission simulation. Three live validation attempts used 6 model calls in total; diagnostic physics
+replays and screenshot capture made no model calls. A coarse gap-capability advisory remained visible;
+the bridge allowed the rover to cross. Screening is a linear-elastic 2D idealisation, not structural certification.
+
+![Measured Jezero base overview](tests/screenshots/mars-base-live/overview.png)
+![Recorded rover crossing the truss bridge at 9.167 s](tests/screenshots/mars-base-live/rover-on-bridge.png)
+![Recorded rover arriving at the raised airlock at 27.2 s](tests/screenshots/mars-base-live/arriving-at-airlock.png)
+
+Reproduce using your configured models (never prints credentials):
+
+```powershell
+.\.venv\Scripts\python.exe scripts/run_mars_base_example.py
+.\.venv\Scripts\python.exe scripts/run_mars_base_example.py --screenshots-only
+```
+
+The runner saves actual reports, cost events and replay frames under `tests/screenshots/mars-base-live/`.
+Screenshot-only mode uses those frames and refuses to fabricate a bridge pose or a raised-goal arrival.
+Browser capture uses the optional dependencies in `requirements-dev.txt` and locally installed Edge.
+The optional NASA InSight GLB remains local and uncommitted; it is credited only when loaded successfully.
+
+## Where can it go?
+
+Ask **"Where can it go?"**, **"Can it reach the bedroom?"**, **"Is it safe to walk?"**,
+**"Plan a safe route"**, or **"Map where it can drive"**. The Director selects the
+`traversability` workflow with a robot and optional start/goal. The Finder card also offers
+**Map where it can go here**. With no goal, the workflow measures and verifies a map without
+inventing a destination.
+
+The map uses 0.5 m cells outdoors and 0.25 m cells indoors. Features are measured over the robot's
+card footprint: slope, roughness, step, wall/obstacle clearance and surface friction. Limits
+belong to this robot under this world's gravity and surface conditions, not every world.
+Missing limits trigger a disclosed quick Finder scan of at most 16 simulations (indoors:
+step and friction). Successful baseline runs are retained: flat ground demonstrates zero slope,
+roughness and step, plus the world's own friction; a passed step baseline also retains its height.
+For each feature, green uses the strongest reliable pass or passed baseline (the lowest handled
+coefficient for friction, whose direction is reversed). Values beyond all demonstrated passes remain
+amber until measured; an unconfirmed search success alone does not establish a reliable boundary.
+
+- **Green:** all features within reliable measured limits, or a local successful spot correction.
+- **Amber:** an unreliable band or a value beyond every demonstrated reliable/baseline pass.
+- **Red:** a measured failure limit exceeded, insufficient width (robot width + 10 cm), or a failed spot correction.
+- **Grey:** walls, structures, blocked cells or off-world.
+
+Use **Map overlay** to toggle the soft floor/ground colours. Analysis shows the limits, percentages
+(excluding blocked cells), cost and verification evidence. White outlines mark spot-corrected cells;
+the report retains their run IDs. Click a check/cross marker or a replay chip to rerun its recorded
+scene, variation and seed. The mint ribbon shows the safe route or best partial approach; the dashed
+line is straight-to-goal. A partial route is shown but is not automatically driven as a full solution.
+
+Up to six short spots run in parallel: two per available colour, crossing about 3 m outdoors
+or 1.5 m indoors, including a doorway/step indoors where possible. Green should pass, red should
+fail; amber results are reported but unjudged. Disagreements correct the swept cells and are
+named in the card. Fewer than four green/red agreements flags the whole map **unreliable**,
+including when too few judged spots are available. Paired route runs use the same seed and
+normal speed; a successful route does not certify the surrounding map.
+
+The apartment's 6° ramp now joins the raised bedroom through a 1.6 m opening in its east wall:
+the ramp is 1.4 m wide, rises 0.512 m, and has a 1.2 m hall approach. The three 0.17 m steps remain
+in place and red for the rover; they are no longer the only access. Routed rovers brake before
+waypoint turns and align before moving forward. Clearance includes the footprint's turning sweep
+beside red terrain; actual heading progress during rotation is not mistaken for being stuck.
+These changes do not change the legacy straight-to-goal controller.
+
+An ordered request such as **"In the apartment, can the rover go from the kitchen to the living room,
+then to the bedroom?"** retains both stops and compares straight versus safe **per leg**.
+The map is measured and spot-checked once; legs use independent simulations starting at each stop,
+not a continuous mission or a claim that the second leg physically followed a successful first one.
+
+> Map from measured limits (step ±1 cm, slope ±1.9°, …); real places combine features, so the map is checked with spot runs below.
+
+### Live Meta-model examples
+
+Rerun with mock mode **disabled**, planner `muse-spark-1.3` and builder `muse-wonder-1.0` (builder mode
+`template`, so **no Builder model calls**). Reports, replay recipes, recorded route runs and cost events are saved
+under [reports/traversability-live](reports/traversability-live/summary.json); the Gusev and apartment runs are
+also the home page's demo runs. The card's top line is plain words built in code from the runs:
+
+- Apartment: "The rover can reach the bedroom via the ramp (41.7 s). The stairs are too high: 0.17 m, it handles
+  about 0.06 m."
+- Gusev: "The rover can reach the summit (40.6 s). Driving straight there works too."
+
+| World / robot | Green / amber / red | Spot agreement; corrections | Route result | Runs / wall time / model calls |
+| --- | --- | --- | --- | --- |
+| Gusev / rover | 100.0% / 0.0% / 0.0% | 2 of 2; none | Straight reached in 34.2 s; safe route reached in 40.6 s, 2% longer | 14 / 84 s / 1 |
+| Apartment / rover | 69.3% / 21.8% / 8.9% | 3 of 6; the north room step was predicted red, the rover crossed it, map corrected | Straight stuck at the stairs; safe route reached the bedroom via the ramp in 41.7 s | 17 / 43 s / 1 |
+| Apartment / rover, via living room (recorded before the T6 fixes) | 59.4% / 31.7% / 8.9% | 3 of 6; 1 step corrected | Kitchen → living room: straight 7.2 s, safe 7.5 s; living room → bedroom: straight stuck, safe 25.7 s via ramp | 18 / 15 s / 1 |
+
+**The maps are flagged unreliable** (fewer than 4 spot checks agreed). The apartment's quick scan measures slope
+up to 1.5× the ramp's angle, so the ramp is judged on evidence; its surface line lists the floor zones ("tile 0.6,
+wood 0.5, rug 0.8, wet patch 0.15") and spots are named by place ("hallway doorway", "kitchen tile", "bedroom
+platform edge"). A spot only counts for a step if its path crossed that step. The outdoor grid covers the measured
+80 m Gusev patch (160 × 160 cells), not the entire region; apartment maps are 56 × 40 cells. Route percentages
+compare travelled distance with the straight run (a failed straight run is truncated), not a detour against a
+completed direct trip. The standing-only G1 has no route examples: it can't walk.
+
+![Gusev rover map, straight and planned routes](tests/screenshots/traversability/mars-rover-map-routes.png)
+![Apartment rover map and route via the connected ramp](tests/screenshots/traversability/apartment-rover-map-routes.png)
+![Apartment rover map with both requested legs](tests/screenshots/traversability/apartment-rover-two-leg-map-routes.png)
+
+Reproduce the live evidence using configured Meta models, then capture/check the UI with local Edge
+and the optional development dependencies:
+
+```powershell
+.\.venv\Scripts\python.exe scripts\run_traversability_examples.py mars-rover apartment-rover
+.\.venv\Scripts\python.exe scripts\build_demos.py
+.\.venv\Scripts\python.exe -m pytest -q tests\test_traversability_browser.py
+```
+
+### Measured safe routes (Python API)
+
+`simgate.routing.plan_route(scene, corrected_map)` plans from the scene's start to its goal.
+Supply the corrected map returned by `simgate.traversability.verify`; explicit `start_xy`,
+`goal_xy`, and a scene `RobotEntry` can also be supplied. A* uses green cost 1, amber cost 5,
+small green slope/clearance penalties, and excludes red and grey cells. Wall clearance
+uses the robot footprint width. Smoothing cannot cross blocked cells or increase route risk.
+
+The result includes `found`, `path_xy`, `length_m`, and `reason`. When no route exists,
+`partial_path_xy` shows the closest reachable approach; the explanation names the blocking
+feature and measured limit when available. It does not silently drive a partial route.
+
+`simgate.routing.compare_routes(scene, corrected_map)` runs straight-to-goal and waypoint
+missions together using the parallel batch runner, with the same seed, world, robot settings,
+start, goal, and time budget. It returns both run records, the route, and a measured comparison
+in `text`; path percentages compare actual simulated travel, even when the straight run fails.
+Waypoint switching uses 1 m outdoors or 0.4 m indoors and checks the next segment against
+the route's clearance grid before cutting a corner. An unreliable source map remains labelled
+unreliable; route planning is not a safety certification.
+
+## Generation-zero robot designs (Python API)
+
+`simgate.evolve.propose_generation0(challenge, n=4)` accepts a robot-terrain `SceneSpec`
+and returns JSON-ready proposals, **without running, racing or ranking them**. The scene's
+title and mission describe the challenge; its world is unchanged. Choose 2-8 designs so each
+generation can include at least one procedural rover and one procedural walker.
+G1 and all library robot bodies are excluded from the design space.
+
+The Designer uses `BUILDER_MODEL` (Muse Wonder when configured), independently of
+`BUILDER_MODE`. It receives code-built `FACTS`: world gravity, surface/friction, relief and
+P95 slope sampled from the scene terrain, and `rock_sizes_m` from terrain metadata when present.
+Existing cards without rock measurements explicitly report them as unknown; they are not
+inferred from orbital elevations. Reasons are design hypotheses, not evidence that a robot works.
+
+`DESIGN_SPACE` is enforced in code: rover wheels 4/6, radius 0.10-0.40 m, width 0.05-0.20 m,
+wheel speed 3-12 rad/s; walker legs 4/6, length 0.12-0.40 m, gait 1-3 Hz, stride 8-25 degrees.
+Both kinds allow chassis length 0.4-1.2 m, width 0.3-0.9 m and mass 5-40 kg.
+Continuous values are clamped with recorded adjustments; invalid discrete choices, library
+parameters, duplicates after clamping/defaults, and generations missing either kind are rejected.
+
+Each proposal has `id` (`G0-A`, etc.), `color`, short `name`, one-line `reason`, a validated
+`robot` dictionary, `adjustments`, `source`, `fallback_reason`, and `tested=False`.
+Invalid JSON gets one corrective retry, then fixed diverse rules. Mock mode or endpoint failure
+also uses those rules; fallback provenance is explicit in the returned designs and application log.
+Invalid challenges or missing terrain data remain errors rather than fabricated place facts.
+
+```python
+from simgate.evolve import propose_generation0
+from simgate.spec import Environment, Mission, SceneSpec, Terrain
+
+challenge = SceneSpec(
+    domain="robot_terrain", title="Reach the Gusev summit",
+    environment=Environment(body="mars", surface="regolith"),
+    terrain=Terrain(kind="real", preset="gusev-columbia-hills", roughness=0),
+    mission=Mission(start_place="lowest", goal_place="highest"),
+)
+designs = propose_generation0(challenge)
+```
+
+`simgate.evolve.challenge_preset` provides Victoria Crater, Apollo 15 Hadley Rille,
+and Meteor Crater challenges. Hadley and Meteor start and finish on the steepest
+20 m uphill segment measured from their real elevation grids. The Victoria
+boulder challenge uses the steepest floor-to-rim climb, a dense path field of
+0.15–0.35 m rocks, and loose-regolith friction in the 0.45–0.65 range. Its
+time limit is at least twice the slowest design's straight-line travel time.
+Pass generation-zero designs to
+`race_generation(challenge, designs, seed)` to run each candidate as a parallel
+batch variation on the same terrain seed, start and goal. Candidate bodies and
+downsampled 3D poses are retained against one shared terrain scene, so both live
+and saved generations can replay as a colored 3D race. These are independent
+same-seed simulations, not a coupled multi-robot physics run. The race runs
+through its time limit and classifies outcomes from simulation telemetry: reached,
+flipped, less than 0.1 m of movement for at least five seconds (`stuck`, or
+`slipped` when the window's mean contact slip ratio is at least 0.5), or still
+moving at the limit (`too slow`). Results include best distance closed, event time
+and location, local slope and step, plus a deterministic ranking. These are
+simulation results for the specified world, not a physical-robot guarantee.
+
+`next_generation(results, n=4)` preserves the top-ranked elite and proposes three
+failure-guided children. Each child inherits one raced parent and changes at most
+two in-range robot parameters; already-raced duplicates are rejected. If Designer
+output is unavailable or invalid, deterministic mutations respond to stuck, flipped,
+slipped, and too-slow outcomes. `evolve(challenge, max_generations=5, n=4, seed=0)`
+runs up to five generations and at most 20 candidate races, verifies apparent
+winners on five new terrain and start seeds, and accepts a winner only when at
+least four runs reach the goal. Verification includes the shared Wilson 95% interval;
+verification simulations are counted separately from the 20-race limit.
+
+Run `python scripts/calibrate_challenge.py --seed 0` to calibrate the deterministic
+rules-based generation-zero set on Victoria Crater, then one model-designed
+generation zero. Calibration changes only the rock size and density, loose-soil
+friction, the start position along the wall, and the lander design constraints;
+the generous time limit is never shortened. A setting qualifies only if generation
+zero does not reach the rim, its best progress is 20–80%, **and** a legal
+reference design climbs out on the same course. The reference designs are the rover
+with the largest wheels and the walker with the longest legs that fit the lander
+limits (`feasibility_reference_designs`). The script prints each attempted setting,
+its feasibility evidence and the adjustment.
+
+### Lander design constraints and escalation
+The `victoria-rim-boulders` challenge carries mission-style design constraints
+(`RobotDesignConstraints`): `max_mass_kg`, `max_size_m` (stowed length × width;
+rover stowed length = chassis length + 2 × wheel radius, so wheel diameter counts)
+and an optional `max_power_proxy` (drive speed × mass). The Designer sees these
+limits and the stowed-size rule in FACTS, and each child gets its parent's
+remaining headroom. Code clamps generation-zero designs to the limits, rejects
+children and race candidates that break them, and the card shows e.g. "Must fit
+the lander: ≤ 12 kg, ≤ 0.8 × 0.5 m." Director cues "under X kg", "must weigh"
+and "fits in A×B m" set the constraints.
+
+The requested default was 0.6 × 0.5 m. Calibration showed that at 0.6 m no legal
+rover can fit wheels large enough to climb out (the 0.4 m minimum chassis leaves
+0.10 m wheels). The calibrated default is therefore ≤ 12 kg, ≤ 0.8 × 0.5 m, with
+twelve 0.20 m rocks on loose soil at friction 0.65.
+
+If a generation-zero design reaches the rim and passes five-seed verification,
+evolution does not stop. It reports "Gen 0 already climbs out. Raising the
+challenge to find its edge." and uses that design's rock-size margin search
+(friction if rocks never break it) to set the challenge where it fails, then keeps
+evolving. The card states both results: "Gen 0 climbed the original wall; evolved
+designs handle rocks up to X m (gen 0 failed at Y m)", or, if no child verifies,
+that no evolved design verified on the raised rocks.
+
+Small rover wheels get joint armature (`wheel_armature` in the MuJoCo backend).
+MuJoCo's explicit velocity servo is otherwise numerically unstable on tiny wheel
+inertia (0.10 m wheels flipped on flat ground). Wheels of about 0.14 m and up are
+unchanged.
+
+For a verified winner, two independent Finder binary searches measure its margin:
+larger rocks (up to six runs) and lower friction (up to six runs), each including
+a baseline. These extra simulations are reported separately from candidate races.
+The report includes a code-generated
+honesty line: real elevation accuracy comes from that terrain card, and designs
+are simplified procedural robots. Results include per-generation race results,
+verification and margin evidence, the parent/child tree with old/new parameter
+values, failure-linked mutation reasons and outcomes, closest-progress report if
+none succeeds, and tracked runs, elapsed time, and model calls.
+
+## Design a robot for this place
+
+Choose **Design a robot for this place** on the home page or ask **"Design a robot
+that can climb out of Victoria Crater."** The `evolve` workflow builds the
+requested place, then the Designer proposes bounded rover and walker candidates
+while the Simulator races each generation side by side. Race paths animate with
+design colours and names; failures are marked at their measured location. Between
+generations, the family tree shows each parent's child, changed parameters,
+failure-linked reason and (after racing) result. The final card reports the
+verified winner, five-seed verification, rock/friction margins, honesty statement
+and cost.
+
+The complete report, shared race scene and recorded 3D race tracks are saved in
+this browser's local storage. **Replay saved evolution** restores the scene,
+family tree and race replays without new model calls or simulations. This
+browser-local replay is not a server-side archive and is unavailable in another
+browser profile or after its site data is cleared. The live and saved result keep
+the recorded generation race visible instead of resetting the viewer to the
+pre-race challenge robot; the winner is supported by its race and five-seed
+verification, not by a separate follow-up scene run.
+
+The live display animates recorded telemetry after each parallel race batch
+completes; it is not a real-time renderer of robot bodies during simulation.
+The winning procedural design and all results remain simulation evidence, not a
+physical robot guarantee.
+
+Run the configured Meta-model demo and capture the browser views:
+
+```powershell
+.\.venv\Scripts\python.exe scripts\calibrate_challenge.py --output reports\evolution-e8-live\calibration.json
+.\.venv\Scripts\python.exe scripts\run_evolution_example.py --calibration reports\evolution-e8-live\calibration.json --output reports\evolution-e8-live
+.\.venv\Scripts\python.exe scripts\run_evolution_example.py --screenshots-only --output reports\evolution-e8-live
+```
+
+The demo prompt is "Design a robot under 12 kg that can climb out of Victoria Crater."
+The report, calibration, event log and screenshots are written to `reports/evolution-e8-live/`.
+The E7 run (no lander limits) remains in `reports/evolution-e7-live/`.
 
 ---
 
@@ -1399,6 +1411,12 @@ The refreshed interface keeps the prompt-first Explore flow and adds direct star
 reopening, a chat-and-stage Workbench, expandable Scene/Results/Analysis/Library details, agent activity, and
 presentation mode. Uploads and simulation controls continue to use the existing server endpoints and WebSocket
 events.
+
+## Project status
+
+Built during the building period: `[START DATE]` to `[END DATE]`.
+
+`[ADD A SHORT NOTE ON WHAT WAS BUILT IN THAT PERIOD]`
 
 ## Known limits
 
