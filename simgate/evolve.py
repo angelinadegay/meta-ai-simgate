@@ -1049,6 +1049,23 @@ def _constraint_fallback_change(
         "retune gait frequency while preserving the lander fit"
 
 
+def _nearby_changes(parent: dict) -> list[tuple[dict, str]]:
+    """Last-resort single-parameter steps (a tenth of each range, then two), for when the failure-guided
+    changes have all been raced or break the constraints."""
+    robot = parent["robot"]
+    steps = []
+    for scale in (1, 2):
+        for key, (low, high) in DESIGN_SPACE[robot["kind"]].items():
+            if key in ("wheels", "legs"):
+                if scale == 1:
+                    steps.append(({key: high if robot[key] == low else low}, f"try {key} {high if robot[key] == low else low}"))
+                continue
+            delta = (high - low) / 10 * scale
+            for value in (robot[key] - delta, robot[key] + delta):
+                steps.append(({key: round(value, 4)}, f"try a nearby {key.replace('_', ' ')} within the limits"))
+    return steps
+
+
 def _fallback_children(
     parents: list[dict], elite: dict, n_children: int, generation: int,
     raced_fingerprints: set[tuple], fallback_reason: str,
@@ -1072,16 +1089,19 @@ def _fallback_children(
             offset = index % len(candidates)
             candidates = candidates[offset:] + candidates[:offset]
         accepted = None
-        for parent in candidates:
-            for attempt in range(8):
+        # every parent's failure-guided changes first; nearby steps only once those are all used up
+        for nearby, parent in [(False, row) for row in candidates] + [(True, row) for row in candidates]:
+            for attempt in range(1 if nearby else 8):
                 outcome = parent.get("outcome", "too slow")
-                changes, mutation_reason = _fallback_change(parent, outcome, attempt)
-                alternatives = [(changes, mutation_reason)]
-                if constraints is not None:
-                    alternatives.extend(
-                        _constraint_fallback_change(parent, outcome, variant, constraints)
-                        for variant in range(8)
-                    )
+                if nearby:
+                    alternatives = _nearby_changes(parent)
+                else:
+                    alternatives = [_fallback_change(parent, outcome, attempt)]
+                    if constraints is not None:
+                        alternatives.extend(
+                            _constraint_fallback_change(parent, outcome, variant, constraints)
+                            for variant in range(8)
+                        )
                 for candidate_changes, candidate_reason in alternatives:
                     try:
                         robot, applied = _bounded_changes(parent, candidate_changes)

@@ -184,3 +184,34 @@ def test_g1_in_challenge_is_untouched_and_never_a_design(monkeypatch):
     assert scene.model_dump() == before
     assert all(design["robot"]["kind"] != "library" and design["robot"]["robot_id"] is None
                for design in designs)
+
+
+def test_rule_mutations_still_fill_a_generation_when_parents_sit_at_the_design_limits():
+    """Mock-mode Victoria run (12 kg, 0.8 x 0.5 m stowed): every failure-guided change was raced or broke a limit."""
+    from simgate.spec import RobotDesignConstraints
+
+    walker = {"kind": "walker", "robot_id": None, "controller_id": None, "wheels": 4, "wheel_radius": 0.15,
+              "wheel_width": 0.08, "drive_speed": 6.0, "legs": 6, "leg_length": 0.32, "gait_freq_hz": 1.5,
+              "stride_deg": 12.0, "chassis_length": 0.6, "chassis_width": 0.35, "mass_kg": 10.0, "command_speed_m_s": 0.6}
+    rover = {**walker, "kind": "rover", "wheels": 6, "wheel_radius": 0.1, "wheel_width": 0.05, "drive_speed": 3.5,
+             "legs": 4, "leg_length": 0.22, "gait_freq_hz": 2.0, "stride_deg": 15.0, "chassis_width": 0.38}
+    parents = [
+        {"id": "G1-C", "name": "Steady Six", "outcome": "flipped", "reached_goal": False, "progress_percent": 45.8,
+         "robot": walker, "color": "#ef829f"},
+        {"id": "G2-C", "name": "Steady Six 3", "outcome": "flipped", "reached_goal": False, "progress_percent": 44.3,
+         "robot": {**walker, "mass_kg": 11.0}, "color": "#718cff"},
+        {"id": "G2-A", "name": "Trail Four", "outcome": "slipped", "reached_goal": False, "progress_percent": 40.9,
+         "robot": rover, "color": "#40d8a0"},
+        {"id": "G2-B", "name": "Wide Six", "outcome": "stuck", "reached_goal": False, "progress_percent": 40.9,
+         "robot": {**rover, "drive_speed": 3.0, "mass_kg": 12.0}, "color": "#f2bc55"},
+    ]
+    raced = {evolve._fingerprint(row["robot"]) for row in parents} | {evolve._fingerprint(robot) for robot in (
+        {**rover, "drive_speed": 4.0}, {**rover, "drive_speed": 5.0, "wheels": 4},
+        {**rover, "drive_speed": 3.5, "mass_kg": 12.0}, {**rover, "drive_speed": 4.0, "mass_kg": 12.0},
+        {**walker, "leg_length": 0.28},
+        {**walker, "gait_freq_hz": 2.0, "leg_length": 0.34, "legs": 4, "mass_kg": 7.0, "stride_deg": 18.0})}
+    constraints = RobotDesignConstraints(max_mass_kg=12.0, max_size_m=(0.8, 0.5))
+    children = evolve._fallback_children(parents, {**parents[0], "tested": True}, 3, 3, raced, "rules", constraints)
+    assert len({evolve._fingerprint(child["robot"]) for child in children} - raced) == 3
+    assert {child["robot"]["kind"] for child in children} == {"rover", "walker"}
+    assert not any(evolve._constraint_violations(Robot.model_validate(child["robot"]), constraints) for child in children)
