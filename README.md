@@ -245,10 +245,45 @@ least four runs reach the goal. Verification includes the shared Wilson 95% inte
 verification simulations are counted separately from the 20-race limit.
 
 Run `python scripts/calibrate_challenge.py --seed 0` to calibrate the deterministic
-rules-based generation-zero set on Victoria Crater. Calibration changes only the
-rock size and density, loose-soil friction, or start position along the wall;
-the generous time limit is never shortened. It targets no reaches and 20–80%
-best progress, and prints each attempted setting and adjustment.
+rules-based generation-zero set on Victoria Crater, then one model-designed
+generation zero. Calibration changes only the rock size and density, loose-soil
+friction, the start position along the wall, and the lander design constraints;
+the generous time limit is never shortened. A setting qualifies only if generation
+zero does not reach the rim, its best progress is 20–80%, **and** a legal
+reference design climbs out on the same course. The reference designs are the rover
+with the largest wheels and the walker with the longest legs that fit the lander
+limits (`feasibility_reference_designs`). The script prints each attempted setting,
+its feasibility evidence and the adjustment.
+
+### Lander design constraints and escalation
+
+The `victoria-rim-boulders` challenge carries mission-style design constraints
+(`RobotDesignConstraints`): `max_mass_kg`, `max_size_m` (stowed length × width;
+rover stowed length = chassis length + 2 × wheel radius, so wheel diameter counts)
+and an optional `max_power_proxy` (drive speed × mass). The Designer sees these
+limits and the stowed-size rule in FACTS, and each child gets its parent's
+remaining headroom. Code clamps generation-zero designs to the limits, rejects
+children and race candidates that break them, and the card shows e.g. "Must fit
+the lander: ≤ 12 kg, ≤ 0.8 × 0.5 m." Director cues "under X kg", "must weigh"
+and "fits in A×B m" set the constraints.
+
+The requested default was 0.6 × 0.5 m. Calibration showed that at 0.6 m no legal
+rover can fit wheels large enough to climb out (the 0.4 m minimum chassis leaves
+0.10 m wheels). The calibrated default is therefore ≤ 12 kg, ≤ 0.8 × 0.5 m, with
+twelve 0.20 m rocks on loose soil at friction 0.65.
+
+If a generation-zero design reaches the rim and passes five-seed verification,
+evolution does not stop. It reports "Gen 0 already climbs out. Raising the
+challenge to find its edge." and uses that design's rock-size margin search
+(friction if rocks never break it) to set the challenge where it fails, then keeps
+evolving. The card states both results: "Gen 0 climbed the original wall; evolved
+designs handle rocks up to X m (gen 0 failed at Y m)", or, if no child verifies,
+that no evolved design verified on the raised rocks.
+
+Small rover wheels get joint armature (`wheel_armature` in the MuJoCo backend).
+MuJoCo's explicit velocity servo is otherwise numerically unstable on tiny wheel
+inertia (0.10 m wheels flipped on flat ground). Wheels of about 0.14 m and up are
+unchanged.
 
 For a verified winner, two independent Finder binary searches measure its margin:
 larger rocks (up to six runs) and lower friction (up to six runs), each including
@@ -276,7 +311,10 @@ The complete report, shared race scene and recorded 3D race tracks are saved in
 this browser's local storage. **Replay saved evolution** restores the scene,
 family tree and race replays without new model calls or simulations. This
 browser-local replay is not a server-side archive and is unavailable in another
-browser profile or after its site data is cleared.
+browser profile or after its site data is cleared. The live and saved result keep
+the recorded generation race visible instead of resetting the viewer to the
+pre-race challenge robot; the winner is supported by its race and five-seed
+verification, not by a separate follow-up scene run.
 
 The live display animates recorded telemetry after each parallel race batch
 completes; it is not a real-time renderer of robot bodies during simulation.
@@ -286,11 +324,14 @@ physical robot guarantee.
 Run the configured Meta-model demo and capture the browser views:
 
 ```powershell
-.\.venv\Scripts\python.exe scripts\run_evolution_example.py --calibration reports\evolution-e7-live\calibration.json
-.\.venv\Scripts\python.exe scripts\run_evolution_example.py --screenshots-only
+.\.venv\Scripts\python.exe scripts\calibrate_challenge.py --output reports\evolution-e8-live\calibration.json
+.\.venv\Scripts\python.exe scripts\run_evolution_example.py --calibration reports\evolution-e8-live\calibration.json --output reports\evolution-e8-live
+.\.venv\Scripts\python.exe scripts\run_evolution_example.py --screenshots-only --output reports\evolution-e8-live
 ```
 
-The report, event log and screenshots are written to `reports/evolution-e7-live/`.
+The demo prompt is "Design a robot under 12 kg that can climb out of Victoria Crater."
+The report, calibration, event log and screenshots are written to `reports/evolution-e8-live/`.
+The E7 run (no lander limits) remains in `reports/evolution-e7-live/`.
 
 ## Project status
 

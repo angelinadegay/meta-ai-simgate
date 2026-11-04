@@ -1698,12 +1698,19 @@ ws.onmessage = (m) => {
       $("evolutionLive").textContent = `Generation ${ev.generation.generation} recorded · replaying race telemetry…`;
       $("evolutionCard").hidden = false; showPanel("analysis"); break;
     case "evolution_race_scene":
-      evolutionRaceScene = ev.scene; break;
+      evolutionRaceScene = ev.scene;
+      if (currentEvolution && Number.isInteger(ev.generation)) {
+        const generation = currentEvolution.generations?.find(row => row.generation === ev.generation);
+        if (generation) generation.replay_scene = ev.scene;
+      }
+      break;
     case "evolution_tree":
       renderEvolutionTree(ev.family_tree, ev.designs);
       $("evolutionLive").textContent = "Family tree updated · next generation is ready.";
       break;
     case "evolution":
+      currentSpec = ev.report.challenge_spec || currentSpec;
+      if (currentSpec) updateSceneContext(currentSpec);
       renderEvolution(ev.report, ev.replay === true);
       setStatus(ev.report.success ? "Verified winner" : "Evolution complete");
       setRequestProgress(ev.replay ? "Saved evolution replay loaded from recorded evidence." : "Evolution complete; race evidence and family tree are ready.", "done");
@@ -1925,7 +1932,7 @@ function renderEvolutionGeneration(generation, append = false) {
   if (append) play.click();
 }
 async function playEvolutionRace(generation) {
-  const replayScene = currentEvolution?.race_scene || evolutionRaceScene;
+  const replayScene = generation.replay_scene || currentEvolution?.race_scene || evolutionRaceScene;
   const track = generation.race_replay;
   if (!replayScene || !track || track.encoding !== "deflate-base64" || typeof DecompressionStream === "undefined")
     throw new Error("The saved race is missing its 3D scene or this browser cannot decode its track.");
@@ -1997,6 +2004,32 @@ function renderEvolution(report, replay = false) {
         ? rocks.map(rock => `${rock.count} rocks at ${Number(rock.size_m).toFixed(2)} m`).join(", ")
         : "no path rocks"} · ${Number(conditions.duration_s).toFixed(1)} s time limit`,
       "evolution-muted"));
+    const limits = conditions.design_constraints;
+    if (limits) {
+      const size = limits.max_size_m
+        ? `≤ ${Number(limits.max_size_m[0]).toFixed(1)} × ${Number(limits.max_size_m[1]).toFixed(1)} m`
+        : "no size cap";
+      const power = limits.max_power_proxy == null ? "" : `, power proxy ≤ ${limits.max_power_proxy}`;
+      $("evolutionSummary").appendChild(textEl("div",
+        `Must fit the lander: ≤ ${Number(limits.max_mass_kg).toFixed(0)} kg, ${size}${power}.`,
+        "evolution-muted"));
+    }
+  }
+  const escalation = report.escalation;
+  if (escalation?.triggered) {
+    const handled = report.success && report.margin?.rock_size?.last_ok != null
+      ? (Number(report.challenge_conditions.rocks?.[0]?.size_m) * Number(report.margin.rock_size.last_ok)).toFixed(2)
+      : null;
+    const text = escalation.feature !== "rock size"
+      ? `Gen 0 climbed the original wall; escalation tested friction ${Number(escalation.gen0_failed_at_friction).toFixed(2)}.`
+      : report.success
+        ? `Gen 0 climbed the original wall; evolved designs handle rocks up to ${
+          handled ?? Number(escalation.challenge_rock_size_m).toFixed(2)
+        } m (gen 0 failed at ${Number(escalation.gen0_failed_at_rock_size_m).toFixed(2)} m).`
+        : `Gen 0 climbed the original wall (${Number(escalation.original_rock_size_m).toFixed(2)} m rocks); `
+          + `no evolved design verified on the raised ${Number(escalation.challenge_rock_size_m).toFixed(2)} m rocks `
+          + `(gen 0 failed at ${Number(escalation.gen0_failed_at_rock_size_m).toFixed(2)} m).`;
+    $("evolutionSummary").appendChild(textEl("div", text, "evolution-muted"));
   }
   $("evolutionGenerations").replaceChildren();
   for (const generation of report.generations || []) renderEvolutionGeneration(generation);
@@ -2021,6 +2054,11 @@ function renderEvolution(report, replay = false) {
     saveSavedEvolution(report).catch(error =>
       addMsg(`The evolution report is ready, but could not be saved for replay: ${error.message}`, "err"));
   }
+  const replayGeneration = (report.winner && (report.generations || []).find(generation =>
+    generation.race_replay && generation.results?.some(row => row.id === report.winner.id && row.verified_winner)))
+    || [...(report.generations || [])].reverse().find(generation => generation.race_replay);
+  if (replayGeneration) playEvolutionRace(replayGeneration).catch(error =>
+    addMsg(`Could not replay the final evolution race: ${error.message}`, "err"));
 }
 async function replaySavedEvolution() {
   const report = savedEvolution || await readSavedEvolution();

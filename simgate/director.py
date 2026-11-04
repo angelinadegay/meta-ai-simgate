@@ -465,9 +465,36 @@ def _plan_world_state(world_state: World | SceneSpec | dict[str, Any] | None) ->
 def evolve_requested(text: str) -> bool:
     return bool(re.search(
         r"\bdesign a robot\b|\bwhat robot could\b|\binvent a robot\b|\bevolve\b|"
-        r"\bbest robot for (?:this|the) place\b",
+        r"\bbest robot for (?:this|the) place\b|\bfit(?:s|ting)? in\b|"
+        r"\bunder\s+\d+(?:\.\d+)?\s*kg\b|\bmust weigh\b",
         text, re.I,
     ))
+
+
+def _evolution_design_constraints(text: str, defaults):
+    from .spec import RobotDesignConstraints
+
+    values = (defaults.model_dump() if isinstance(defaults, RobotDesignConstraints)
+              else dict(defaults or {}))
+    mass = re.search(
+        r"\b(?:under|below|less than|at most|no more than|must weigh(?:\s+"
+        r"(?:under|below|less than|at most|no more than))?)\s*"
+        r"(\d+(?:\.\d+)?)\s*kg\b",
+        text, re.I,
+    )
+    if mass is None:
+        mass = re.search(r"\bmust weigh\s+(\d+(?:\.\d+)?)\s*kg\b", text, re.I)
+    if mass:
+        values["max_mass_kg"] = float(mass.group(1))
+    dimensions = re.search(
+        r"\bfit(?:s|ting)?\s+in(?:to)?\s+(?:a\s+)?"
+        r"(\d+(?:\.\d+)?)\s*(?:m|met(?:er|re)s?)?\s*[x×]\s*"
+        r"(\d+(?:\.\d+)?)\s*(?:m|met(?:er|re)s?)?\b",
+        text, re.I,
+    )
+    if dimensions:
+        values["max_size_m"] = (float(dimensions.group(1)), float(dimensions.group(2)))
+    return RobotDesignConstraints.model_validate(values) if values else None
 
 
 def _evolve_plan(text: str, world_state) -> Plan:
@@ -500,9 +527,11 @@ def _evolve_plan(text: str, world_state) -> Plan:
                      else GoalPlan(place=challenge.mission.start_place))
             goal = (GoalPlan(xy=challenge.mission.goal_xy) if challenge.mission.goal_xy is not None
                     else GoalPlan(place=challenge.mission.goal_place))
+            design_constraints = _evolution_design_constraints(text, challenge.design_constraints)
             return Plan(
                 workflow="evolve", summary=f"Design a robot for {challenge.title}",
                 evolution_challenge=evolution_challenge,
+                design_constraints=design_constraints,
                 world=WorldPlan(
                     body=challenge.environment.body, surface=challenge.environment.surface,
                     terrain_kind="real", preset=challenge.terrain.preset, roughness=0.0,
@@ -516,6 +545,7 @@ def _evolve_plan(text: str, world_state) -> Plan:
         _apply_text_guards(plan, text)
     else:
         plan = Plan(workflow="evolve", summary=f"Design a robot for {current.title}")
+        plan.design_constraints = _evolution_design_constraints(text, current.design_constraints)
     plan.workflow = "evolve"
     plan.run_now = True
     plan.then = None
@@ -532,6 +562,11 @@ def _evolve_plan(text: str, world_state) -> Plan:
         from .plan import RobotPlan
 
         plan.robots = [RobotPlan(kind="rover")]
+    if (plan.design_constraints is None and re.search(
+            r"\bfit(?:s|ting)? in\b|\bunder\s+\d+(?:\.\d+)?\s*kg\b|\bmust weigh\b", text, re.I)):
+        from .evolve import DEFAULT_DESIGN_CONSTRAINTS
+
+        plan.design_constraints = _evolution_design_constraints(text, DEFAULT_DESIGN_CONSTRAINTS)
     if current is not None and current.terrain is not None and current.terrain.kind == "real":
         from .terrain_data import load_preset
 

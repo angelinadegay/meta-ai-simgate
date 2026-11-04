@@ -56,6 +56,20 @@ class Robot(BaseModel):
     command_speed_m_s: float = 0.6
 
 
+class RobotDesignConstraints(BaseModel):
+    max_mass_kg: float = Field(gt=0)
+    max_size_m: tuple[float, float] | None = None
+    max_power_proxy: float | None = Field(default=None, gt=0)
+
+    @model_validator(mode="after")
+    def validate_dimensions(self) -> "RobotDesignConstraints":
+        if self.max_size_m is not None and any(
+            not math.isfinite(value) or value <= 0 for value in self.max_size_m
+        ):
+            raise ValueError("Maximum robot length and width must be finite positive metres.")
+        return self
+
+
 Place = Literal["start_area", "center", "lowest", "highest", "north", "south", "east", "west", "kitchen", "living_room", "hallway", "bedroom"]
 StructureGoal = Literal["habitat_airlock", "lander"]
 
@@ -177,6 +191,7 @@ class SceneSpec(BaseModel):
     robot: Optional[Robot] = None
     mission: Optional[Mission] = None   # start and goal for a robot (optional)
     robots: list[RobotEntry] = Field(default_factory=list, max_length=6)
+    design_constraints: Optional[RobotDesignConstraints] = None
     obstacles: list[Obstacle] = []      # an obstacle course (robot scenes only)
     structures: list[TerrainStructure] = []  # descriptive terrain placements; not part of simulation physics
     structure: Optional[Structure] = None

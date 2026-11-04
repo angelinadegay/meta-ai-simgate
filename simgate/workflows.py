@@ -65,7 +65,10 @@ async def execute(plan: Plan, current: SceneSpec | None, director: "Director",
         if plan.evolution_challenge == "victoria-rim-boulders":
             from .evolve import challenge_preset
 
-            challenge = challenge_preset("victoria-rim-boulders", duration_s=plan.duration_s or 90.0)
+            challenge = challenge_preset(
+                "victoria-rim-boulders", duration_s=plan.duration_s or 90.0,
+                design_constraints=plan.design_constraints or world.spec.design_constraints,
+            )
             challenge.robot = world.spec.robot.model_copy(deep=True)
             challenge.robots = [world.spec.robots[0].model_copy(deep=True)]
             challenge.robots[0].robot = challenge.robot.model_copy(deep=True)
@@ -74,6 +77,8 @@ async def execute(plan: Plan, current: SceneSpec | None, director: "Director",
             challenge.robots[0].goal_xy = challenge.mission.goal_xy
             challenge.robots[0].goal_place = None
             world.spec = challenge
+        elif plan.design_constraints is not None:
+            world.spec.design_constraints = plan.design_constraints
         ready, message = await _check_and_repair(world, director, "Building the place for the robot-design race.")
         if not ready or world.build is None:
             return world, message
@@ -84,8 +89,8 @@ async def execute(plan: Plan, current: SceneSpec | None, director: "Director",
             director,
         )
         report["type"] = "evolution"
-        report["challenge_spec"] = world.spec.model_dump(mode="json")
-        report["challenge_scene"] = world.build.scene
+        report.setdefault("challenge_spec", world.spec.model_dump(mode="json"))
+        report.setdefault("challenge_scene", world.build.scene)
         report["challenge_code"] = world.build.code
         world.report = report
         return world, report["report"]
@@ -335,7 +340,10 @@ async def _stream_evolution(job, director: "Director") -> dict:
         elif event["type"] == "generation":
             await director.emit({"type": "evolution_generation", "generation": event["generation"]})
         elif event["type"] == "race_scene":
-            await director.emit({"type": "evolution_race_scene", "scene": event["scene"]})
+            await director.emit({
+                "type": "evolution_race_scene", "scene": event["scene"],
+                "generation": event.get("generation"),
+            })
         elif event["type"] == "tree":
             await director.emit({
                 "type": "evolution_tree", "family_tree": event["family_tree"], "designs": event["designs"],

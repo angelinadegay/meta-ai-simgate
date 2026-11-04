@@ -212,7 +212,8 @@ class Session:
                 await self.emit({"type": world.report["type"], "report": world.report})
         else:
             await self.emit({"type": "spec", "spec": spec.model_dump()})
-        if world.build is not None and not unchanged:
+        if world.build is not None and not unchanged and (
+                world.report is None or world.report["type"] != "evolution"):
             await self.emit({
                 "type": "scene",
                 "scene": world.build.scene,

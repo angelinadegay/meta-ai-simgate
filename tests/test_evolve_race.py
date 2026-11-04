@@ -4,7 +4,7 @@ import json
 import pytest
 
 from simgate import evolve
-from simgate.spec import Environment, Mission, Robot, SceneSpec, Terrain
+from simgate.spec import Environment, Mission, Obstacle, Robot, RobotDesignConstraints, SceneSpec, Terrain
 
 
 def _challenge():
@@ -74,6 +74,39 @@ def test_director_routes_victoria_robot_design_request_to_evolve():
     assert len(plan.obstacles) == 1 and plan.obstacles[0].kind == "rock"
     assert plan.duration_s == 90
     assert plan.run_now
+
+
+def test_victoria_design_constraints_clamp_generation_zero_and_reject_race_violations():
+    limits = RobotDesignConstraints(
+        max_mass_kg=12, max_size_m=(0.6, 0.5), max_power_proxy=60,
+    )
+    designs = evolve._validate_designs({"designs": [
+        {"name": "Large rover", "reason": "A test rover.", "robot": {
+            "kind": "rover", "wheels": 6, "wheel_radius": 0.4, "wheel_width": 0.2,
+            "chassis_length": 1.2, "chassis_width": 0.9, "mass_kg": 40, "drive_speed": 12,
+        }},
+        {"name": "Large walker", "reason": "A test walker.", "robot": {
+            "kind": "walker", "legs": 6, "leg_length": 0.4, "chassis_length": 1.2,
+            "chassis_width": 0.9, "mass_kg": 40,
+        }},
+    ]}, 2, limits)
+
+    for design in designs:
+        robot = Robot.model_validate(design["robot"])
+        assert not evolve._constraint_violations(robot, limits)
+        assert robot.mass_kg <= 12
+    with pytest.raises(ValueError, match="design constraints"):
+        evolve._validate_race_designs(evolve._rules(4), limits)
+
+
+def test_director_extracts_lander_mass_constraint_from_prompt():
+    from simgate.director import Director
+
+    plan = Director().plan("Design a robot under 12 kg that can climb out of Victoria Crater.")
+
+    assert plan.workflow == "evolve"
+    assert plan.design_constraints.max_mass_kg == 12
+    assert plan.design_constraints.max_size_m == evolve.DEFAULT_DESIGN_CONSTRAINTS["max_size_m"]
 
 
 def test_workflow_streams_live_family_tree_updates():
@@ -281,6 +314,34 @@ def test_designer_receives_failure_facts_and_returns_three_children(monkeypatch)
     assert all(child["source"] == "model" for child in next_designs[1:])
 
 
+def test_designer_sees_stowed_size_rule_and_parent_headroom(monkeypatch):
+    monkeypatch.setattr(evolve.config, "MOCK_MODE", False)
+    limits = RobotDesignConstraints(max_mass_kg=12, max_size_m=(0.6, 0.5))
+    rows = _generation_results(evolve._rules(4, limits))
+    captured = []
+
+    def fake_chat_json(messages, model, parse):
+        captured.append(json.loads(messages[1]["content"]))
+        rover = next(row for row in rows if row["robot"]["kind"] == "rover")
+        with pytest.raises(ValueError, match="stowed size .*chassis_length \\+ 2\\*wheel_radius"):
+            parse({"children": [
+                {"parent_id": rover["id"], "name": f"Big wheels {index}",
+                 "reason": "Stuck on a rock; bigger wheels.", "changes": {"wheel_radius": 0.3}}
+                for index in range(3)
+            ]})
+        return None, [{"valid": False}]
+
+    monkeypatch.setattr(evolve.llm, "chat_json", fake_chat_json)
+    evolve.next_generation({"generation": 0, "results": rows}, n=4, constraints=limits)
+
+    context = captured[0]
+    assert "chassis_length + 2*wheel_radius" in context["design_constraints"]["stowed_size_rule"]
+    for fact in context["FACTS"]:
+        stowed = fact["stowed"]
+        assert stowed["stowed_length_m"] <= 0.6 + 1e-9 and stowed["stowed_width_m"] <= 0.5 + 1e-9
+        assert stowed["mass_headroom_kg"] >= 0 and "width_headroom_m" in stowed
+
+
 @pytest.mark.parametrize(("kind", "outcome", "expected"), [
     ("rover", "stuck", {"wheel_radius", "wheel_width"}),
     ("walker", "stuck", {"leg_length", "stride_deg"}),
@@ -342,6 +403,67 @@ def test_evolve_stops_immediately_when_any_design_reaches_goal(monkeypatch):
     assert report["race_count"] == 4
     assert report["simulation_count"] == 19
     assert report["honesty"].endswith("Designs are simplified procedural robots.")
+
+
+@pytest.mark.parametrize(("reliable", "expected_escalation"), [(False, False), (True, True)])
+def test_evolve_escalates_only_after_verified_generation_zero_winner(
+    monkeypatch, reliable, expected_escalation,
+):
+    from simgate import cost
+
+    challenge = _challenge()
+    challenge.obstacles = [Obstacle(kind="rock", height_m=0.2, count=12)]
+    challenge.design_constraints = RobotDesignConstraints(max_mass_kg=12, max_size_m=(0.6, 0.5))
+    monkeypatch.setattr(evolve.config, "MOCK_MODE", True)
+    monkeypatch.setattr(
+        evolve, "propose_generation0",
+        lambda scene, n: evolve._rules(n, scene.design_constraints),
+    )
+    verify_calls = []
+    monkeypatch.setattr(evolve, "verify_winner", lambda scene, design: (
+        verify_calls.append((scene.obstacles[0].height_m, design["id"])) or {
+            "reliable": reliable, "total": 5, "text": "passes 5/5",
+            "results": ([] if reliable else [
+                {"reached_goal": False, "outcome": "stuck", "progress_percent": 30},
+            ]),
+        }
+    ))
+    margin_calls = []
+
+    def fake_margin(scene, design, budget=6):
+        margin_calls.append((scene.obstacles[0].height_m, design["id"]))
+        return {
+            "available": True, "runs": 2, "text": "rock edge measured",
+            "rock_size": {"available": True, "first_fail": 1.5, "last_ok": 1.4, "runs": 2},
+        }
+
+    monkeypatch.setattr(evolve, "terrain_margin_search", fake_margin)
+    race_scenes = []
+
+    def fake_race(scene, designs, seed):
+        race_scenes.append(scene.model_copy(deep=True))
+        cost.add_runs(len(designs))
+        rows = _generation_results(designs)
+        if len(race_scenes) == 1:
+            rows[0].update(reached_goal=True, outcome="reached", time_s=20, progress_percent=100)
+        return {"results": rows}
+
+    monkeypatch.setattr(evolve, "race_generation", fake_race)
+    report = evolve.evolve(challenge, max_generations=2, n=4, seed=3)
+
+    assert len(race_scenes) == 2
+    assert report["success"] is False
+    assert bool(report["escalation"]) is expected_escalation
+    assert len(margin_calls) == int(reliable)
+    assert len(verify_calls) >= 1
+    if expected_escalation:
+        assert race_scenes[1].obstacles[0].height_m == pytest.approx(0.3)
+        assert report["escalation"]["gen0_failed_at_rock_size_m"] == pytest.approx(0.3)
+        assert "Gen 0 already climbs out." in report["report"]
+        assert "no evolved design verified on the raised 0.30 m rocks" in report["report"]
+    else:
+        assert race_scenes[1].obstacles[0].height_m == pytest.approx(0.2)
+        assert report["report"].count("G0-A was unreliable") <= 1
 
 
 @pytest.mark.parametrize(("passes", "reliable"), [(1, False), (3, False), (4, True)])
@@ -564,6 +686,47 @@ def test_calibration_uses_no_winner_and_twenty_to_eighty_percent_progress():
     ])["qualifies"] is False
 
 
+def test_feasibility_reference_designs_are_the_biggest_legal_designs():
+    limits = {"max_mass_kg": 12.0, "max_size_m": (0.8, 0.5)}
+    rover, walker = evolve.feasibility_reference_designs(limits)
+    assert rover["robot"]["wheel_radius"] == pytest.approx(0.2)
+    assert walker["robot"]["leg_length"] == evolve.DESIGN_SPACE["walker"]["leg_length"][1]
+    for design in (rover, walker):
+        assert evolve._constraint_violations(Robot.model_validate(design["robot"]), limits) == []
+    tight, _ = evolve.feasibility_reference_designs({"max_mass_kg": 12.0, "max_size_m": (0.6, 0.5)})
+    assert tight["robot"]["wheel_radius"] == pytest.approx(0.1)
+
+
+def test_calibration_requires_a_legal_design_to_climb_out(monkeypatch):
+    import importlib.util
+    from pathlib import Path
+
+    path = Path(__file__).resolve().parents[1] / "scripts" / "calibrate_challenge.py"
+    spec = importlib.util.spec_from_file_location("calibrate_challenge", path)
+    calibration = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(calibration)
+    tunings = [{"rock_size_m": 0.25, "rock_count": 24, "friction": 0.55,
+                "design_constraints": {"max_mass_kg": 12, "max_size_m": [0.6, 0.5]}},
+               {"rock_size_m": 0.15, "rock_count": 12, "friction": 0.65,
+                "design_constraints": {"max_mass_kg": 12, "max_size_m": [0.8, 0.5]}}]
+
+    def fake_run(seed, tuning, index, mode, designs=None):
+        return {"trial": index, "generation_zero": mode, **tuning, "duration_s": 90.0,
+                **evolve.calibration_quality([{"progress_percent": 44.0, "reached_goal": False}]),
+                "outcomes": [{}] * 4}
+
+    feasible = {0.6: False, 0.8: True}
+    monkeypatch.setattr(calibration, "_run", fake_run)
+    monkeypatch.setattr(calibration, "feasibility", lambda seed, tuning: {
+        "feasible": feasible[tuning["design_constraints"]["max_size_m"][0]], "reason": "fake",
+        "simulations": 2})
+    result = calibration.calibrate(tunings=tunings, include_model=False)
+    first, second = result["rows"]
+    assert first["gen0_qualifies"] and not first["qualifies"]
+    assert second["qualifies"] and result["default_row"] is second and result["qualified"]
+    assert result["simulations"] == 4 + 4 + 2 + 2
+
+
 def test_real_terrain_height_scale_changes_measured_slopes_as_expected():
     import numpy as np
 
@@ -718,7 +881,7 @@ def test_victoria_rim_boulders_uses_steep_climb_rocks_friction_and_generous_time
         __import__("math").dist(challenge.mission.start_xy, challenge.mission.goal_xy) / 3.0
     )
     assert challenge.duration_s == pytest.approx(90.0)
-    assert "friction is set to" in challenge.assumptions[-1]
+    assert any("friction is set to" in assumption for assumption in challenge.assumptions)
 
 
 def test_victoria_boulder_calibration_rejects_out_of_range_physical_settings():

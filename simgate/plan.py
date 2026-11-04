@@ -7,7 +7,8 @@ from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, PrivateAttr,
 from . import presets
 from .batch import Variation
 from .library import LibraryRegistry
-from .spec import Load, Mission, Obstacle, Place, Robot, Structure, StructureGoal, TerrainStructure
+from .spec import (Load, Mission, Obstacle, Place, Robot, RobotDesignConstraints, Structure, StructureGoal,
+                   TerrainStructure)
 from .terrain_data import list_presets
 
 
@@ -215,6 +216,7 @@ class Plan(BaseModel):
         description="A short name for the scene, used as its title, e.g. \"Three rovers race on Mars hills\".",
     )
     evolution_challenge: Literal["victoria-rim-boulders"] | None = None
+    design_constraints: RobotDesignConstraints | None = None
     domain: SceneDomain = "robot_terrain"
     world: WorldPlan = Field(default_factory=WorldPlan)
     robots: list[RobotPlan] = Field(default_factory=list, max_length=6)

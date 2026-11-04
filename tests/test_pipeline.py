@@ -59,6 +59,19 @@ def test_rover_on_mars():
     assert sim.summary()["forward_progress_m"] > 1.0
 
 
+def test_smallest_wheel_rover_stays_numerically_stable_on_flat_ground():
+    spec = SceneSpec(
+        domain="robot_terrain", terrain=Terrain(kind="flat", roughness=0), duration_s=4,
+        robot=Robot(kind="rover", mass_kg=9.0, chassis_length=0.4, chassis_width=0.38,
+                    wheel_radius=0.10, wheel_width=0.05, wheels=4, drive_speed=5.0),
+    ).fill_defaults()
+    sim, _, _ = run(spec)
+    summary = sim.summary()
+    assert not summary["unstable"], summary
+    assert not summary["flipped"], summary
+    assert summary["max_tilt_deg"] < 10, summary
+
+
 def test_three_rover_race_has_non_overlapping_spawns_and_leaderboard():
     spec = SceneSpec(
         domain="robot_terrain",
@@ -2003,6 +2016,40 @@ def test_an_answer_keeps_the_built_scene():
 
     events = asyncio.run(flow())
     assert any(event["type"] == "run_start" for event in events)
+
+
+def test_evolution_result_does_not_replace_race_replay_with_challenge_scene(monkeypatch):
+    import asyncio
+    from types import SimpleNamespace
+
+    from simgate.director import Director
+    from simgate.orchestrator import Session
+    from simgate.spec import SceneSpec
+    from simgate.tools import World
+
+    spec = SceneSpec(domain="robot_terrain").fill_defaults()
+    world = World(
+        spec=spec,
+        build=SimpleNamespace(scene={"kind": "mujoco"}, code="", language="python"),
+        report={"type": "evolution", "challenge_spec": spec.model_dump(mode="json")},
+    )
+    events = []
+
+    async def execute_plan(self, *args, **kwargs):
+        return world, "Evolution complete."
+
+    monkeypatch.setattr(Director, "execute_plan", execute_plan)
+
+    async def flow():
+        async def emit(event):
+            events.append(event)
+
+        session = Session(emit)
+        await session.make("design a robot for Victoria Crater", editing=False)
+
+    asyncio.run(flow())
+    assert any(event["type"] == "evolution" for event in events)
+    assert not any(event["type"] == "scene" for event in events)
 
 
 def test_show_runs_replays_the_winner_without_applying_it():

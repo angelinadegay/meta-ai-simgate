@@ -1,4 +1,4 @@
-"""Run the Hadley Rille evolution demo and capture its recorded 3D browser views."""
+"""Run the Victoria Crater lander-limited evolution demo and capture its recorded 3D browser views."""
 import argparse
 import asyncio
 import json
@@ -15,7 +15,7 @@ from simgate import config, evolve
 from simgate.orchestrator import Session
 
 
-PROMPT = "Design a robot that can climb out of Victoria Crater."
+PROMPT = "Design a robot under 12 kg that can climb out of Victoria Crater."
 
 
 async def run_example(output: Path, calibration_path: Path | None = None) -> dict:
@@ -30,21 +30,29 @@ async def run_example(output: Path, calibration_path: Path | None = None) -> dic
     chosen = calibration["default_row"]
     evolve.DEFAULT_CHALLENGE_CONFIG.update({
         "rock_size_m": chosen["rock_size_m"], "rock_count": chosen["rock_count"],
-        "friction": chosen["friction"], "start_offset_m": chosen["start_offset_m"],
+        "friction": chosen["friction"],
+        "design_constraints": chosen["design_constraints"],
     })
     (output / "calibration.json").write_text(json.dumps(calibration, indent=2), encoding="utf-8")
-    print("| Trial | Rock size | Density | Friction | Start offset | Time limit | Reached | Best progress | Qualifies | Adjustment |")
-    print("|---:|---:|---:|---:|---:|---:|:---:|---:|:---:|---|")
+    print("| Trial | Gen 0 | Rock size | Density | Friction | Mass cap | Stowed size | Time limit | Reached | Best progress | Legal design climbs out? | Qualifies |")
+    print("|---:|---|---:|---:|---:|---:|---:|---:|:---:|---:|:---:|:---:|")
     for row in calibration["rows"]:
+        limits = row["design_constraints"]
+        check = row.get("feasibility")
+        feasible = "not checked" if check is None else ("yes" if check["feasible"] else "no")
         print(
-            f"| {row['trial']} | {row['rock_size_m']:.2f} m | {row['rock_count']} rocks "
-            f"| {row['friction']:.2f} | {row['start_offset_m']:+.1f} m | {row['duration_s']:.1f} s "
+            f"| {row['trial']} | {row['generation_zero']} | {row['rock_size_m']:.2f} m | "
+            f"{row['rock_count']} rocks | {row['friction']:.2f} | ≤{limits['max_mass_kg']:g} kg "
+            f"| {limits['max_size_m'][0]:g} × {limits['max_size_m'][1]:g} m | {row['duration_s']:.1f} s "
             f"| {'yes' if row['any_reached'] else 'no'} | {row['best_progress_percent']:.1f}% "
-            f"| {'yes' if row['qualifies'] else 'no'} | {row['adjustment']} |",
+            f"| {feasible} | {'yes' if row['qualifies'] else 'no'} |",
             flush=True,
         )
+    if not (calibration["qualified"] or calibration.get("rule_based_row")):
+        raise RuntimeError("No feasible setting kept generation zero inside the no-reach, 20–80% target.")
     if not calibration["qualified"]:
-        raise RuntimeError("Physical-only calibration did not meet the no-reach, 20–80% target.")
+        print("Model-designed generation zero already climbs out on the calibrated course; "
+              "evolution will escalate the rocks to find its edge.", flush=True)
     attempts, reports = [], []
     for prompt in (PROMPT,):
         events = []
@@ -116,7 +124,11 @@ def capture_screenshots(output: Path) -> None:
     report = json.loads((output / "report.json").read_text(encoding="utf-8"))
     if not report.get("generations") or not report.get("challenge_scene") or not report.get("race_scene"):
         raise RuntimeError("The saved evolution report lacks race results or its replay scenes.")
-    if not report["generations"][0].get("race_replay"):
+    replay_generation = next(
+        (generation for generation in reversed(report["generations"]) if generation.get("race_replay")),
+        None,
+    )
+    if replay_generation is None:
         raise RuntimeError("The saved evolution report lacks a 3D race track.")
     with socket.socket() as connection:
         connection.bind(("127.0.0.1", 0))
@@ -155,13 +167,15 @@ def capture_screenshots(output: Path) -> None:
             }))
             route.send(json.dumps({
                 "type": "agent", "agent": "Simulator", "status": "working",
-                "message": "Racing generation 0 side by side on the same challenge…",
+                "message": f"Racing generation {replay_generation['generation']} on the challenge…",
             }))
             route.send(json.dumps({
-                "type": "evolution_race_scene", "scene": report["race_scene"],
+                "type": "evolution_race_scene",
+                "scene": replay_generation.get("replay_scene") or report["race_scene"],
+                "generation": replay_generation["generation"],
             }))
             route.send(json.dumps({
-                "type": "evolution_generation", "generation": report["generations"][0],
+                "type": "evolution_generation", "generation": replay_generation,
             }))
             page.locator("#evolutionCard").wait_for(state="visible")
             page.locator("#evolutionGenerations svg").wait_for(state="visible")
@@ -196,11 +210,17 @@ def capture_screenshots(output: Path) -> None:
                 page.locator("#evolutionWinner .winner").wait_for(state="visible")
             else:
                 page.locator("#evolutionWinner p").wait_for(state="visible")
+            card_only = page.add_style_tag(content=(
+                "#evolutionGenerations, #evolutionTree, #evolutionCard h4, #evolutionLive "
+                "{ display: none !important; }"
+            ))
+            page.locator("#evolutionCard").evaluate("(card) => card.scrollIntoView({block: 'start'})")
             page.locator("#evolutionCard").screenshot(path=str(output / "winner-card.png"))
+            card_only.evaluate("(style) => style.remove()")
             page.wait_for_function("localStorage.getItem('simgate.savedEvolution') !== null")
             page.locator("#replayEvolution").click()
             page.wait_for_function("document.querySelector('#statusText')?.textContent.includes('Saved replay')")
-            page.locator("#evolutionGenerations button").first.click()
+            page.locator("#evolutionGenerations button").last.click()
             page.locator("#player").wait_for(state="visible")
             page.wait_for_timeout(300)
             if errors:
@@ -219,12 +239,14 @@ def capture_screenshots(output: Path) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--output", type=Path, default=Path("reports/evolution-e7-live"))
+    parser.add_argument("--output", type=Path, default=Path("reports/evolution-e8-live"))
     parser.add_argument("--calibration", type=Path,
                         help="Reuse a saved calibration JSON instead of rerunning its simulations.")
     parser.add_argument("--screenshots-only", action="store_true",
                         help="Render saved race telemetry; do not call models or run simulations.")
     args = parser.parse_args()
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8")
     if args.screenshots_only:
         capture_screenshots(args.output)
     else:

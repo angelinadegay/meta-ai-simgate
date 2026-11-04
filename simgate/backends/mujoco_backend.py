@@ -439,6 +439,19 @@ def footprint_radius(rb) -> float:
 # grind against each other, which can blow up the simulation.
 LIMB_COLLISION = 'contype="2" conaffinity="1"'
 
+WHEEL_TIMESTEP_S = 0.002
+WHEEL_MAX_GAIN_RATIO = 1.5
+
+
+def wheel_armature(kv: float, wheel_mass: float, radius: float) -> float:
+    """Rotor inertia that keeps the explicit velocity servo stable (kv*dt/I <= 1.5; Euler diverges above 2).
+
+    Small wheels have tiny axle inertia (I = m R^2 / 2), so without it a 0.10 m wheel blows up the
+    simulation within 0.2 s. Wheels of about 0.14 m and larger get no armature, so their behaviour is unchanged."""
+    inertia = 0.5 * wheel_mass * radius ** 2
+    return max(0.0, kv * WHEEL_TIMESTEP_S / WHEEL_MAX_GAIN_RATIO - inertia)
+
+
 def rover_xml(spec: SceneSpec, start: tuple[float, float, float], heading_deg: float = 0.0) -> tuple[str, str]:
     rb = spec.robot
     L, W, R, ww = rb.chassis_length, rb.chassis_width, rb.wheel_radius, rb.wheel_width
@@ -446,17 +459,19 @@ def rover_xml(spec: SceneSpec, start: tuple[float, float, float], heading_deg: f
     wheel_mass = 0.08 * rb.mass_kg
     chassis_mass = max(rb.mass_kg - wheel_mass * rb.wheels, 0.2 * rb.mass_kg)
     xs = [L / 2, -L / 2] if rb.wheels == 4 else [L / 2, 0.0, -L / 2]
+    kv = 0.6 * rb.mass_kg
+    armature = wheel_armature(kv, wheel_mass, R)
     wheels, actuators = [], []
     for i, wx in enumerate(xs):
         for side, wy in (("l", W / 2 + ww / 2 + 0.01), ("r", -(W / 2 + ww / 2 + 0.01))):
             name = f"wheel_{i}{side}"
             wheels.append(
                 f'''      <body name="{name}" pos="{wx:.3f} {wy:.3f} 0">
-        <joint name="{name}_j" type="hinge" axis="0 1 0" damping="0.05"/>
+        <joint name="{name}_j" type="hinge" axis="0 1 0" damping="0.05" armature="{armature:.5f}"/>
         <geom type="cylinder" size="{R:.3f} {ww / 2:.3f}" euler="90 0 0" mass="{wheel_mass:.3f}" {LIMB_COLLISION} rgba="0.15 0.15 0.17 1"/>
       </body>'''
             )
-            actuators.append(f'    <velocity joint="{name}_j" kv="{0.6 * rb.mass_kg:.2f}" ctrlrange="-30 30"/>')
+            actuators.append(f'    <velocity joint="{name}_j" kv="{kv:.2f}" ctrlrange="-30 30"/>')
     x, y, z = start
     body = f'''    <body name="rover" pos="{x:.3f} {y:.3f} {z:.3f}" quat="{yaw_quat(heading_deg)}">
       <freejoint/>

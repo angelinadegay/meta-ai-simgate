@@ -10,7 +10,7 @@ from typing import Any, Callable
 import numpy as np
 
 from . import config, llm
-from .spec import Environment, Mission, Obstacle, Robot, SceneSpec, Terrain
+from .spec import Environment, Mission, Obstacle, Robot, RobotDesignConstraints, SceneSpec, Terrain
 
 logger = logging.getLogger(__name__)
 
@@ -35,9 +35,11 @@ MAX_EVOLUTION_RUNS = 20
 MAX_EVOLUTION_GENERATIONS = 5
 DEFAULT_CHALLENGE = "victoria-rim-boulders"
 DEFAULT_CHALLENGE_DURATION_S = 90.0
-DEFAULT_ROCK_SIZE_M = 0.25
-DEFAULT_ROCK_COUNT = 24
-DEFAULT_LOOSE_SOIL_FRICTION = 0.55
+DEFAULT_ROCK_SIZE_M = 0.20
+DEFAULT_ROCK_COUNT = 12
+DEFAULT_LOOSE_SOIL_FRICTION = 0.65
+# Calibrated from the spec's 0.6 × 0.5 m: at 0.6 m no legal rover fits wheels big enough to climb out.
+DEFAULT_DESIGN_CONSTRAINTS = {"max_mass_kg": 12.0, "max_size_m": (0.8, 0.5)}
 ROCK_SIZE_RANGE_M = (0.15, 0.35)
 ROCK_COUNT_RANGE = (12, 30)
 LOOSE_SOIL_FRICTION_RANGE = (0.45, 0.65)
@@ -46,13 +48,15 @@ DEFAULT_CHALLENGE_CONFIG = {
     "rock_count": DEFAULT_ROCK_COUNT,
     "friction": DEFAULT_LOOSE_SOIL_FRICTION,
     "start_offset_m": 0.0,
+    "design_constraints": DEFAULT_DESIGN_CONSTRAINTS.copy(),
 }
 
 SYSTEM = """You are the Designer proposing generation-zero procedural robots for a place.
 Propose exactly the requested number, including at least one rover and one walker.
 G1 and all library robots are NOT designable. Change only robot parameters; never the place,
 gravity, friction, terrain, start or goal. These are untested proposals, not measured winners.
-Use FACTS only: null rock sizes mean unknown, not zero; do not invent terrain measurements.
+Every design must satisfy `FACTS.design_constraints`; satisfy the mass, stowed-size and power limits
+as well as the design-space bounds. Use FACTS only: null rock sizes mean unknown, not zero; do not invent terrain measurements.
 DESIGN_SPACE lists numeric ranges, except wheels and legs which are discrete choices 4 or 6.
 Use only the knobs for that kind. Vary designs rather than repeating them.
 Return JSON only: {"designs":[{"name":"short name","reason":"one-line design rationale",
@@ -62,10 +66,121 @@ MUTATION_SYSTEM = """You are the Designer improving already-raced procedural rob
 The best design is kept unchanged; propose exactly the requested number of children.
 Each child must name one parent_id and change one or two allowed parameters of that parent's
 kind only. Return only actual parameter differences in `changes`; never change kind or the
-world. Tie the one-line reason to that parent's measured outcome and failure location from FACTS.
+world. Respect the challenge's design constraints: compute each child's stowed size with
+`design_constraints.stowed_size_rule` and stay within each parent's `stowed` headroom (growing wheels
+or legs may require shrinking the chassis). Tie the one-line reason to that parent's measured outcome and failure location from FACTS.
 Use allowed numeric ranges and discrete values only. Return JSON:
 {"children":[{"parent_id":"G0-A","name":"short name","reason":"failure-linked reason",
 "changes":{"wheel_radius":0.28}}]}"""
+
+
+def _design_dimensions(robot: Robot) -> tuple[float, float]:
+    if robot.kind == "rover":
+        return robot.chassis_length + 2 * robot.wheel_radius, robot.chassis_width + 2 * robot.wheel_width + 0.02
+    return robot.chassis_length, robot.chassis_width + 0.15
+
+
+STOWED_SIZE_RULE = (
+    "rover stowed length = chassis_length + 2*wheel_radius; rover stowed width = chassis_width + "
+    "2*wheel_width + 0.02; walker stowed length = chassis_length; walker stowed width = chassis_width + 0.15"
+)
+
+
+def _constraint_facts(constraints: RobotDesignConstraints | dict | None) -> dict | None:
+    if constraints is None:
+        return None
+    limits = (constraints.model_dump(mode="json") if isinstance(constraints, RobotDesignConstraints)
+              else dict(constraints))
+    return {**limits, "stowed_size_rule": STOWED_SIZE_RULE,
+            "power_proxy_rule": "drive_speed * mass_kg"}
+
+
+def _stowed_facts(robot: dict, constraints: RobotDesignConstraints | dict | None) -> dict:
+    length, width = _design_dimensions(Robot.model_validate(robot))
+    facts = {"stowed_length_m": round(length, 3), "stowed_width_m": round(width, 3)}
+    if constraints is not None:
+        limits = (constraints.model_dump() if isinstance(constraints, RobotDesignConstraints) else constraints)
+        facts["mass_headroom_kg"] = round(float(limits["max_mass_kg"]) - float(robot["mass_kg"]), 3)
+        if limits.get("max_size_m") is not None:
+            facts["length_headroom_m"] = round(float(limits["max_size_m"][0]) - length, 3)
+            facts["width_headroom_m"] = round(float(limits["max_size_m"][1]) - width, 3)
+    return facts
+
+
+def _constraint_violations(robot: Robot, constraints: RobotDesignConstraints | dict | None) -> list[str]:
+    if constraints is None:
+        return []
+    limits = (constraints.model_dump() if isinstance(constraints, RobotDesignConstraints) else constraints)
+    violations = []
+    if robot.mass_kg > limits["max_mass_kg"] + 1e-9:
+        violations.append(f"mass {robot.mass_kg:g} kg exceeds {limits['max_mass_kg']:g} kg")
+    if limits.get("max_size_m") is not None:
+        length, width = _design_dimensions(robot)
+        max_length, max_width = limits["max_size_m"]
+        if length > max_length + 1e-9 or width > max_width + 1e-9:
+            violations.append(
+                f"stowed size {length:.3f} × {width:.3f} m exceeds {max_length:g} × {max_width:g} m "
+                f"({STOWED_SIZE_RULE})"
+            )
+    if limits.get("max_power_proxy") is not None:
+        proxy = robot.drive_speed * robot.mass_kg
+        if proxy > limits["max_power_proxy"] + 1e-9:
+            violations.append(
+                f"power proxy {proxy:g} exceeds {limits['max_power_proxy']:g}"
+            )
+    return violations
+
+
+def _constrain_design(design: dict, constraints: RobotDesignConstraints | dict | None) -> dict:
+    if constraints is None:
+        return design
+    limits = constraints.model_dump() if isinstance(constraints, RobotDesignConstraints) else constraints
+    robot = Robot.model_validate(design["robot"])
+    space = DESIGN_SPACE[robot.kind]
+    robot.mass_kg = min(robot.mass_kg, float(limits["max_mass_kg"]))
+    size = limits.get("max_size_m")
+    if size is not None:
+        max_length, max_width = map(float, size)
+        if robot.kind == "rover":
+            robot.chassis_length = min(robot.chassis_length, max_length - 2 * space["wheel_radius"][0])
+            robot.wheel_radius = min(robot.wheel_radius, (max_length - robot.chassis_length) / 2)
+            robot.chassis_width = min(
+                robot.chassis_width, max_width - 2 * space["wheel_width"][0] - 0.02,
+            )
+            robot.wheel_width = min(robot.wheel_width, (max_width - robot.chassis_width - 0.02) / 2)
+        else:
+            robot.chassis_length = min(robot.chassis_length, max_length)
+            robot.chassis_width = min(robot.chassis_width, max_width - 0.15)
+    power = limits.get("max_power_proxy")
+    if power is not None:
+        max_speed = float(power) / robot.mass_kg
+        if robot.kind == "rover" and max_speed < space["drive_speed"][0]:
+            robot.mass_kg = min(robot.mass_kg, float(power) / space["drive_speed"][0])
+            max_speed = float(power) / robot.mass_kg
+        if robot.kind == "rover":
+            robot.drive_speed = min(robot.drive_speed, max_speed)
+        else:
+            robot.mass_kg = min(robot.mass_kg, float(power) / robot.drive_speed)
+    for key, (low, high) in space.items():
+        value = getattr(robot, key)
+        if value < low - 1e-9 or value > high + 1e-9:
+            raise ValueError(f"{design.get('id', 'Design')} cannot fit the challenge design constraints.")
+        if abs(value - low) <= 1e-9:
+            setattr(robot, key, low)
+        elif abs(value - high) <= 1e-9:
+            setattr(robot, key, high)
+    fitted = Robot.model_validate(robot.model_dump())
+    violations = _constraint_violations(fitted, limits)
+    if violations:
+        raise ValueError(f"{design.get('id', 'Design')} violates design constraints: {'; '.join(violations)}.")
+    result = {**design, "robot": fitted.model_dump(mode="json")}
+    if fitted.model_dump() != Robot.model_validate(design["robot"]).model_dump():
+        result["constraint_adjustments"] = [
+            f"{key} adjusted to {getattr(fitted, key):g} to meet the mission constraints"
+            for key in DESIGN_SPACE[fitted.kind]
+            if getattr(fitted, key) != getattr(Robot.model_validate(design["robot"]), key)
+        ]
+    return result
 
 
 def place_facts(challenge: SceneSpec) -> dict[str, Any]:
@@ -104,7 +219,9 @@ def _text(value: Any, label: str, maximum: int) -> str:
     return value.strip()
 
 
-def _validate_designs(reply: dict, n: int) -> list[dict]:
+def _validate_designs(
+    reply: dict, n: int, constraints: RobotDesignConstraints | dict | None = None,
+) -> list[dict]:
     rows = reply.get("designs")
     if not isinstance(rows, list) or len(rows) != n:
         raise ValueError(f"Designer must return exactly {n} designs.")
@@ -134,25 +251,27 @@ def _validate_designs(reply: dict, n: int) -> list[dict]:
                 values[key] = min(high, max(low, float(value)))
                 if values[key] != value:
                     notes.append(f"{key} clamped from {value:g} to {values[key]:g}")
-        fingerprint = (kind, *sorted(values.items()))
-        if fingerprint in seen:
-            raise ValueError("Duplicate robot design after clamping/defaults.")
-        seen.add(fingerprint)
         kinds.add(kind)
         index = len(designs)
-        designs.append({
+        design = {
             "id": f"G0-{chr(ord('A') + index)}", "color": COLORS[index],
             "name": _text(row.get("name"), "Design name", 40),
             "reason": _text(row.get("reason"), "Design reason", 200),
             "robot": Robot(kind=kind, **values).model_dump(mode="json"),
             "adjustments": notes,
-        })
+        }
+        design = _constrain_design(design, constraints)
+        fingerprint = _fingerprint(design["robot"])
+        if fingerprint in seen:
+            raise ValueError("Duplicate robot design after clamping/defaults/mission constraints.")
+        seen.add(fingerprint)
+        designs.append(design)
     if kinds != {"rover", "walker"}:
         raise ValueError("Generation zero requires at least one rover and one walker.")
     return designs
 
 
-def _rules(n: int) -> list[dict]:
+def _rules(n: int, constraints: RobotDesignConstraints | dict | None = None) -> list[dict]:
     rows = [
         ("Trail Four", "Four medium wheels offer a compact starting design.",
          {"kind": "rover", "wheel_radius": 0.22, "wheel_width": 0.12, "drive_speed": 5.0}),
@@ -175,7 +294,7 @@ def _rules(n: int) -> list[dict]:
     ]
     return _validate_designs({"designs": [
         {"name": name, "reason": reason, "robot": robot} for name, reason, robot in rows[:n]
-    ]}, n)
+    ]}, n, constraints)
 
 
 def propose_generation0(challenge: SceneSpec, n: int = 4) -> list[dict]:
@@ -190,6 +309,12 @@ def propose_generation0(challenge: SceneSpec, n: int = 4) -> list[dict]:
         raise ValueError("A generation-zero challenge must be a robot-terrain SceneSpec.")
     scene = challenge.model_copy(deep=True).fill_defaults()
     found = place_facts(scene)
+    found["design_constraints"] = _constraint_facts(scene.design_constraints)
+    found["challenge_obstacles"] = [
+        {"kind": obstacle.kind, "height_m": obstacle.height_m, "count": obstacle.count,
+         "placement": obstacle.placement}
+        for obstacle in scene.obstacles
+    ]
     fallback_reason = "Model unavailable: MOCK_MODE; using fixed design rules." if config.MOCK_MODE else None
     designs = None
     if not config.MOCK_MODE:
@@ -203,7 +328,10 @@ def propose_generation0(challenge: SceneSpec, n: int = 4) -> list[dict]:
             })},
         ]
         try:
-            designs, attempts = llm.chat_json(messages, config.BUILDER_MODEL, lambda reply: _validate_designs(reply, n))
+            designs, attempts = llm.chat_json(
+                messages, config.BUILDER_MODEL,
+                lambda reply: _validate_designs(reply, n, scene.design_constraints),
+            )
         except OpenAIError as error:
             logger.warning("Generation-zero Designer request failed (%s); using fixed design rules.", type(error).__name__)
             fallback_reason = f"Designer request failed ({type(error).__name__}); using fixed design rules."
@@ -214,7 +342,7 @@ def propose_generation0(challenge: SceneSpec, n: int = 4) -> list[dict]:
     if designs is None:
         if config.MOCK_MODE:
             logger.info("%s", fallback_reason)
-        designs = _rules(n)
+        designs = _rules(n, scene.design_constraints)
     for design in designs:
         design.update(source="rules" if fallback_reason else "model", fallback_reason=fallback_reason,
                       tested=False)
@@ -288,6 +416,7 @@ def challenge_preset(
     preset_id: str, span_m: float = 20.0, duration_s: float = 90.0,
     rock_size_m: float | None = None, rock_count: int | None = None,
     friction: float | None = None, start_offset_m: float | None = None,
+    design_constraints: RobotDesignConstraints | dict | None = None,
 ) -> SceneSpec:
     """Resolve a climb challenge; Hadley and Meteor use the steepest measured uphill segment."""
     presets = {
@@ -328,12 +457,17 @@ def challenge_preset(
             )
         if not math.isfinite(start_offset_m) or abs(start_offset_m) > 6.0:
             raise ValueError("The start offset along the wall must be from -6 to 6 m.")
+    if preset_id == "victoria-rim-boulders":
+        design_constraints = design_constraints or DEFAULT_CHALLENGE_CONFIG["design_constraints"]
+        design_constraints = (design_constraints if isinstance(design_constraints, RobotDesignConstraints)
+                             else RobotDesignConstraints.model_validate(design_constraints))
     challenge = SceneSpec(
         domain="robot_terrain",
         title=preset["title"],
         environment=Environment(body=preset["body"], surface=preset["surface"]),
         terrain=Terrain(kind="real", preset=preset["terrain"], roughness=0.0),
         robot=Robot(),
+        design_constraints=design_constraints,
         mission=Mission(start_place="lowest", goal_place="highest", goal_radius_m=2.0),
         obstacles=([Obstacle(kind="rock", height_m=rock_size_m, count=rock_count, placement="path",
                              path_fraction=0.5)] if preset_id == "victoria-rim-boulders" else []),
@@ -347,6 +481,15 @@ def challenge_preset(
             f"{LOOSE_SOIL_FRICTION_RANGE[0]:.2f}–{LOOSE_SOIL_FRICTION_RANGE[1]:.2f}); "
             f"{rock_count} path rocks are {rock_size_m:.2f} m high (calibration range "
             f"{ROCK_SIZE_RANGE_M[0]:.2f}–{ROCK_SIZE_RANGE_M[1]:.2f} m)."
+        )
+        limits = challenge.design_constraints
+        assert limits is not None
+        max_size = (f"≤ {limits.max_size_m[0]:g} × {limits.max_size_m[1]:g} m"
+                    if limits.max_size_m is not None else "no size cap")
+        power_limit = (f", power proxy ≤ {limits.max_power_proxy:g}"
+                       if limits.max_power_proxy is not None else "")
+        challenge.assumptions.append(
+            f"Must fit the lander: ≤ {limits.max_mass_kg:g} kg, {max_size}{power_limit}."
         )
     if preset["endpoints"] == "steepest":
         endpoints = (steepest_climb_points(
@@ -384,7 +527,35 @@ def calibration_quality(results: dict | list[dict]) -> dict:
             "best_progress_percent": round(best, 1), "any_reached": reached}
 
 
-def _validate_race_designs(designs: list[dict]) -> list[dict]:
+def feasibility_reference_designs(constraints: RobotDesignConstraints | dict | None) -> list[dict]:
+    """Return the legal rover with the biggest wheels and the legal walker with the longest legs.
+
+    Calibration races these to prove that a design inside the lander limits can clear the course."""
+    limits = (constraints.model_dump() if isinstance(constraints, RobotDesignConstraints)
+              else dict(constraints or {}))
+    rover_space, walker_space = DESIGN_SPACE["rover"], DESIGN_SPACE["walker"]
+    mass = min(float(limits.get("max_mass_kg", 12.0)), 12.0)
+    chassis_length, chassis_width = rover_space["chassis_length"][0], rover_space["chassis_width"][0]
+    max_length, max_width = map(float, limits.get("max_size_m") or (2.0, 2.0))
+    wheel_radius = min(rover_space["wheel_radius"][1], (max_length - chassis_length) / 2)
+    wheel_width = min(0.09, (max_width - chassis_width - 0.02) / 2)
+    designs = [
+        {"id": "REF-R", "name": "Reference big-wheel rover", "color": COLORS[0], "robot": {
+            "kind": "rover", "wheels": 6, "wheel_radius": round(wheel_radius, 3),
+            "wheel_width": round(max(rover_space["wheel_width"][0], wheel_width), 3),
+            "chassis_length": chassis_length, "chassis_width": chassis_width,
+            "mass_kg": mass, "drive_speed": 4.0}},
+        {"id": "REF-W", "name": "Reference long-leg walker", "color": COLORS[1], "robot": {
+            "kind": "walker", "legs": 6, "leg_length": walker_space["leg_length"][1],
+            "chassis_length": min(0.6, max_length), "chassis_width": min(0.35, max_width - 0.15),
+            "mass_kg": mass, "gait_freq_hz": 1.5, "stride_deg": 15.0}},
+    ]
+    return [_constrain_design(design, limits) if limits else design for design in designs]
+
+
+def _validate_race_designs(
+    designs: list[dict], constraints: RobotDesignConstraints | dict | None = None,
+) -> list[dict]:
     if not isinstance(designs, list) or not 2 <= len(designs) <= len(COLORS):
         raise ValueError("A generation race needs 2-8 procedural designs.")
     validated, seen, kinds = [], set(), set()
@@ -413,6 +584,8 @@ def _validate_race_designs(designs: list[dict]) -> list[dict]:
             value = getattr(robot, key)
             if not low <= value <= high:
                 raise ValueError(f"{design_id} has {key} outside the {robot.kind} design space.")
+        if violations := _constraint_violations(robot, constraints):
+            raise ValueError(f"{design_id} violates challenge design constraints: {'; '.join(violations)}.")
         validated.append({**design, "id": design_id, "name": name, "robot": robot.model_dump(mode="json")})
     if kinds != {"rover", "walker"}:
         raise ValueError("A generation race requires at least one rover and one walker.")
@@ -616,13 +789,13 @@ def race_generation(
         raise ValueError("Race seed must be a nonnegative integer.")
     if not isinstance(challenge, SceneSpec) or challenge.domain != "robot_terrain":
         raise ValueError("A generation race requires a robot-terrain SceneSpec.")
-    candidates = _validate_race_designs(designs)
     base = challenge.model_copy(deep=True).fill_defaults()
     if (base.terrain is None or base.mission is None or not base.mission.has_goal()
             or (base.mission.start_xy is None and base.mission.start_place is None)):
         raise ValueError("A generation race challenge must define both a start and a goal.")
     if len(base.robots) != 1:
         raise ValueError("A generation race challenge must start with one robot.")
+    candidates = _validate_race_designs(designs, base.design_constraints)
     base.terrain.seed = seed
     time_limit_s = base.duration_s
 
@@ -738,6 +911,7 @@ def _validate_children(
     n_children: int,
     generation: int,
     raced_fingerprints: set[tuple],
+    constraints: RobotDesignConstraints | dict | None = None,
 ) -> list[dict]:
     if not isinstance(suggestions, list) or len(suggestions) != n_children:
         raise ValueError(f"Designer must propose exactly {n_children} children.")
@@ -753,6 +927,11 @@ def _validate_children(
         reason = _text(suggestion.get("reason"), "Child reason", 200)
         name = _text(suggestion.get("name"), "Child name", 40)
         robot, changes = _bounded_changes(parent, suggestion.get("changes"))
+        if violations := _constraint_violations(Robot.model_validate(robot), constraints):
+            raise ValueError(
+                f"Child {index + 1} ({name}, parent {parent['id']}) violates challenge design constraints: "
+                f"{'; '.join(violations)}. Parent stowed facts: {_stowed_facts(parent['robot'], constraints)}."
+            )
         fingerprint = _fingerprint(robot)
         if fingerprint in seen:
             raise ValueError("Child duplicates a design already raced.")
@@ -833,9 +1012,46 @@ def _fallback_change(parent: dict, outcome: str, attempt: int) -> tuple[dict, st
     return clamped, why
 
 
+def _constraint_fallback_change(
+    parent: dict, outcome: str, attempt: int, constraints: RobotDesignConstraints | dict,
+) -> tuple[dict, str]:
+    robot = parent["robot"]
+    limits = constraints.model_dump() if isinstance(constraints, RobotDesignConstraints) else constraints
+    if robot["kind"] == "rover":
+        if outcome == "stuck" and robot["wheels"] == 4 and attempt % 2 == 0:
+            return {"wheels": 6}, "try six wheel contacts within the lander envelope"
+        if outcome == "flipped":
+            mass = min(float(limits["max_mass_kg"]), robot["mass_kg"] + 1.0 + attempt)
+            if mass > robot["mass_kg"]:
+                return {"mass_kg": mass}, "add permitted mass to resist the measured flip"
+            return {"wheel_radius": max(0.10, robot["wheel_radius"] - 0.02 * (attempt + 1))}, \
+                "lower the rover's center of mass after the measured flip"
+        speed = robot["drive_speed"]
+        if outcome == "too slow":
+            value = min(12.0, speed + 0.5 * (attempt + 1))
+            why = "increase drive speed while preserving the lander fit"
+        else:
+            value = max(3.0, speed - 0.5 * (attempt + 1))
+            why = "retune drive speed because the size limit prevents larger running gear"
+        return {"drive_speed": value}, why
+    if outcome == "flipped":
+        mass = min(float(limits["max_mass_kg"]), robot["mass_kg"] + 1.0 + attempt)
+        if mass > robot["mass_kg"]:
+            return {"mass_kg": mass}, "add permitted mass to resist the measured flip"
+        return {"leg_length": max(0.12, robot["leg_length"] - 0.02 * (attempt + 1))}, \
+            "shorten the legs to lower the body after the measured flip"
+    gait = robot["gait_freq_hz"]
+    if outcome == "too slow":
+        return {"gait_freq_hz": min(3.0, gait + 0.2 * (attempt + 1))}, \
+            "increase gait frequency within the stowed-size limit"
+    return {"gait_freq_hz": max(1.0, gait - 0.2 * (attempt + 1))}, \
+        "retune gait frequency while preserving the lander fit"
+
+
 def _fallback_children(
     parents: list[dict], elite: dict, n_children: int, generation: int,
     raced_fingerprints: set[tuple], fallback_reason: str,
+    constraints: RobotDesignConstraints | dict | None = None,
 ) -> list[dict]:
     seen = set(raced_fingerprints)
     seen.add(_fingerprint(elite["robot"]))
@@ -859,29 +1075,40 @@ def _fallback_children(
             for attempt in range(8):
                 outcome = parent.get("outcome", "too slow")
                 changes, mutation_reason = _fallback_change(parent, outcome, attempt)
-                try:
-                    robot, applied = _bounded_changes(parent, changes)
-                except ValueError:
-                    continue
-                fingerprint = _fingerprint(robot)
-                if fingerprint in seen or robot["kind"] == elite["robot"]["kind"] and \
-                        not any(row["robot"]["kind"] != elite["robot"]["kind"] for row in children) \
-                        and index == n_children - 1:
-                    continue
-                seen.add(fingerprint)
-                accepted = {
-                    "id": f"G{generation}-{chr(ord('A') + index)}",
-                    "color": child_colors[index], "name": f"{parent['name']} {index + 1}",
-                    "reason": f"{parent['id']} was {outcome}{_failure_fact(parent)}; {mutation_reason} "
-                              f"({_change_description(parent, applied)}).",
-                    "robot": robot, "parent_id": parent["id"],
-                    "changes": applied, "changed_parameters": list(applied),
-                    "parameter_changes": {
-                        key: {"from": parent["robot"][key], "to": value} for key, value in applied.items()
-                    },
-                    "source": "rules", "fallback_reason": fallback_reason, "tested": False,
-                }
-                break
+                alternatives = [(changes, mutation_reason)]
+                if constraints is not None:
+                    alternatives.extend(
+                        _constraint_fallback_change(parent, outcome, variant, constraints)
+                        for variant in range(8)
+                    )
+                for candidate_changes, candidate_reason in alternatives:
+                    try:
+                        robot, applied = _bounded_changes(parent, candidate_changes)
+                    except ValueError:
+                        continue
+                    if _constraint_violations(Robot.model_validate(robot), constraints):
+                        continue
+                    fingerprint = _fingerprint(robot)
+                    if fingerprint in seen or robot["kind"] == elite["robot"]["kind"] and \
+                            not any(row["robot"]["kind"] != elite["robot"]["kind"] for row in children) \
+                            and index == n_children - 1:
+                        continue
+                    seen.add(fingerprint)
+                    accepted = {
+                        "id": f"G{generation}-{chr(ord('A') + index)}",
+                        "color": child_colors[index], "name": f"{parent['name']} {index + 1}",
+                        "reason": f"{parent['id']} was {outcome}{_failure_fact(parent)}; {candidate_reason} "
+                                  f"({_change_description(parent, applied)}).",
+                        "robot": robot, "parent_id": parent["id"],
+                        "changes": applied, "changed_parameters": list(applied),
+                        "parameter_changes": {
+                            key: {"from": parent["robot"][key], "to": value} for key, value in applied.items()
+                        },
+                        "source": "rules", "fallback_reason": fallback_reason, "tested": False,
+                    }
+                    break
+                if accepted:
+                    break
             if accepted:
                 break
         if accepted is None:
@@ -892,12 +1119,15 @@ def _fallback_children(
     return children
 
 
-def next_generation(results: dict | list[dict], n: int = 4) -> list[dict]:
+def next_generation(
+    results: dict | list[dict], n: int = 4,
+    constraints: RobotDesignConstraints | dict | None = None,
+) -> list[dict]:
     """Keep the ranked elite and request n-1 bounded, failure-guided children."""
     if isinstance(n, bool) or not isinstance(n, int) or not 2 <= n <= len(COLORS):
         raise ValueError("A generation needs 2-8 designs.")
     rows = _result_rows(results)
-    parents = _validate_race_designs(rows)
+    parents = _validate_race_designs(rows, constraints)
     ordered = sorted(parents, key=lambda row: (
         not row.get("reached_goal", False),
         row.get("time_s", float("inf")) if row.get("reached_goal") else
@@ -924,19 +1154,22 @@ def next_generation(results: dict | list[dict], n: int = 4) -> list[dict]:
             "outcome": row.get("outcome"), "progress_percent": row.get("progress_percent"),
             "event": row.get("event"), "reason": row.get("reason"),
             "goal_reached": row.get("reached_goal"),
+            **({"stowed": _stowed_facts(row["robot"], constraints)} if constraints is not None else {}),
         } for row in parents]
         messages = [
             {"role": "system", "content": MUTATION_SYSTEM + "\nDESIGN_SPACE: " + json.dumps(DESIGN_SPACE)},
             {"role": "user", "content": json.dumps({
                 "elite_id": elite["id"], "n_children": n - 1,
-                "generation": generation, "FACTS": payload,
+                "generation": generation,
+                "design_constraints": _constraint_facts(constraints),
+                "FACTS": payload,
             })},
         ]
         try:
             children, attempts = llm.chat_json(
                 messages, config.BUILDER_MODEL,
                 lambda reply: _validate_children(reply.get("children"), parents, elite,
-                                                 n - 1, generation, raced_fingerprints),
+                                                 n - 1, generation, raced_fingerprints, constraints),
             )
         except OpenAIError as error:
             fallback_reason = f"Designer request failed ({type(error).__name__}); used bounded rule mutations."
@@ -946,7 +1179,7 @@ def next_generation(results: dict | list[dict], n: int = 4) -> list[dict]:
                 logger.warning("Generation %s child proposals failed validation: %s", generation, attempts)
     if children is None:
         children = _fallback_children(parents, elite, n - 1, generation,
-                                      raced_fingerprints, fallback_reason)
+                                      raced_fingerprints, fallback_reason, constraints)
     else:
         child_colors = [color for color in COLORS if color != elite.get("color")]
         for index, child in enumerate(children):
@@ -997,6 +1230,8 @@ def verify_winner(challenge: SceneSpec, design: dict) -> dict:
     base = challenge.model_copy(deep=True).fill_defaults()
     if base.terrain is None or len(base.robots) != 1:
         raise ValueError("Winner verification requires one robot and a terrain.")
+    if violations := _constraint_violations(Robot.model_validate(candidate["robot"]), base.design_constraints):
+        raise ValueError(f"{candidate['id']} violates challenge design constraints: {'; '.join(violations)}.")
     seed = base.terrain.seed
     robot = {key: value for key, value in candidate["robot"].items()
              if key not in {"kind", "robot_id", "policy_id"}}
@@ -1282,6 +1517,48 @@ def _honesty_line(challenge: SceneSpec) -> str:
             "Designs are simplified procedural robots.")
 
 
+def _escalate_to_margin_failure(challenge: SceneSpec, margin: dict) -> tuple[SceneSpec, dict] | None:
+    rocks = [obstacle for obstacle in challenge.obstacles if obstacle.kind in {"rock", "boulder"}]
+    rock_limit = margin.get("rock_size") or {}
+    if rocks and rock_limit.get("available") and rock_limit.get("first_fail") is not None:
+        original_size = max(float(obstacle.height_m or 0) for obstacle in rocks)
+        fail_size = original_size * float(rock_limit["first_fail"])
+        if math.isfinite(fail_size) and fail_size > original_size:
+            harder = challenge.model_copy(deep=True)
+            for obstacle in harder.obstacles:
+                if obstacle.kind in {"rock", "boulder"}:
+                    obstacle.height_m = fail_size
+            harder.title = f"{challenge.title} (Gen 0 edge: {fail_size:.2f} m rocks)"
+            harder.assumptions.append(
+                f"Escalated after a verified generation-zero design failed with approximately {fail_size:.2f} m rocks."
+            )
+            return harder, {
+                "triggered": True, "feature": "rock size",
+                "original_rock_size_m": original_size,
+                "gen0_failed_at_rock_size_m": fail_size,
+                "challenge_rock_size_m": fail_size,
+                "margin": rock_limit,
+            }
+    friction_limit = margin.get("friction") or {}
+    if (friction_limit.get("available") and friction_limit.get("first_fail") is not None
+            and float(friction_limit["first_fail"]) < float(challenge.environment.friction)):
+        fail_friction = float(friction_limit["first_fail"])
+        harder = challenge.model_copy(deep=True)
+        harder.environment.friction = fail_friction
+        harder.title = f"{challenge.title} (Gen 0 edge: friction {fail_friction:.2f})"
+        harder.assumptions.append(
+            f"Escalated after a verified generation-zero design failed below friction {fail_friction:.2f}."
+        )
+        return harder, {
+            "triggered": True, "feature": "friction",
+            "original_friction": challenge.environment.friction,
+            "gen0_failed_at_friction": fail_friction,
+            "challenge_friction": fail_friction,
+            "margin": friction_limit,
+        }
+    return None
+
+
 def evolve(
     challenge: SceneSpec, max_generations: int = 5, n: int = 4, seed: int = 0,
     on_event: Callable[[dict], None] | None = None,
@@ -1297,10 +1574,12 @@ def evolve(
     from . import cost
 
     with cost.track() as spent:
+        original_challenge = challenge.model_copy(deep=True).fill_defaults()
+        active_challenge = original_challenge.model_copy(deep=True)
         if on_event:
             on_event({"type": "agent", "agent": "Designer", "status": "working",
                       "message": "Proposing diverse procedural robots from the place's terrain facts…"})
-        designs = propose_generation0(challenge, n)
+        designs = propose_generation0(active_challenge, n)
         if on_event:
             on_event({"type": "agent", "agent": "Designer", "status": "done",
                       "message": f"Proposed {len(designs)} bounded designs for generation 0."})
@@ -1314,6 +1593,10 @@ def evolve(
         winner_margin = None
         rejected_winners = []
         budget_stop = None
+        escalation = None
+        original_winner = None
+        original_verification = None
+        original_margin = None
         for generation in range(max_generations):
             if races_used + n > MAX_EVOLUTION_RUNS:
                 budget_stop = (f"Evolution stopped after {races_used}/{MAX_EVOLUTION_RUNS} candidate races; "
@@ -1322,14 +1605,23 @@ def evolve(
             if on_event:
                 on_event({"type": "agent", "agent": "Simulator", "status": "working",
                           "message": f"Racing generation {generation} side by side on the same challenge…"})
-            race = race_generation(challenge, designs, seed)
+            race = race_generation(active_challenge, designs, seed)
             runs_used += len(race["results"])
             races_used += len(race["results"])
-            replay_scene = replay_scene or race.pop("replay_scene", None)
+            generation_scene = race.pop("replay_scene", None)
+            replay_scene = replay_scene or generation_scene
+            race["replay_scene"] = generation_scene
             race["generation"] = generation
+            race["challenge_conditions"] = {
+                "friction": active_challenge.environment.friction,
+                "rocks": [
+                    {"size_m": obstacle.height_m, "count": obstacle.count}
+                    for obstacle in active_challenge.obstacles if obstacle.kind in {"rock", "boulder"}
+                ],
+            }
             generations.append(race)
-            if on_event and replay_scene is not None and generation == 0:
-                on_event({"type": "race_scene", "scene": replay_scene})
+            if on_event and generation_scene is not None:
+                on_event({"type": "race_scene", "scene": generation_scene, "generation": generation})
             if on_event:
                 on_event({"type": "generation", "generation": race})
             current_by_id = {design["id"]: design for design in designs}
@@ -1345,7 +1637,7 @@ def evolve(
                 if on_event:
                     on_event({"type": "agent", "agent": "Simulator", "status": "working",
                               "message": f"Verifying apparent winner {result['id']} on five new seeds…"})
-                verification_challenge = challenge.model_copy(deep=True)
+                verification_challenge = active_challenge.model_copy(deep=True)
                 if verification_challenge.terrain is not None:
                     verification_challenge.terrain.seed = seed
                 verification = verify_winner(verification_challenge, result)
@@ -1356,11 +1648,33 @@ def evolve(
                 raced_copy["verification"] = verification
                 raced_copy["verified_winner"] = verification["reliable"]
                 if verification["reliable"]:
+                    margin = terrain_margin_search(verification_challenge, result, budget=6)
+                    runs_used += margin.get("runs", 0)
+                    if generation == 0:
+                        escalation_result = _escalate_to_margin_failure(active_challenge, margin)
+                    else:
+                        escalation_result = None
+                    if escalation_result is not None:
+                        active_challenge, escalation = escalation_result
+                        escalation.update({
+                            "message": "Gen 0 already climbs out. Raising the challenge to find its edge.",
+                            "gen0_winner_id": result["id"],
+                            "gen0_verification": verification["text"],
+                            "gen0_margin": margin,
+                        })
+                        original_winner = result
+                        original_verification = verification
+                        original_margin = margin
+                        result["verified_on_original_challenge"] = True
+                        raced_copy["verified_on_original_challenge"] = True
+                        if on_event:
+                            on_event({"type": "agent", "agent": "Simulator", "status": "working",
+                                      "message": escalation["message"]})
+                        break
                     success = True
                     winner = result
                     winner_verification = verification
-                    winner_margin = terrain_margin_search(verification_challenge, result, budget=6)
-                    runs_used += winner_margin.get("runs", 0)
+                    winner_margin = margin
                     if on_event:
                         on_event({"type": "agent", "agent": "Simulator", "status": "done",
                                   "message": f"Winner verified: {verification['text']}."})
@@ -1400,11 +1714,15 @@ def evolve(
                               "message": _failure_report(max(race["results"], key=lambda row: row["progress_percent"]))})
                     on_event({"type": "agent", "agent": "Designer", "status": "working",
                               "message": "Proposing children linked to the measured failures…"})
-                next_designs = next_generation({
+                generation_results = {
                     "generation": generation,
                     "results": race["results"],
                     "raced_designs": all_raced,
-                }, n)
+                }
+                next_designs = (
+                    next_generation(generation_results, n) if active_challenge.design_constraints is None
+                    else next_generation(generation_results, n, active_challenge.design_constraints)
+                )
                 for child in next_designs[1:]:
                     family_tree.append({
                         "parent_id": child["parent_id"], "child_id": child["id"],
@@ -1426,7 +1744,9 @@ def evolve(
                 key: by_id[edge["child_id"]].get(key)
                 for key in ("outcome", "progress_percent", "reached_goal", "event")
             } if edge["child_id"] in by_id else None
-        best = max(all_raced, key=lambda row: (
+        ranked_rows = (all_raced if escalation is None else
+                       [row for row in all_raced if row["generation"] > 0] or all_raced)
+        best = max(ranked_rows, key=lambda row: (
             bool(row["reached_goal"]), float(row.get("progress_percent", 0)),
             -float(row.get("time_s", float("inf"))) if row["reached_goal"] else 0,
         ))
@@ -1434,12 +1754,44 @@ def evolve(
             margin_text = winner_margin["text"] if winner_margin.get("available") else winner_margin.get("reason")
             report = (f"Goal reached by {winner['id']} and verified "
                       f"({winner_verification['text']}). {margin_text}")
+            if escalation is not None:
+                if escalation["feature"] == "rock size":
+                    evolved_limit = (winner_margin.get("rock_size") or {}).get("last_ok")
+                    current_rock = max(
+                        float(obstacle.height_m or 0) for obstacle in active_challenge.obstacles
+                        if obstacle.kind in {"rock", "boulder"}
+                    )
+                    evolved_limit = (current_rock * float(evolved_limit)
+                                     if evolved_limit is not None else current_rock)
+                    report = (
+                        f"Gen 0 climbed the original wall; evolved designs handle rocks up to "
+                        f"{evolved_limit:.2f} m (gen 0 failed at "
+                        f"{escalation['gen0_failed_at_rock_size_m']:.2f} m). {report}"
+                    )
+                else:
+                    report = (
+                        f"Gen 0 climbed the original wall; evolution continued at friction "
+                        f"{escalation['gen0_failed_at_friction']:.2f}. {report}"
+                    )
         else:
             report = _failure_report(best)
+            if escalation is not None:
+                if escalation["feature"] == "rock size":
+                    report = (
+                        f"{escalation['message']} Gen 0 climbed the original wall "
+                        f"({escalation['original_rock_size_m']:.2f} m rocks); no evolved design verified on the "
+                        f"raised {escalation['challenge_rock_size_m']:.2f} m rocks. {report}"
+                    )
+                else:
+                    report = f"{escalation['message']} {report}"
             if rejected_winners:
+                attempts: dict[str, list[str]] = {}
+                for row in rejected_winners:
+                    attempts.setdefault(row["id"], []).append(row["verification"]["text"])
                 rejected = ", ".join(
-                    f"{row['id']} was unreliable ({row['verification']['text']})"
-                    for row in rejected_winners
+                    f"{design_id} was unreliable ({texts[-1]}"
+                    + (f"; rejected {len(texts)} times" if len(texts) > 1 else "") + ")"
+                    for design_id, texts in attempts.items()
                 )
                 report += f" Rejected apparent winner(s): {rejected}."
             if budget_stop:
@@ -1449,21 +1801,35 @@ def evolve(
                       "message": report if not success else
                       f"{winner['id']} verified {winner_verification['text']}; {winner_margin.get('text') or winner_margin.get('reason')}"})
         return {
-            "challenge": challenge.title, "success": success,
-            "challenge_spec": challenge.model_dump(mode="json"),
+            "challenge": active_challenge.title, "success": success,
+            "challenge_spec": active_challenge.model_dump(mode="json"),
+            "challenge_scene": (generations[-1].get("replay_scene") if generations else None) or replay_scene,
             "challenge_conditions": {
-                "friction": challenge.environment.friction,
-                "duration_s": challenge.duration_s,
+                "friction": active_challenge.environment.friction,
+                "duration_s": active_challenge.duration_s,
                 "rocks": [
                     {"size_m": obstacle.height_m, "count": obstacle.count}
-                    for obstacle in challenge.obstacles if obstacle.kind in {"rock", "boulder"}
+                    for obstacle in active_challenge.obstacles if obstacle.kind in {"rock", "boulder"}
+                ],
+                "design_constraints": (active_challenge.design_constraints.model_dump(mode="json")
+                                       if active_challenge.design_constraints else None),
+            },
+            "original_challenge_conditions": {
+                "friction": original_challenge.environment.friction,
+                "rocks": [
+                    {"size_m": obstacle.height_m, "count": obstacle.count}
+                    for obstacle in original_challenge.obstacles if obstacle.kind in {"rock", "boulder"}
                 ],
             },
             "race_scene": replay_scene,
             "generations": generations, "family_tree": family_tree,
             "best": best, "winner": winner, "verification": winner_verification,
             "margin": winner_margin, "honesty": _honesty_line(challenge),
-            "rejected_winners": rejected_winners, "report": report,
+            "rejected_winners": rejected_winners, "escalation": escalation,
+            "original_winner": original_winner,
+            "original_verification": original_verification,
+            "original_margin": original_margin,
+            "report": report,
             "race_count": races_used, "simulation_count": runs_used,
             "cost": spent.snapshot(),
         }
