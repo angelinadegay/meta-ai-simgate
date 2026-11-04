@@ -8,7 +8,7 @@ what happened.
 SimGate is for people who aren't simulation engineers: students, researchers, hobbyists and engineers
 from other fields. They can test an idea against real physics without learning a simulator first.
 
-**Demo video:** `[ADD VIDEO LINK]`
+**Demo video:** [youtube.com/watch?v=52OaklSf2fo](https://www.youtube.com/watch?v=52OaklSf2fo&t=4s)
 
 ![The apartment map: the rover's safe route from the kitchen to the bedroom via the ramp, with the green, amber and red map and the plain-language answer](tests/screenshots/traversability/apartment-rover-map-routes.png)
 
@@ -1414,9 +1414,7 @@ events.
 
 ## Project status
 
-Built during the building period: `[START DATE]` to `[END DATE]`.
-
-`[ADD A SHORT NOTE ON WHAT WAS BUILT IN THAT PERIOD]`
+Built during the building period: 10/26/2026 (after 1 pm EST) to 11/04/2026.
 
 ## Known limits
 
