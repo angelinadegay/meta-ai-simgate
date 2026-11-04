@@ -588,6 +588,54 @@ def test_evolve_continues_after_an_unreliable_apparent_winner(monkeypatch):
     assert "unreliable" in report["report"]
 
 
+def test_evolve_stops_after_generation_one_when_three_designs_reach(monkeypatch):
+    monkeypatch.setattr(evolve, "propose_generation0", lambda challenge, n: evolve._rules(n))
+
+    def fake_next_generation(results, n):
+        children = evolve._rules(n)
+        for child in children:
+            child["id"] = child["id"].replace("G0-", "G1-")
+        for child in children[1:]:
+            child.update(parent_id="G0-A", parameter_changes={"mass_kg": {"from": 10, "to": 12}},
+                         reason="Add mass for traction.")
+        return children
+
+    monkeypatch.setattr(evolve, "next_generation", fake_next_generation)
+    passes = {"G1-A": 4, "G1-B": 5, "G1-C": 5}
+    verify_calls = []
+
+    def fake_verify(challenge, design):
+        verify_calls.append(design["id"])
+        passed = passes[design["id"]]
+        return {"reliable": passed >= 4, "passed": passed, "total": 5,
+                "text": f"passes {passed}/5", "results": []}
+
+    monkeypatch.setattr(evolve, "verify_winner", fake_verify)
+    monkeypatch.setattr(evolve, "terrain_margin_search", lambda challenge, design, budget=6: {
+        "available": True, "runs": 0, "text": "margin measured",
+    })
+    race_calls = []
+
+    def fake_race(challenge, designs, seed):
+        race_calls.append(designs)
+        rows = _generation_results(designs)
+        if len(race_calls) == 2:
+            for row, time_s in zip(rows[:3], (18, 20, 25)):
+                row.update(reached_goal=True, outcome="reached", time_s=time_s, progress_percent=100)
+        return {"results": rows}
+
+    monkeypatch.setattr(evolve, "race_generation", fake_race)
+    report = evolve.evolve(_challenge(), max_generations=5, n=4, seed=3)
+
+    assert len(race_calls) == 2
+    assert report["success"] is True
+    assert len(report["generations"]) == 2
+    assert verify_calls == ["G1-A", "G1-B"]
+    assert report["winner"]["id"] == "G1-B"
+    assert report["escalation"] is None
+    assert report["generations"][1]["stop_check"]["stopped"] is True
+
+
 def test_honesty_line_uses_real_terrain_accuracy_metadata(monkeypatch):
     from simgate import terrain_data
 

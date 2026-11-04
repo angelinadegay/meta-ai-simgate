@@ -33,6 +33,7 @@ RACE_NO_PROGRESS_M = 0.1
 RACE_HIGH_SLIP_RATIO = 0.5
 MAX_EVOLUTION_RUNS = 20
 MAX_EVOLUTION_GENERATIONS = 5
+VERIFIED_PER_GENERATION = 2
 DEFAULT_CHALLENGE = "victoria-rim-boulders"
 DEFAULT_CHALLENGE_DURATION_S = 90.0
 DEFAULT_ROCK_SIZE_M = 0.20
@@ -1597,6 +1598,7 @@ def evolve(
         original_winner = None
         original_verification = None
         original_margin = None
+        verified_on_active: dict[tuple, dict] = {}
         for generation in range(max_generations):
             if races_used + n > MAX_EVOLUTION_RUNS:
                 budget_stop = (f"Evolution stopped after {races_used}/{MAX_EVOLUTION_RUNS} candidate races; "
@@ -1632,59 +1634,35 @@ def evolve(
                     color=source.get("color"), source=source.get("source"),
                 )
                 all_raced.append({**result, "generation": generation})
-            reached = [row for row in race["results"] if row["reached_goal"]]
-            for result in reached:
-                if on_event:
-                    on_event({"type": "agent", "agent": "Simulator", "status": "working",
-                              "message": f"Verifying apparent winner {result['id']} on five new seeds…"})
-                verification_challenge = active_challenge.model_copy(deep=True)
-                if verification_challenge.terrain is not None:
-                    verification_challenge.terrain.seed = seed
-                verification = verify_winner(verification_challenge, result)
-                runs_used += verification["total"]
+            # Stop rule: verify the two fastest designs that reached the goal; a pass is >= 4/5.
+            reached = sorted((row for row in race["results"] if row["reached_goal"]),
+                             key=lambda row: (float(row.get("time_s") or float("inf")), row["id"]))
+            contenders = reached[:VERIFIED_PER_GENERATION]
+            for result in contenders:
+                raced_copy = next(row for row in reversed(all_raced) if row["id"] == result["id"])
+                key = _fingerprint(result["robot"])
+                verification = verified_on_active.get(key)
+                if verification is None:
+                    if on_event:
+                        on_event({"type": "agent", "agent": "Simulator", "status": "working",
+                                  "message": f"Verifying apparent winner {result['id']} on five new seeds…"})
+                    verification_challenge = active_challenge.model_copy(deep=True)
+                    if verification_challenge.terrain is not None:
+                        verification_challenge.terrain.seed = seed
+                    verification = verify_winner(verification_challenge, result)
+                    runs_used += verification["total"]
+                    verified_on_active[key] = verification
+                    if not verification["reliable"]:
+                        rejected_winners.append({"id": result["id"], "verification": verification})
                 result["verification"] = verification
                 result["verified_winner"] = verification["reliable"]
-                raced_copy = next(row for row in reversed(all_raced) if row["id"] == result["id"])
                 raced_copy["verification"] = verification
                 raced_copy["verified_winner"] = verification["reliable"]
                 if verification["reliable"]:
-                    margin = terrain_margin_search(verification_challenge, result, budget=6)
-                    runs_used += margin.get("runs", 0)
-                    if generation == 0:
-                        escalation_result = _escalate_to_margin_failure(active_challenge, margin)
-                    else:
-                        escalation_result = None
-                    if escalation_result is not None:
-                        active_challenge, escalation = escalation_result
-                        escalation.update({
-                            "message": "Gen 0 already climbs out. Raising the challenge to find its edge.",
-                            "gen0_winner_id": result["id"],
-                            "gen0_verification": verification["text"],
-                            "gen0_margin": margin,
-                        })
-                        original_winner = result
-                        original_verification = verification
-                        original_margin = margin
-                        result["verified_on_original_challenge"] = True
-                        raced_copy["verified_on_original_challenge"] = True
-                        if on_event:
-                            on_event({"type": "agent", "agent": "Simulator", "status": "working",
-                                      "message": escalation["message"]})
-                        break
-                    success = True
-                    winner = result
-                    winner_verification = verification
-                    winner_margin = margin
-                    if on_event:
-                        on_event({"type": "agent", "agent": "Simulator", "status": "done",
-                                  "message": f"Winner verified: {verification['text']}."})
-                    break
-                rejected_winners.append({
-                    "id": result["id"], "verification": verification,
-                })
+                    continue
                 result["race_reached_goal"] = True
                 result["reached_goal"] = False
-                failed_verifications = [run for run in verification["results"] if not run["reached_goal"]]
+                failed_verifications = [run for run in verification.get("results", []) if not run["reached_goal"]]
                 failure_classes = [run.get("outcome") for run in failed_verifications]
                 failure_classes = [
                     {"fell": "flipped", "left_terrain": "stuck", "out_of_time": "too slow"}.get(item, item)
@@ -1701,6 +1679,65 @@ def evolve(
                     "race_reached_goal": True, "reached_goal": False,
                     "outcome": result["outcome"], "progress_percent": result["progress_percent"],
                 })
+            passing = [row for row in contenders if row["verification"]["reliable"]]
+            escalated_now = False
+            if passing:
+                # More reliable wins; ties go to the faster race time.
+                result = max(passing, key=lambda row: (
+                    int(row["verification"].get("passed", 0)), -float(row.get("time_s") or float("inf")),
+                ))
+                verification = result["verification"]
+                verification_challenge = active_challenge.model_copy(deep=True)
+                if verification_challenge.terrain is not None:
+                    verification_challenge.terrain.seed = seed
+                margin = terrain_margin_search(verification_challenge, result, budget=6)
+                runs_used += margin.get("runs", 0)
+                escalation_result = (_escalate_to_margin_failure(active_challenge, margin)
+                                     if generation == 0 and escalation is None else None)
+                if escalation_result is not None:
+                    active_challenge, escalation = escalation_result
+                    verified_on_active = {}
+                    escalated_now = True
+                    escalation.update({
+                        "message": "Gen 0 already climbs out. Raising the challenge to find its edge.",
+                        "gen0_winner_id": result["id"],
+                        "gen0_verification": verification["text"],
+                        "gen0_margin": margin,
+                    })
+                    original_winner = result
+                    original_verification = verification
+                    original_margin = margin
+                    result["verified_on_original_challenge"] = True
+                    next(row for row in reversed(all_raced) if row["id"] == result["id"])[
+                        "verified_on_original_challenge"] = True
+                    if on_event:
+                        on_event({"type": "agent", "agent": "Simulator", "status": "working",
+                                  "message": escalation["message"]})
+                else:
+                    success = True
+                    winner = result
+                    winner_verification = verification
+                    winner_margin = margin
+                    if on_event:
+                        on_event({"type": "agent", "agent": "Simulator", "status": "done",
+                                  "message": f"Winner verified: {verification['text']}."})
+            race["stop_check"] = {
+                "reached": [row["id"] for row in reached],
+                "verified": [{"id": row["id"], "passed": row["verification"].get("passed"),
+                              "total": row["verification"].get("total"),
+                              "reliable": row["verification"]["reliable"]} for row in contenders],
+                "escalated": escalated_now, "stopped": success,
+            }
+            if on_event:
+                checked = ", ".join(
+                    f"{row['id']} {row['verification'].get('passed', '?')}/{row['verification'].get('total', '?')}"
+                    for row in contenders
+                ) or "none"
+                on_event({"type": "agent", "agent": "Simulator", "status": "working",
+                          "message": (f"Generation {generation} stop check: reached "
+                                      f"{', '.join(race['stop_check']['reached']) or 'none'}; verified {checked}; "
+                                      f"escalated {'yes' if escalated_now else 'no'}; "
+                                      f"{'stop' if success else 'continue'}.")})
             if on_event:
                 on_event({"type": "agent", "agent": "Simulator", "status": "done",
                           "message": f"Generation {generation} race complete."})
