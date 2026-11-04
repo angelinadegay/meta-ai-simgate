@@ -17,6 +17,9 @@ class Environment(BaseModel):
     gravity: Optional[float] = None     # m/s^2; filled from presets if missing
     surface: str = "rock"               # rock, regolith, gravel, sand, mud, ice
     friction: Optional[float] = None    # filled from presets if missing
+    # the whole ground tilted by this angle, uphill ahead of the (first) robot: applied by rotating gravity, which is
+    # physically the same as tilting rigid ground, so it works on real terrain too
+    ground_tilt_deg: float = Field(0.0, ge=0.0, le=60.0)
 
 
 class Terrain(BaseModel):
@@ -37,7 +40,7 @@ class Terrain(BaseModel):
 class Robot(BaseModel):
     kind: Literal["rover", "walker", "library"] = "rover"
     robot_id: Optional[str] = None
-    policy_id: Optional[str] = None
+    controller_id: Optional[str] = None
     # rover
     wheels: Literal[4, 6] = 4
     wheel_radius: float = 0.15
@@ -52,7 +55,7 @@ class Robot(BaseModel):
     chassis_length: float = 0.6
     chassis_width: float = 0.4
     mass_kg: float = 10.0
-    # library robot with a trained policy: forward walking command given to the policy, m/s
+    # library robot: forward walking command given to its controller, m/s
     command_speed_m_s: float = 0.6
 
 
@@ -183,6 +186,18 @@ class Disturbance(BaseModel):
     duration_s: float = Field(0.3, gt=0)
 
 
+def _robot_label(robot: "Robot") -> str:
+    """A robot's default label: its kind, or a library robot's card name ("G1 Humanoid")."""
+    if robot.kind == "library" and robot.robot_id:
+        from .library import LibraryRegistry
+
+        try:
+            return LibraryRegistry().robot(robot.robot_id).name.split(" (")[0]
+        except ValueError:
+            pass
+    return robot.kind.title()
+
+
 class SceneSpec(BaseModel):
     domain: Literal["robot_terrain", "structure"]
     title: str = "Untitled scene"
@@ -220,6 +235,8 @@ class SceneSpec(BaseModel):
             layout = get_layout(self.terrain.preset)
             self.terrain.size_m, self.terrain.roughness = max(layout["size_m"]), 0.0
             self.environment.body, self.environment.gravity = "earth", 9.81
+            if self.environment.friction is None:   # the floors set the surface, not an outdoor preset ("rock")
+                self.environment.friction = layout["nominal_friction"]
             if self.mission is None:
                 self.mission = Mission(start_place="kitchen", goal_place="living_room", goal_radius_m=0.5)
         env = self.environment
@@ -272,7 +289,7 @@ class SceneSpec(BaseModel):
                 self.robots = [
                     RobotEntry(
                         id="r1",
-                        label=self.robot.kind.title(),
+                        label=_robot_label(self.robot),
                         robot=self.robot.model_copy(deep=True),
                         start_xy=mission.start_xy,
                         start_place=mission.start_place,
@@ -306,29 +323,29 @@ class SceneSpec(BaseModel):
                 self.mission = self.robots[0].mission()
             for entry in self.robots:
                 if entry.robot.kind == "library":
-                    if not entry.robot.robot_id or not entry.robot.policy_id:
-                        raise ValueError(f"Library robot entry {entry.id!r} requires robot_id and policy_id.")
+                    if not entry.robot.robot_id or not entry.robot.controller_id:
+                        raise ValueError(f"Library robot entry {entry.id!r} requires robot_id and controller_id.")
                     from .library import LibraryRegistry
 
                     registry = LibraryRegistry()
                     robot_card = registry.robot(entry.robot.robot_id)
-                    compatible = {card.id for card in registry.compatible_policies(robot_card.id)}
-                    if entry.robot.policy_id not in compatible:
+                    compatible = {card.id for card in registry.compatible_controllers(robot_card.id)}
+                    if entry.robot.controller_id not in compatible:
                         raise ValueError(
-                            f"Policy {entry.robot.policy_id!r} is not compatible with robot {robot_card.id!r}."
+                            f"Controller {entry.robot.controller_id!r} is not compatible with robot {robot_card.id!r}."
                         )
                     entry.robot.mass_kg = robot_card.mass_kg
             if self.robot.kind == "library":
-                if not self.robot.robot_id or not self.robot.policy_id:
-                    raise ValueError("Library robots require robot_id and policy_id.")
+                if not self.robot.robot_id or not self.robot.controller_id:
+                    raise ValueError("Library robots require robot_id and controller_id.")
                 from .library import LibraryRegistry
 
                 registry = LibraryRegistry()
                 robot_card = registry.robot(self.robot.robot_id)
-                compatible = {card.id for card in registry.compatible_policies(robot_card.id)}
-                if self.robot.policy_id not in compatible:
+                compatible = {card.id for card in registry.compatible_controllers(robot_card.id)}
+                if self.robot.controller_id not in compatible:
                     raise ValueError(
-                        f"Policy {self.robot.policy_id!r} is not compatible with robot {robot_card.id!r}."
+                        f"Controller {self.robot.controller_id!r} is not compatible with robot {robot_card.id!r}."
                     )
                 self.robot.mass_kg = robot_card.mass_kg
             if self.obstacles and self.terrain.kind not in {"real", "indoor"}:

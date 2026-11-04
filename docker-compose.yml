@@ -1,22 +1,32 @@
+# docker compose up   → open http://localhost:8000
+# Model settings come from .env next to this file if it exists (cp .env.example .env, paste your Meta key).
+# With no .env, no key, an invalid key or SIMGATE_MOCK_MODE=1 it still starts, in mock mode (rules, no model).
 services:
   simgate:
     build: .
+    image: simgate:local
     ports:
-      - "8000:8000"
+      - "${SIMGATE_PORT:-8000}:8000"
     environment:
-      LLM_BASE_URL: "${LLM_BASE_URL:-}"
+      LLM_BASE_URL: "${LLM_BASE_URL:-https://api.meta.ai/v1}"
       LLM_API_KEY: "${LLM_API_KEY:-}"
-      PLANNER_MODEL: "${PLANNER_MODEL:-gpt-4o-mini}"
-      BUILDER_MODEL: "${BUILDER_MODEL:-${PLANNER_MODEL:-gpt-4o-mini}}"
+      PLANNER_MODEL: "${PLANNER_MODEL:-muse-spark-1.3}"
+      BUILDER_MODEL: "${BUILDER_MODEL:-muse-wonder-1.0}"
+      SIMGATE_MOCK_MODE: "${SIMGATE_MOCK_MODE:-0}"
       BUILDER_MODE: "${BUILDER_MODE:-template}"
       BUILDER_MAX_RETRIES: "${BUILDER_MAX_RETRIES:-3}"
       SIMGATE_UPLOADS_DIR: /app/simgate/library/uploads
     volumes:
-      - simgate-terrains:/app/simgate/terrains
+      # user uploads survive restarts and rebuilds; the shipped terrains come from the image, so a rebuild updates them
       - simgate-uploads:/app/simgate/library/uploads
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
     init: true
     restart: unless-stopped
 
 volumes:
-  simgate-terrains:
   simgate-uploads:

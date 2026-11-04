@@ -2,7 +2,6 @@
   "id": "walker_gait",
   "name": "Walker Open-Loop Gait",
   "robot_id": "walker",
-  "format": "builtin",
   "control_dt": 0.02,
   "license": "Project",
   "credit": "Built-in SimGate controller."

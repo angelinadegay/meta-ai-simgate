@@ -31,6 +31,7 @@ def requested_stops(text):
 
 def _apartment():
     layout = {"id": "apartment", "label": "Apartment", "size_m": [14.0, 10.0],
+              "nominal_friction": 0.5,   # the scene's own friction (the robot's); each floor zone keeps its own
               "wall_height_m": 2.6, "wall_thickness_m": 0.12,
               "places": {"kitchen": [-4.5, -2.5], "living_room": [2.4, -2.5],
                          "hallway": [0, 0], "bedroom": [-4.5, 3.2]}, "geoms": [],
@@ -98,6 +99,59 @@ def get_layout(preset="apartment"):
     if preset not in LAYOUTS:
         raise ValueError(f"Unknown indoor layout {preset!r}; choose apartment.")
     return copy.deepcopy(LAYOUTS[preset])
+
+
+FLOOR_ZONES = {"tile": "tile", "wood": "wood", "rug": "rug", "wet": "wet patch"}
+ROOMS = {"indoor_floor_kitchen_tile": "kitchen", "indoor_floor_living_wood": "living room",
+         "indoor_floor_hall_wood": "hallway", "indoor_floor_north_wood": "north room",
+         "indoor_floor_bedroom_approach": "bedroom", "indoor_bedroom_platform": "bedroom"}
+NAMED_ROOMS = ("kitchen", "living room", "bedroom")
+
+
+def floor_zones_text(preset="apartment"):
+    """The floors and their friction, for the surface line: "tile 0.6, wood 0.5, rug 0.8, wet patch 0.15"."""
+    zones = {}
+    for geom in get_layout(preset)["geoms"]:
+        if geom["surface"] in FLOOR_ZONES:
+            zones.setdefault(FLOOR_ZONES[geom["surface"]], geom["friction"])
+    return ", ".join(f"{name} {friction:g}" for name, friction in zones.items())
+
+
+def _inside(geom, x, y, margin=0.0):
+    return (abs(x - geom["position"][0]) <= geom["size_m"][0] / 2 + margin
+            and abs(y - geom["position"][1]) <= geom["size_m"][1] / 2 + margin)
+
+
+def room_at(preset, x, y):
+    rooms = [geom for geom in get_layout(preset)["geoms"] if geom["name"] in ROOMS and _inside(geom, x, y)]
+    return ROOMS[max(rooms, key=lambda geom: geom["priority"])["name"]] if rooms else "apartment"
+
+
+def place_name(preset, x, y, step_m=0.0):
+    """A spot named by place: "hallway doorway", "bedroom stairs", "kitchen tile", "living room rug"."""
+    geoms = get_layout(preset)["geoms"]
+    for geom in geoms:
+        if geom["name"].startswith("indoor_threshold_") and _inside(geom, x, y, 0.15):
+            thin = 0 if geom["size_m"][0] < geom["size_m"][1] else 1
+            sides = []
+            for sign in (-1, 1):
+                point = [x, y]
+                point[thin] = geom["position"][thin] + sign * 0.4
+                sides.append(room_at(preset, *point))
+            named = [room for room in sides if room in NAMED_ROOMS]
+            return f"{' and '.join(dict.fromkeys(named))} doorway" if named and "hallway" not in sides                 else f"{named[0]} doorway" if named else "hallway doorway"
+    if any(geom["name"].startswith("indoor_bedroom_step_") and _inside(geom, x, y, 0.3) for geom in geoms):
+        return "bedroom stairs"
+    if any(geom["surface"] == "ramp" and _inside(geom, x, y) for geom in geoms):
+        return "bedroom ramp"
+    room = room_at(preset, x, y)
+    if step_m >= 0.05:
+        return "bedroom platform edge" if room == "bedroom" else f"{room} step"
+    surfaces = [geom for geom in geoms if geom["surface"] in FLOOR_ZONES and _inside(geom, x, y)]
+    if not surfaces:
+        return f"{room} floor"
+    floor = FLOOR_ZONES[max(surfaces, key=lambda geom: geom["priority"])["surface"]]
+    return f"{room} {floor}" + (" floor" if floor == "wood" else "")
 
 
 def height_grid(preset, resolution):

@@ -9,6 +9,8 @@ import numpy as np
 
 from .spec import SceneSpec, TerrainStructure
 
+INSIGHT_GLB = Path(__file__).resolve().parents[1] / "assets" / "nasa" / "insight_lander.glb"   # scripts/fetch_assets.py
+
 SIZE_SCALE = {"small": 0.75, "medium": 1.0, "large": 1.25}
 MAX_PAD_SLOPE_DEG = 8.0
 SEARCH_RADIUS_M = 6.0
@@ -123,7 +125,7 @@ def _dimensions(request: TerrainStructure, widest_robot: float, body: str = "ear
                                     "slope_deg": HABITAT_RAMP_LIMIT_DEG}},
                 "length": length + run, "width": max(diameter, ramp_width), "offset": run / 2}
     if request.kind == "lander":
-        insight = body == "mars" and (Path(__file__).resolve().parents[1] / "assets/nasa/insight_lander.glb").is_file()
+        insight = body == "mars" and INSIGHT_GLB.is_file()   # missing (not fetched): the simple fallback shape
         if insight:
             footprint = 6.0 * scale
             return {"record": {"height_m": round(2.25 * scale, 2), "footprint_m": round(footprint, 2),
@@ -170,7 +172,13 @@ def prepare_structure_terrain(spec: SceneSpec) -> None:
             from .terrain_data import load_structure_patch
 
             requested = max(80.0, spec.terrain.size_m * 2)
-            _, meta = load_structure_patch(spec.terrain.preset, requested)
+            try:
+                _, meta = load_structure_patch(spec.terrain.preset, requested)
+            except Exception as error:   # the raw source isn't shipped (or can't be reached): keep the shipped patch
+                spec.assumptions.append(f"Kept the shipped {spec.terrain.size_m:g} m terrain patch: a larger measured "
+                                        f"patch needs the raw source elevation data, which isn't available here "
+                                        f"({type(error).__name__}).")
+                return
             previous = spec.terrain.size_m
             spec.terrain.structure_crop_size_m = requested
             spec.terrain.size_m = float(meta["size_m"])

@@ -8,10 +8,10 @@ from simgate.spec import Environment, Mission, Obstacle, Robot, SceneSpec, Terra
 def test_optional_nasa_asset_route_is_local_and_handles_absence(monkeypatch, tmp_path):
     import server
 
-    monkeypatch.setattr(server, "__file__", str(tmp_path / "server.py"))
+    model = tmp_path / "assets" / "nasa" / "insight_lander.glb"
+    monkeypatch.setattr(server, "INSIGHT_GLB", model)
     client = TestClient(server.app)
     assert client.get("/assets/nasa/insight_lander.glb").status_code == 404
-    model = tmp_path / "assets" / "nasa" / "insight_lander.glb"
     model.parent.mkdir(parents=True)
     model.write_bytes(b"glTF-local-test-fixture")
     response = client.get("/assets/nasa/insight_lander.glb")

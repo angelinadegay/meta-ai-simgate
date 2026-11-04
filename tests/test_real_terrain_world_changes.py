@@ -9,7 +9,7 @@ def gale_scene() -> SceneSpec:
         domain="robot_terrain",
         title="G1 Humanoid · Gale Crater",
         terrain=Terrain(kind="real", preset="gale"),
-        robot=Robot(kind="library", robot_id="g1", policy_id="g1_walking"),
+        robot=Robot(kind="library", robot_id="g1", controller_id="g1_stand"),
         mission=Mission(goal_place="lowest"),
     ).fill_defaults()
 

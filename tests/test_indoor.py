@@ -144,7 +144,7 @@ def test_apartment_library_selection_preserves_layout_and_default_mission():
             pass
 
         registry = LibraryRegistry()
-        policy = registry.compatible_policies("rover")[0]
+        policy = registry.compatible_controllers("rover")[0]
         session = Session(emit)
         await session.select_library("rover", policy.id, "apartment", start_scene=True)
         assert session.spec.terrain.kind == "indoor"

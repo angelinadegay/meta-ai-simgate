@@ -1,105 +1,15 @@
 [
   {
-    "name": "mars-g1",
-    "prompt": "Where on Gusev can the G1 walk safely? Plan a safe route to the summit and walk it.",
-    "summary": "G1: 0.0% green, 65.1% amber, 34.8% red (non-blocked cells). 1 of 4 spot checks agreed with the map. 2 amber spots were reported, not judged. 1 spot disagreed: the selected area was predicted unsafe but the robot crossed without falling or getting stuck; map corrected. Map flagged unreliable: fewer than 4 spot checks agreed. Straight: reached the goal in 143.5 s. Safe route: reached the goal in 156.3 s, 2% longer path. Source map flagged unreliable; route evidence does not certify the whole map.",
-    "costs": [
-      {
-        "runs": 22,
-        "wall_s": 64.5,
-        "model_calls": 1,
-        "text": "22 runs · 64 s · 1 model call"
-      }
-    ],
-    "planner_model": "muse-spark-1.3",
-    "builder_model": "muse-wonder-1.0",
-    "builder_mode": "template",
-    "mock_mode": false,
-    "percentages": {
-      "green": 0.0,
-      "amber": 65.1,
-      "red": 34.8
-    },
-    "agreement": 1,
-    "corrections": [
-      {
-        "id": "spot-run-3",
-        "label": "Spot 3: the selected area",
-        "site": "the selected area",
-        "row": 5,
-        "col": 158,
-        "predicted": "red",
-        "passed": true,
-        "outcome": "crossed without falling or getting stuck",
-        "judged": true,
-        "agreed": false,
-        "corrected": true,
-        "cells": [
-          [
-            1,
-            158
-          ],
-          [
-            2,
-            158
-          ],
-          [
-            3,
-            158
-          ],
-          [
-            4,
-            158
-          ],
-          [
-            5,
-            158
-          ],
-          [
-            6,
-            158
-          ],
-          [
-            7,
-            158
-          ],
-          [
-            8,
-            158
-          ],
-          [
-            9,
-            158
-          ]
-        ],
-        "start_xy": [
-          39.334,
-          -38.666
-        ],
-        "goal_xy": [
-          39.334,
-          -35.666
-        ],
-        "start_heading_deg": 90.0
-      }
-    ],
-    "routes": [
-      {
-        "label": "Start to goal",
-        "text": "Straight: reached the goal in 143.5 s. Safe route: reached the goal in 156.3 s, 2% longer path. Source map flagged unreliable; route evidence does not certify the whole map."
-      }
-    ]
-  },
-  {
     "name": "apartment-rover",
-    "prompt": "In the apartment, can the rover get from the kitchen to the bedroom? Show where it can go.",
-    "summary": "Rover: 59.4% green, 31.7% amber, 8.9% red (non-blocked cells). 3 of 6 spot checks agreed with the map. 2 amber spots were reported, not judged. 1 spot disagreed: the step was predicted unsafe but the robot crossed without falling or getting stuck; map corrected. Map flagged unreliable: fewer than 4 spot checks agreed. Straight: stuck. Safe route: reached the goal in 36 s, 665% longer path. Source map flagged unreliable; route evidence does not certify the whole map.",
+    "prompt": "In the apartment, can the rover get from the kitchen to the bedroom?",
+    "summary": "Rover: 69.3% green, 21.8% amber, 8.9% red (non-blocked cells). 3 of 6 spot checks agreed with the map. 2 amber spots were reported, not judged. 1 spot disagreed: the north room step was predicted unsafe but the robot crossed without falling or getting stuck; map corrected. Map flagged unreliable: fewer than 4 spot checks agreed. Straight: stuck. Safe route: reached the goal in 41.7 s, 601% longer path. Source map flagged unreliable; route evidence does not certify the whole map.",
     "costs": [
       {
-        "runs": 16,
-        "wall_s": 16.0,
+        "runs": 17,
+        "wall_s": 43.0,
         "model_calls": 1,
-        "text": "16 runs · 16 s · 1 model call"
+        "model_failures": 0,
+        "text": "17 runs · 43 s · 1 model call"
       }
     ],
     "planner_model": "muse-spark-1.3",
@@ -107,16 +17,16 @@
     "builder_mode": "template",
     "mock_mode": false,
     "percentages": {
-      "green": 59.4,
-      "amber": 31.7,
+      "green": 69.3,
+      "amber": 21.8,
       "red": 8.9
     },
     "agreement": 3,
     "corrections": [
       {
         "id": "spot-run-6",
-        "label": "Spot 6: the step",
-        "site": "the step",
+        "label": "Spot 6: the north room step",
+        "site": "the north room step",
         "row": 36,
         "col": 35,
         "predicted": "red",
@@ -125,6 +35,8 @@
         "judged": true,
         "agreed": false,
         "corrected": true,
+        "max_step_crossed_m": 0.3,
+        "step_at_spot_m": 0.216,
         "cells": [
           [
             35,
@@ -249,290 +161,7 @@
     "routes": [
       {
         "label": "Start to goal",
-        "text": "Straight: stuck. Safe route: reached the goal in 36 s, 665% longer path. Source map flagged unreliable; route evidence does not certify the whole map."
-      }
-    ]
-  },
-  {
-    "name": "apartment-g1",
-    "prompt": "Same question for the G1.",
-    "summary": "G1: 62.4% green, 29.0% amber, 8.6% red (non-blocked cells). 2 of 6 spot checks agreed with the map. 2 amber spots were reported, not judged. 2 spots disagreed: the selected area was predicted safe but the robot got stuck; map corrected; the selected area was predicted safe but the robot fell; map corrected. Map flagged unreliable: fewer than 4 spot checks agreed. Straight: fell at 6.73 s on a 0 degree patch. Safe route: stuck, 15% longer path. Source map flagged unreliable; route evidence does not certify the whole map.",
-    "costs": [
-      {
-        "runs": 20,
-        "wall_s": 28.2,
-        "model_calls": 1,
-        "text": "20 runs · 28 s · 1 model call"
-      }
-    ],
-    "planner_model": "muse-spark-1.3",
-    "builder_model": "muse-wonder-1.0",
-    "builder_mode": "template",
-    "mock_mode": false,
-    "percentages": {
-      "green": 62.4,
-      "amber": 29.0,
-      "red": 8.6
-    },
-    "agreement": 2,
-    "corrections": [
-      {
-        "id": "spot-run-2",
-        "label": "Spot 2: the selected area",
-        "site": "the selected area",
-        "row": 6,
-        "col": 2,
-        "predicted": "green",
-        "passed": false,
-        "outcome": "got stuck",
-        "judged": true,
-        "agreed": false,
-        "corrected": true,
-        "cells": [
-          [
-            3,
-            1
-          ],
-          [
-            3,
-            2
-          ],
-          [
-            3,
-            3
-          ],
-          [
-            4,
-            1
-          ],
-          [
-            4,
-            2
-          ],
-          [
-            4,
-            3
-          ],
-          [
-            5,
-            1
-          ],
-          [
-            5,
-            2
-          ],
-          [
-            5,
-            3
-          ],
-          [
-            6,
-            1
-          ],
-          [
-            6,
-            2
-          ],
-          [
-            6,
-            3
-          ],
-          [
-            7,
-            1
-          ],
-          [
-            7,
-            2
-          ],
-          [
-            7,
-            3
-          ],
-          [
-            8,
-            1
-          ],
-          [
-            8,
-            2
-          ],
-          [
-            8,
-            3
-          ],
-          [
-            9,
-            1
-          ],
-          [
-            9,
-            2
-          ],
-          [
-            9,
-            3
-          ],
-          [
-            10,
-            1
-          ],
-          [
-            10,
-            2
-          ],
-          [
-            10,
-            3
-          ]
-        ],
-        "start_xy": [
-          -6.375,
-          -4.125
-        ],
-        "goal_xy": [
-          -6.375,
-          -2.625
-        ],
-        "start_heading_deg": 90.0
-      },
-      {
-        "id": "spot-run-3",
-        "label": "Spot 3: the selected area",
-        "site": "the selected area",
-        "row": 37,
-        "col": 16,
-        "predicted": "green",
-        "passed": false,
-        "outcome": "fell",
-        "judged": true,
-        "agreed": false,
-        "corrected": true,
-        "cells": [
-          [
-            36,
-            12
-          ],
-          [
-            36,
-            13
-          ],
-          [
-            36,
-            14
-          ],
-          [
-            36,
-            15
-          ],
-          [
-            36,
-            16
-          ],
-          [
-            36,
-            17
-          ],
-          [
-            36,
-            18
-          ],
-          [
-            36,
-            19
-          ],
-          [
-            36,
-            20
-          ],
-          [
-            37,
-            12
-          ],
-          [
-            37,
-            13
-          ],
-          [
-            37,
-            14
-          ],
-          [
-            37,
-            15
-          ],
-          [
-            37,
-            16
-          ],
-          [
-            37,
-            17
-          ],
-          [
-            37,
-            18
-          ],
-          [
-            37,
-            19
-          ],
-          [
-            37,
-            20
-          ],
-          [
-            38,
-            12
-          ],
-          [
-            38,
-            13
-          ],
-          [
-            38,
-            14
-          ],
-          [
-            38,
-            15
-          ],
-          [
-            38,
-            16
-          ],
-          [
-            38,
-            17
-          ],
-          [
-            38,
-            18
-          ],
-          [
-            38,
-            19
-          ],
-          [
-            38,
-            20
-          ]
-        ],
-        "start_xy": [
-          -3.625,
-          4.375
-        ],
-        "goal_xy": [
-          -2.125,
-          4.375
-        ],
-        "start_heading_deg": 0.0
-      }
-    ],
-    "routes": [
-      {
-        "label": "Start to goal",
-        "text": "Straight: fell at 6.73 s on a 0 degree patch. Safe route: stuck, 15% longer path. Source map flagged unreliable; route evidence does not certify the whole map."
+        "text": "Straight: stuck. Safe route: reached the goal in 41.7 s, 601% longer path. Source map flagged unreliable; route evidence does not certify the whole map."
       }
     ]
   },
@@ -700,6 +329,37 @@
       {
         "label": "Leg 2: to bedroom",
         "text": "Straight: stuck. Safe route: reached the goal in 25.7 s, 181% longer path. Source map flagged unreliable; route evidence does not certify the whole map."
+      }
+    ]
+  },
+  {
+    "name": "mars-rover",
+    "prompt": "Where on Gusev can the rover drive safely? Plan a safe route to the summit and drive it.",
+    "summary": "Rover: 100.0% green, 0.0% amber, 0.0% red (non-blocked cells). 2 of 2 spot checks agreed with the map. Map flagged unreliable: fewer than 4 spot checks agreed. Straight: reached the goal in 34.2 s. Safe route: reached the goal in 40.6 s, 2% longer path. Source map flagged unreliable; route evidence does not certify the whole map.",
+    "costs": [
+      {
+        "runs": 14,
+        "wall_s": 84.1,
+        "model_calls": 1,
+        "model_failures": 0,
+        "text": "14 runs · 84 s · 1 model call"
+      }
+    ],
+    "planner_model": "muse-spark-1.3",
+    "builder_model": "muse-wonder-1.0",
+    "builder_mode": "template",
+    "mock_mode": false,
+    "percentages": {
+      "green": 100.0,
+      "amber": 0.0,
+      "red": 0.0
+    },
+    "agreement": 2,
+    "corrections": [],
+    "routes": [
+      {
+        "label": "Start to goal",
+        "text": "Straight: reached the goal in 34.2 s. Safe route: reached the goal in 40.6 s, 2% longer path. Source map flagged unreliable; route evidence does not certify the whole map."
       }
     ]
   }

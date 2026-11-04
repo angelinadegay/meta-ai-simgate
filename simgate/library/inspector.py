@@ -9,7 +9,7 @@
    questions for anything uncertain. Code measures the rest: wheel sides, radii and spin, leg phases.
 5. Checks: compiles, plausible mass and size, stands for 1 s, a wheeled robot drives 0.5 m, a legged robot's
    baseline gait is tried. With no open questions and passing checks the robot is listed: robot_card.json
-   and policy_card.json (its built-in controller) are written to the upload folder.
+   and controller_card.json (its built-in controller) are written to the upload folder.
 """
 import json
 import math
@@ -26,7 +26,7 @@ import numpy as np
 from pydantic import BaseModel, ConfigDict, Field
 
 from .. import config, llm
-from .cards import CommandSpec, LegSpec, PolicyCard, RobotCard, WheelSpec
+from .cards import CommandSpec, LegSpec, ControllerCard, RobotCard, WheelSpec
 from .uploads import UploadError, UploadRecord
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -37,7 +37,7 @@ NAME_HINTS = ("hip", "thigh", "knee", "calf", "shin", "ankle", "foot", "toe", "w
 MASS_RANGE_KG, HEIGHT_RANGE_M = (0.1, 500.0), (0.05, 5.0)
 STAND_S, DRIVE_S, GAIT_S, DRIVE_GOAL_M = 1.0, 4.0, 5.0, 0.5
 QUESTION_CHOICES = {"forward_axis": list(FORWARD_YAW_DEG), "kind": ["wheeled", "legged", "humanoid", "other"],
-                    "controller": ["wheels", "gait", "needs_policy"]}
+                    "controller": ["wheels", "gait", "hold"]}
 
 
 # ── Draft (what the Inspector agent returns) ────────────────────────────────
@@ -64,7 +64,7 @@ class RobotDraft(BaseModel):
     legs: list[LegDraft] = []
     feet: list[str] = []            # foot body names
     standing_height_m: float = Field(gt=0)
-    controller: Literal["wheels", "gait", "needs_policy"]
+    controller: Literal["wheels", "gait", "hold"]
     questions: list[Question] = []
     notes: str = Field(default="", max_length=600)
 
@@ -78,7 +78,7 @@ Rules:
   feet lists BODY names, and a leg's hip and knee are JOINT names.
 - kind: wheeled (driven by wheels), legged (4 or 6 legs), humanoid (2 legs, upright), other.
 - controller: "wheels" for a wheeled robot (needs 2+ wheel joints), "gait" for a legged robot (needs 2+ legs,
-  each with a hip joint), otherwise "needs_policy".
+  each with a hip joint), otherwise "hold".
 - A leg's hip is the joint that swings it forward and back; knee is a joint further down that bends it.
 - forward_axis is the robot's forward direction in its own frame. If FACTS and names don't settle it, keep
   "+x" and add a question for field "forward_axis" with choices ["+x", "-x"]. Ask a question only when FACTS,
@@ -392,9 +392,9 @@ def rules_draft(model: mujoco.MjModel, found: dict) -> RobotDraft:
     elif len(legs) in (4, 6):
         kind, controller = "legged", "gait"
     elif len(legs) == 2:
-        kind, controller = ("humanoid" if found["height_m"] > 0.4 or "arm" in hints else "legged"), "needs_policy"
+        kind, controller = ("humanoid" if found["height_m"] > 0.4 or "arm" in hints else "legged"), "hold"
     else:
-        kind, controller = "other", "needs_policy"
+        kind, controller = "other", "hold"
     forward, sure = _forward_from_names(found) if kind != "humanoid" else _forward_from_feet(model, feet)
     questions = []
     if kind != "other" and not sure:
@@ -550,7 +550,7 @@ def _moves(model, joint_name: str, body: int, axis: int, sign: int) -> int:
     return 1 if (float(data.xpos[body][axis]) - before) * sign > 0 else -1
 
 
-def _cards(record: UploadRecord, model, found: dict, draft: RobotDraft, mjcf_path: str) -> tuple[RobotCard, PolicyCard]:
+def _cards(record: UploadRecord, model, found: dict, draft: RobotDraft, mjcf_path: str) -> tuple[RobotCard, ControllerCard]:
     wheels, track, legs = _specs(model, found, draft)
     controller = {"wheels": "wheels", "gait": "gait"}.get(draft.controller, "hold")
     actuated = [a["joint"] for a in found["actuators"] if a["joint"]]
@@ -570,19 +570,19 @@ def _cards(record: UploadRecord, model, found: dict, draft: RobotDraft, mjcf_pat
                       footprint_width_m=found["bounding_box_m"]["size"][1],
                       controller=controller, wheels=wheels, track_m=track, legs=legs, feet=draft.feet)
     label = {"wheels": "Wheel controller", "gait": "Baseline gait",
-             "hold": "Holds its pose (needs a trained policy to move)"}[controller]
-    policy = PolicyCard(id=f"{record.id}-{controller}", name=label, robot_id=record.id, format="builtin",
+             "hold": "Holds its pose (no built-in way to move it)"}[controller]
+    controller_card = ControllerCard(id=f"{record.id}-{controller}", name=label, robot_id=record.id,
                         control_dt=0.02, joint_order=joint_order, default_angles=[defaults.get(n, 0.0) for n in joint_order],
                         kps=[kp] * len(joint_order), kds=kds,
                         command=CommandSpec(names=["vx", "vy", "yaw_rate"], ranges=[(-1.0, 1.0)] * 3,
                                             default=[0.5, 0.0, 0.0]),   # with no goal it moves, like the G1
-                        training_notes=["A simple built-in controller, not a trained policy."
-                                        + (" The baseline gait may walk badly." if controller == "gait" else "")],
+                        notes=["A simple built-in controller written as plain code."
+                               + (" The baseline gait may walk badly." if controller == "gait" else "")],
                         license="SimGate built-in controller", credit="SimGate")
-    return robot, policy
+    return robot, controller_card
 
 
-def run_checks(text: str, folder: Path, robot: RobotCard, policy: PolicyCard, found: dict) -> list[dict]:
+def run_checks(text: str, folder: Path, robot: RobotCard, controller_card: ControllerCard, found: dict) -> list[dict]:
     """Compiles; plausible mass and size; stands 1 s on flat ground; drives 0.5 m (wheels); baseline gait."""
     from ..simple_control import SimpleController
 
@@ -607,7 +607,7 @@ def run_checks(text: str, folder: Path, robot: RobotCard, policy: PolicyCard, fo
 
     def simulate(seconds: float, command: dict | None) -> tuple[mujoco.MjData, float, float]:
         data = mujoco.MjData(model)
-        controller = SimpleController(robot, policy, model, data)
+        controller = SimpleController(robot, controller_card, model, data)
         mujoco.mj_forward(model, data)
         body = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, ROOT_BODY)
         for _ in range(int(0.3 / model.opt.timestep)):    # settle onto the floor in the default pose
@@ -638,7 +638,7 @@ def run_checks(text: str, folder: Path, robot: RobotCard, policy: PolicyCard, fo
         checks.append({"name": "Baseline gait tried", "passed": True, "advisory": True,
                        "detail": f"Baseline gait: moved {progress:+.2f} m in {GAIT_S:g} s"
                                  + (", and fell over." if fell else f", peak tilt {tilt:.0f}°.")
-                                 + " It is a simple gait, not a trained policy, so it may walk badly."})
+                                 + " It is a simple open-loop gait written as code, so it may walk badly."})
     return checks
 
 
@@ -686,7 +686,7 @@ def answer_robot(record: UploadRecord, answers: dict) -> dict:
         state["answers"][field] = value
         draft[field] = value
         if field == "kind":   # a changed kind takes the controller that fits it
-            draft["controller"] = {"wheeled": "wheels", "legged": "gait"}.get(value, "needs_policy")
+            draft["controller"] = {"wheeled": "wheels", "legged": "gait"}.get(value, "hold")
         state["questions"] = [q for q in state["questions"] if q["field"] != field]
     if (draft["controller"] == "wheels" and not draft["wheels"]) or (draft["controller"] == "gait" and not draft["legs"]):
         model = _compile((Path(record.folder) / "model.xml").read_text(encoding="utf-8"), Path(record.folder))
@@ -708,16 +708,16 @@ def _finish(record: UploadRecord, state: dict) -> dict:
     model = _compile(text, folder)
     found = _upload_facts(facts(model), source_model, references)
     mjcf_path = (folder / "model.xml").resolve().relative_to(PROJECT_ROOT).as_posix()
-    robot, policy = _cards(record, model, found, draft, mjcf_path)
-    checks = run_checks(text, folder, robot, policy, found)
+    robot, controller_card = _cards(record, model, found, draft, mjcf_path)
+    checks = run_checks(text, folder, robot, controller_card, found)
     passed = all(check["passed"] or check.get("advisory") for check in checks)
     status = "needs_answers" if state["questions"] else "listed" if passed else "checks_failed"
-    for name in ("robot_card.json", "policy_card.json"):
+    for name in ("robot_card.json", "controller_card.json"):
         (folder / name).unlink(missing_ok=True)
     if status == "listed":
         (folder / "robot_card.json").write_text(robot.model_dump_json(indent=2), encoding="utf-8")
-        (folder / "policy_card.json").write_text(policy.model_dump_json(indent=2), encoding="utf-8")
-    state.update(status=status, facts=found, checks=checks, robot_card=robot.model_dump(), policy_card=policy.model_dump(),
+        (folder / "controller_card.json").write_text(controller_card.model_dump_json(indent=2), encoding="utf-8")
+    state.update(status=status, facts=found, checks=checks, robot_card=robot.model_dump(), controller_card=controller_card.model_dump(),
                  baseline_gait=robot.controller == "gait")
     _state_path(record).write_text(json.dumps(state, indent=2), encoding="utf-8")
     return state

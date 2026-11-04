@@ -1,8 +1,8 @@
-"""Safe storage for user uploads: terrains, robots (MJCF/URDF bodies) and policies (ONNX brains).
+"""Safe storage for user uploads: terrains (GeoTIFF/PNG heightmaps), robots (MJCF/URDF bodies) and images.
 
 Every check happens in memory before anything is written. Nothing uploaded is ever imported or executed:
-YAML is read with yaml.safe_load, XML is parsed without DOCTYPE/ENTITY declarations, MJCF plugins are refused,
-and policies must be ONNX (a TorchScript or pickle file can run arbitrary code when loaded).
+XML is parsed without DOCTYPE/ENTITY declarations and MJCF plugins are refused. Trained controllers
+(.onnx, PyTorch and other model files) are rejected: SimGate doesn't run uploaded AI controllers.
 """
 
 import hashlib
@@ -21,31 +21,26 @@ from dataclasses import asdict, dataclass
 from pathlib import Path, PurePosixPath
 from typing import Literal
 
-import yaml
-
-UploadKind = Literal["terrain", "robot", "policy"]
-KINDS: tuple[str, ...] = ("terrain", "robot", "policy")
+UploadKind = Literal["terrain", "robot"]
+KINDS: tuple[str, ...] = ("terrain", "robot")
 # SIMGATE_UPLOADS_DIR lets tests (and the batch runner's worker processes) use another folder.
 UPLOADS_DIR = Path(os.getenv("SIMGATE_UPLOADS_DIR") or Path(__file__).resolve().parent / "uploads")
 
 MAX_UPLOAD_BYTES = 50 * 1024 * 1024        # what the user sends, zipped or not
 MAX_EXTRACTED_BYTES = 200 * 1024 * 1024    # what a zip may expand to
 MAX_ZIP_FILES = 500
-ALLOWED_EXTENSIONS = {".xml", ".urdf", ".mjcf", ".stl", ".obj", ".msh", ".png", ".jpg", ".tif", ".tiff", ".onnx",
-                      ".yaml", ".yml", ".json", ".md", ".txt"}
+ALLOWED_EXTENSIONS = {".xml", ".urdf", ".mjcf", ".stl", ".obj", ".msh", ".png", ".jpg", ".tif", ".tiff",
+                      ".json", ".md", ".txt"}
 MAIN_FILES = {   # an upload of each kind must contain one of these
     "terrain": {".tif", ".tiff", ".png", ".jpg"},
     "robot": {".xml", ".urdf", ".mjcf"},
-    "policy": {".onnx"},
 }
 TEXT_LIMIT = 200   # name, credit and license are free text shown on the card
 
-ONNX_EXPORT_SNIPPET = """import torch
-policy = torch.jit.load("policy.pt", map_location="cpu").eval()   # run this on your own machine
-observation = torch.zeros(1, NUM_OBSERVATIONS)                      # the size your policy expects
-torch.onnx.export(policy, observation, "policy.onnx", input_names=["observation"],
-                  output_names=["action"], opset_version=17)"""
-_PICKLE_EXTENSIONS = {".pt", ".pth", ".ts", ".pkl", ".pickle", ".ckpt", ".bin", ".jit"}
+AI_CONTROLLER_REJECTED = "SimGate doesn't run uploaded AI controllers in this version."
+# trained-model files (and pickles, which can run code when loaded) are never accepted
+_MODEL_EXTENSIONS = {".onnx", ".pt", ".pth", ".ts", ".pkl", ".pickle", ".ckpt", ".bin", ".jit", ".safetensors",
+                     ".h5", ".keras", ".tflite", ".pb"}
 _PATH_ATTRIBUTES = {"file", "filename", "meshdir", "texturedir", "assetdir"}   # MJCF and URDF file references
 _PACKAGE_URI = re.compile(r"^package://[^/]+/")
 
@@ -80,6 +75,8 @@ def save_upload(kind: str, files: list[tuple[str, bytes]], name: str, credit: st
     ``files`` are (filename, content) pairs as sent; a single .zip is unpacked safely. The same content and name
     uploaded twice give the same id, and the stored copy is returned."""
     uploads_dir = uploads_dir or UPLOADS_DIR
+    if kind == "policy":
+        raise UploadError(AI_CONTROLLER_REJECTED)
     if kind not in KINDS:
         raise UploadError(f"Upload type must be one of: {', '.join(KINDS)}.")
     name, credit, license = (_text(label, value) for label, value in
@@ -145,7 +142,7 @@ def upload_status(record: UploadRecord) -> dict:
     if record.kind == "terrain":
         summary["status"] = "listed" if (folder / "preset.json").is_file() else "not ready"
         return summary
-    state_file = folder / ("inspection.json" if record.kind == "robot" else "adapter.json")
+    state_file = folder / "inspection.json"
     if not state_file.is_file():
         return summary
     state = json.loads(state_file.read_text(encoding="utf-8"))
@@ -244,27 +241,18 @@ def _unzip(data: bytes) -> dict[str, bytes]:
 
 def _check_file(kind: str, path: str, content: bytes) -> None:
     suffix = PurePosixPath(path).suffix.lower()
-    if suffix in _PICKLE_EXTENSIONS:
-        raise UploadError(f"{path!r} is a PyTorch/pickle file, which can run code when it is loaded, so it isn't "
-                          "accepted. Export the policy to ONNX on your own machine and upload the .onnx file:\n"
-                          + ONNX_EXPORT_SNIPPET)
+    if suffix in _MODEL_EXTENSIONS:
+        raise UploadError(AI_CONTROLLER_REJECTED)
     if suffix not in ALLOWED_EXTENSIONS:
         raise UploadError(f"{path!r}: {suffix or 'files without an extension'} can't be uploaded. Allowed: "
                           f"{', '.join(sorted(ALLOWED_EXTENSIONS))}.")
-    if suffix in (".yaml", ".yml"):
-        try:
-            yaml.safe_load(content.decode("utf-8"))
-        except (UnicodeDecodeError, yaml.YAMLError) as exc:
-            raise UploadError(f"{path!r} isn't valid YAML: {exc}") from exc
-    elif suffix == ".json":
+    if suffix == ".json":
         try:
             json.loads(content.decode("utf-8"))
         except (UnicodeDecodeError, ValueError) as exc:
             raise UploadError(f"{path!r} isn't valid JSON: {exc}") from exc
     elif suffix in (".xml", ".urdf", ".mjcf"):
         _check_model_xml(path, content)
-    elif suffix == ".onnx" and kind != "policy":
-        raise UploadError(f"{path!r}: ONNX files belong in a policy upload.")
 
 
 def _check_model_xml(path: str, content: bytes) -> None:

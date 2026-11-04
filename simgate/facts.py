@@ -13,11 +13,11 @@ FACTS_RULE = ("Describe the terrain and tilt only with the words given in FACTS;
 ADJUSTABLE = {   # the settings a tip may change, per kind of robot
     "rover": ("wheels", "wheel_radius", "drive_speed"),
     "walker": ("legs", "leg_length", "gait_freq_hz", "stride_deg"),
-    "library": ("command_speed_m_s", "policy_id"),   # a trained policy expects its exact body
+    "library": ("command_speed_m_s",),   # a library robot's body comes from its model file
 }
 SETTING_NAMES = {"wheels": "number of wheels", "wheel_radius": "wheel size", "drive_speed": "wheel speed",
                  "legs": "number of legs", "leg_length": "leg length", "gait_freq_hz": "gait frequency",
-                 "stride_deg": "stride", "command_speed_m_s": "walking speed", "policy_id": "policy"}
+                 "stride_deg": "stride", "command_speed_m_s": "walking speed"}
 _SETTING_WORDS = {   # how a tip names each setting
     "wheels": r"\b(?:four|six|4|6)[\s-]*wheel(?:s|ed)?\b|\bmore wheels\b",
     "wheel_radius": r"\bwheel[_ ](?:radius|size)\b|\b(?:bigger|larger|smaller) wheels\b",
@@ -27,7 +27,6 @@ _SETTING_WORDS = {   # how a tip names each setting
     "gait_freq_hz": r"\bgait\b|\bgait[_ ]freq",
     "stride_deg": r"\bstride",
     "command_speed_m_s": r"\bcommand[_ ]speed|\bwalking speed\b",
-    "policy_id": r"\bpolic(?:y|ies)\b|\bpolicy_id\b",
 }
 _TIP_CUES = re.compile(r"\b(?:try|next|you (?:could|can|might)|consider|adjust|set|increase|decrease|reduce|raise|lower"
                        r"|change|tweak|use|give)\b", re.I)
@@ -83,14 +82,8 @@ def _reason(m: dict) -> str:
 
 
 def _can_change(robot: dict) -> dict:
-    """The settings a tip may change for this robot; a library robot's policy only to a compatible one."""
-    settings = {key: SETTING_NAMES[key] for key in ADJUSTABLE.get(robot.get("kind"), ())}
-    if "policy_id" in settings and robot.get("robot_id"):
-        from .library import LibraryRegistry
-
-        compatible = [policy.id for policy in LibraryRegistry().compatible_policies(robot["robot_id"])]
-        settings["policy_id"] = f"policy: {', '.join(compatible)}"
-    return settings
+    """The settings a tip may change for this robot."""
+    return {key: SETTING_NAMES[key] for key in ADJUSTABLE.get(robot.get("kind"), ())}
 
 
 def _robot_facts(label: str, m: dict) -> dict:
@@ -356,11 +349,19 @@ def checked(ask, found: dict, fallback, extra=None) -> tuple[str, list[str]]:
     def issues_of(text: str) -> list[str]:
         return problems(text, found) + (extra(text) if extra else [])
 
-    text = ask(None)
+    from .llm import ModelUnavailable
+
+    try:
+        text = ask(None)
+    except ModelUnavailable as exc:   # no model to answer: the rules text, said so
+        return fallback(), [f"model unavailable: {exc}"]
     issues = issues_of(text)
     if not issues:
         return text, []
-    retry = ask("Your reply has problems: " + " ".join(issues) + " Rewrite it so none of these remain.")
+    try:
+        retry = ask("Your reply has problems: " + " ".join(issues) + " Rewrite it so none of these remain.")
+    except ModelUnavailable as exc:
+        return fallback(), issues + [f"model unavailable: {exc}"]
     if not issues_of(retry):
         return retry, issues
     return fallback(), issues + issues_of(retry)

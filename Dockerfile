@@ -13,6 +13,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libglfw3 \
     libglew2.2 \
     libgomp1 \
+    libgfortran5 \
+    libquadmath0 \
+    liblapack3 \
+    libblas3 \
     libosmesa6 \
     libsm6 \
     libx11-6 \
@@ -23,6 +27,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY requirements.txt ./requirements.txt
 RUN python -m pip install --upgrade pip \
     && python -m pip install -r requirements.txt
+
+# Optional NASA visual (gitignored): downloaded and hash-checked here; a failed download only logs a warning
+COPY scripts/fetch_assets.py scripts/fetch_assets.py
+RUN python scripts/fetch_assets.py
 
 COPY . .
 

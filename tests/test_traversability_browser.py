@@ -17,7 +17,7 @@ def test_map_only_overlay_handles_absent_route(browser_page):
     assert result == {"meshes": 1, "markers": 0}
 
 
-@pytest.mark.parametrize("name", ["mars-g1", "apartment-rover", "apartment-g1", "apartment-rover-two-leg"])
+@pytest.mark.parametrize("name", ["mars-rover", "apartment-rover", "apartment-walker", "apartment-rover-two-leg"])
 def test_live_map_overlay_card_toggle_and_replay(browser_page, name):
     root = Path(__file__).resolve().parents[1]
     saved = root / "reports" / "traversability-live" / name / "replay.json"
@@ -42,6 +42,15 @@ def test_live_map_overlay_card_toggle_and_replay(browser_page, name):
     page.wait_for_timeout(3000)
     assert not errors, errors
     page.locator("#mapCard").wait_for(state="visible", timeout=10000)
+    assert page.locator("#mapHeadline").inner_text() == (replay["report"].get("headline") or replay["report"]["comparison"]["text"])
+    route_runs = page.locator("#mapRouteRuns button")   # the route runs are watchable without opening details
+    assert route_runs.count() == len(replay["report"]["comparison"]["runs"]) and route_runs.first.is_visible()
+    first_route = next(run for run in replay["report"]["comparison"]["runs"] if "straight" not in run["label"].lower())
+    assert route_runs.first.inner_text().startswith("▶ Watch") and "safe route" in route_runs.first.inner_text()
+    route_runs.first.click()
+    page.wait_for_timeout(100)
+    assert requests[-1] == {"type": "replay_map_run", "run_id": first_route["id"]}
+    page.locator("#mapDetails > summary").click()   # everything else is under "Show details"
     assert "amber" in page.locator("#mapLegend").inner_text()
     assert "real places combine features" in page.locator("#mapHonesty").inner_text()
     assert replay["report"]["agreement_text"] == page.locator("#mapAgreement").inner_text()

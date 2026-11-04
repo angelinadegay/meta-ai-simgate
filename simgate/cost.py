@@ -14,12 +14,16 @@ class Cost:
     def __init__(self) -> None:
         self.runs = 0
         self.model_calls = 0
+        self.model_failures: list[str] = []   # calls the API didn't answer; those steps used rules
         self.started = time.perf_counter()
 
     def snapshot(self) -> dict:
         wall_s = round(time.perf_counter() - self.started, 1)
+        text = describe(self.runs, wall_s, self.model_calls)
+        if self.model_failures:
+            text += f" · {len(self.model_failures)} fell back to rules (model unavailable)"
         return {"runs": self.runs, "wall_s": wall_s, "model_calls": self.model_calls,
-                "text": describe(self.runs, wall_s, self.model_calls)}
+                "model_failures": len(self.model_failures), "text": text}
 
 
 _current: contextvars.ContextVar[Cost | None] = contextvars.ContextVar("simgate_cost", default=None)
@@ -52,6 +56,11 @@ def add_runs(count: int) -> None:
 def add_model_call() -> None:
     if (cost := _current.get()) is not None:
         cost.model_calls += 1
+
+
+def add_model_failure(reason: str) -> None:
+    if (cost := _current.get()) is not None:
+        cost.model_failures.append(reason)
 
 
 def describe(runs: int, wall_s: float, model_calls: int) -> str:

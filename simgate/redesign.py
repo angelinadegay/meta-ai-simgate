@@ -34,13 +34,12 @@ UNITS = {"wheel_radius": " m", "drive_speed": " rad/s", "chassis_length": " m", 
 NAMES = {"wheel_radius": "wheel radius", "drive_speed": "wheel speed", "chassis_length": "chassis length",
          "chassis_width": "chassis width", "mass_kg": "mass", "leg_length": "leg length",
          "gait_freq_hz": "gait frequency", "stride_deg": "stride", "command_speed_m_s": "walking speed",
-         "wheels": "wheels", "legs": "legs", "policy_id": "policy"}
+         "wheels": "wheels", "legs": "legs"}
 GROUPS = {
     "wheel size": {"wheel_radius"}, "wheels": {"wheel_radius", "wheels"}, "legs": {"legs", "leg_length"},
     "speed": {"drive_speed", "gait_freq_hz", "command_speed_m_s"}, "gait": {"gait_freq_hz", "stride_deg"},
     "chassis": {"chassis_length", "chassis_width"}, "size": {"chassis_length", "chassis_width"},
     "body": {"chassis_length", "chassis_width"}, "mass": {"mass_kg"}, "weight": {"mass_kg"},
-    "policy": {"policy_id"},
 }
 COUNT_WORDS = {"4": 4, "four": 4, "6": 6, "six": 6}
 
@@ -58,13 +57,6 @@ class DesignSpace:
         self.robot = robot
         self.kind = kind_of(robot)
         self.bounds = dict(BOUNDS[self.kind])
-        self.policies: list[str] = []
-        if self.kind == "library" and robot.robot_id:
-            from .library import LibraryRegistry
-
-            self.policies = [card.id for card in LibraryRegistry().compatible_policies(robot.robot_id)]
-            if len(self.policies) > 1:
-                self.bounds["policy_id"] = tuple(self.policies)
         self.fixed: dict[str, Any] = {}
         self.notes: list[str] = []
         self.text = (constraints or "").strip()
@@ -132,7 +124,7 @@ class DesignSpace:
             if name in self.fixed:
                 notes.append(f"{NAMES[name]} is fixed by your constraints")
                 continue
-            if name in CHOICES or name == "policy_id":
+            if name in CHOICES:
                 options = self.bounds[name]
                 if value not in options:
                     notes.append(f"{NAMES[name]} must be one of {', '.join(map(str, options))}")
@@ -158,7 +150,7 @@ class DesignSpace:
         """How big a change is: each numeric knob as a share of its full range; a choice counts 0.5."""
         total = 0.0
         for name, value in changes.items():
-            if name in CHOICES or name == "policy_id":
+            if name in CHOICES:
                 total += 0.5
             else:
                 lo, hi = BOUNDS[self.kind][name]
@@ -168,7 +160,7 @@ class DesignSpace:
     def at_bound(self, changes: dict[str, Any]) -> list[str]:
         limits = []
         for name, value in changes.items():
-            if name in CHOICES or name == "policy_id":
+            if name in CHOICES:
                 continue
             lo, hi = self.bounds[name]
             original = getattr(self.robot, name)
@@ -236,7 +228,6 @@ def rule_candidates(space: DesignSpace, problem: str) -> list[dict]:
         speed = r.command_speed_m_s
         options = [{"command_speed_m_s": speed * 0.6}, {"command_speed_m_s": speed * 0.4},
                    {"command_speed_m_s": speed * 1.4}]
-        options += [{"policy_id": policy} for policy in space.policies if policy != r.policy_id]
         plans = {key: options for key in ("climb", "gap", "slip", "tip", "general")}
     return plans[problem]
 
@@ -245,7 +236,7 @@ def _further(space: DesignSpace, changes: dict, factor: float) -> dict:
     """The same knobs, moved `factor` times as far from the original."""
     out = {}
     for name, value in changes.items():
-        if name in CHOICES or name == "policy_id":
+        if name in CHOICES:
             out[name] = value
         else:
             before = float(getattr(space.robot, name))
@@ -279,10 +270,10 @@ def rule_strategy(space: DesignSpace, rounds: list[dict], tried: set[str]) -> tu
     pushed: dict[str, float] = {}   # every numeric knob tried so far, at its limit in the direction it was moved
     for candidate in sorted(scored, key=lambda c: -c["closeness"]):
         for name, value in candidate["changes"].items():
-            if name not in CHOICES and name != "policy_id" and name not in pushed:
+            if name not in CHOICES and name not in pushed:
                 pushed[name] = space.bounds[name][1] if float(value) > float(getattr(space.robot, name)) else space.bounds[name][0]
     at_limit = [{name: value} for name, value in pushed.items()]
-    choices = {name: value for name, value in best["changes"].items() if name in CHOICES or name == "policy_id"}
+    choices = {name: value for name, value in best["changes"].items() if name in CHOICES}
     return "bigger change", "Nothing got close, so trying bigger changes, up to the limits.", [
         {**choices, **change} for change in at_limit] + at_limit + [
         _further(space, c["changes"], 2.0) for c in sorted(scored, key=lambda c: -c["closeness"])[:CANDIDATES_PER_ROUND]]
@@ -291,8 +282,6 @@ def rule_strategy(space: DesignSpace, rounds: list[dict], tried: set[str]) -> tu
 def _fresh_change(space: DesignSpace, name: str) -> list[dict]:
     if name in CHOICES:
         return [{name: 6 if getattr(space.robot, name) == 4 else 4}]
-    if name == "policy_id":
-        return [{name: policy} for policy in space.policies if policy != space.robot.policy_id]
     lo, hi = space.bounds[name]
     before = float(getattr(space.robot, name))
     lower = name in ("drive_speed", "mass_kg", "gait_freq_hz", "stride_deg")    # slower and lighter usually help
@@ -343,8 +332,7 @@ KNOB_EFFECTS = {
     "leg_length": "longer legs step over taller obstacles",
     "gait_freq_hz": "a slower gait slips and tips less (tuned at 2.0 Hz)",
     "stride_deg": "a shorter stride is steadier, a longer one covers more ground (tuned at 15°)",
-    "command_speed_m_s": "the walking speed asked of the trained policy; slower is usually steadier",
-    "policy_id": "another trained policy that fits this exact robot",
+    "command_speed_m_s": "the walking speed asked of the robot's controller; slower is usually steadier",
 }
 
 
@@ -446,8 +434,8 @@ def _redesign(spec: SceneSpec, summary: dict, constraints: str | None, diagnosis
         "notes": [],
     }
     if space.kind == "library":
-        report["notes"].append("Only the command speed and the choice of compatible policy can change: a library "
-                               "robot's controller expects its exact body, so its body is never edited.")
+        report["notes"].append("Only the command speed can change: a library robot's body comes from its model "
+                               "file, so its body is never edited.")
     if original_metrics["passed"]:
         report["message"] = (f"{original_metrics['label']} already passes, so there is nothing to redesign."
                              if original_metrics.get("label") else "This run already passes, so there is nothing to redesign.")
@@ -649,9 +637,9 @@ def _message(report: dict, space: DesignSpace) -> str:
             changeable = [NAMES.get(name, name) for name in space.knobs]
             if len(changeable) == 1:
                 return (f" The search stopped after {tried} of up to {candidate_budget} candidate designs because only "
-                        f"{changeable[0]} can change for this trained policy; its body is fixed.")
+                        f"{changeable[0]} can change for this library robot; its body is fixed.")
             if not changeable:
-                return " The search stopped because this trained robot has no design settings available to change."
+                return " The search stopped because this library robot has no design settings available to change."
         if reason:
             return f" The search stopped early: {reason.rstrip('.')}."
         return (f" The search stopped after {tried} of up to {candidate_budget} candidate designs because "

@@ -1,7 +1,6 @@
 # Uploads stay on the machine they were made on.
 terrain/
 robot/
-policy/
 # staging folders and test runs
 .*
 !.gitignore

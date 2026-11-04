@@ -194,6 +194,7 @@ def test_baseline_classified_apartment_uses_ramp_not_the_red_stairs():
     scene.robots[0].start_place, scene.robots[0].goal_place = "kitchen", "bedroom"
     scene.mission = Mission(start_place="kitchen", goal_place="bedroom")
     report = _report(scene, [
+        {"knob": "slope_deg", "last_ok": 9.0, "reliable_ok": None, "first_fail": None, "never_broke": True},
         {"knob": "step", "reliable_ok": None, "first_fail": 0.06, "never_broke": False},
         {"knob": "friction", "reliable_ok": None, "first_fail": None, "never_broke": True},
     ])
@@ -246,4 +247,4 @@ def test_quick_scan_isolates_features_from_mission_and_validates_every_variation
     assert scene.model_dump(mode="json") == original
     assert result["world"] == limits_world(scene, scene.robots[0].id)
     if kind == "indoor":
-        assert {scan["knob"] for scan in result["scans"]} == {"step", "friction"}
+        assert {scan["knob"] for scan in result["scans"]} == {"slope_deg", "step", "friction"}   # slope: the ramp

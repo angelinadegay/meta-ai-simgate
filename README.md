@@ -13,7 +13,80 @@ from other fields. They can test an idea against real physics without learning a
 | `robot_terrain` | MuJoCo | Wheeled and legged robots on generated or real terrain: traction, tipping, climbing, reaching a goal, gravity on other worlds |
 | `structure` | OpenSees | Building frames in earthquakes: sway, story drift, resonance, damage level |
 
+## Run it
+
+SimGate runs on a normal laptop: **CPU only, no GPU needed.** Bring your own Meta Model API key, or try it without
+one in mock mode.
+
+**With Docker** (Docker Desktop or Docker Engine with Compose):
+
+1. `git clone https://github.com/angelinadegay/meta-ai-simgate.git && cd meta-ai-simgate`
+2. `cp .env.example .env` and paste your Meta key into `LLM_API_KEY=` (or set `SIMGATE_MOCK_MODE=1` to try it
+   without a key). Skipping this step works too: with no `.env` it starts in mock mode.
+3. `docker compose up`, then open **http://localhost:8000** (another port: `SIMGATE_PORT=8080 docker compose up`).
+
+The first build downloads Python packages and the NASA InSight model and takes about 4 minutes; later starts take
+seconds. `docker compose up --build` picks up code changes.
+
+**Without Docker:** Python 3.10 or 3.11.
+
+```bash
+python -m venv .venv && source .venv/bin/activate      # Windows: .venv\Scripts\activate
+pip install -r requirements.txt
+cp .env.example .env                                   # paste your Meta key (optional)
+python scripts/fetch_assets.py                         # optional: the NASA InSight lander model
+python server.py                                       # then open http://localhost:8000
+```
+
+**Which mode am I in?** At startup SimGate checks the key once, with the cheapest call there is (listing models, no
+tokens), and logs either `Connected to Meta Model API (muse-spark-1.3, muse-wonder-1.0)` or
+`Key missing/invalid: <reason>. Running in mock mode.` A bad key never stops the app. The header always shows the
+mode (**Meta models: muse-spark-1.3 · muse-wonder-1.0** or **Mock mode: rules, no model**), and so does
+`http://localhost:8000/health`.
+
+- **Model mode** (a valid `LLM_API_KEY`): Muse Spark plans and explains, Muse Wonder designs robots. This is the
+  real system. If the API times out or fails mid-session, that step uses the rules instead, says so on its card
+  ("rules (model unavailable)") and in the cost line, and the session continues.
+- **Mock mode** (`SIMGATE_MOCK_MODE=1`, or no valid key): rule-based planner, designer and explanations, with zero
+  API calls; every card says "rules (no model)" and the cost line shows 0 model calls. It's rule-based, not AI, and
+  meant for a quick look: it understands simple keywords only, and the simulations and checks are the same real
+  physics. The Meta models are the real system.
+
+**Demo runs: replay instantly (no key needed).** The home page lists three runs recorded with the Meta models:
+crater evolution ("Design a robot under 12 kg that can climb out of Victoria Crater."), the apartment ("In the
+apartment, can the rover get from the kitchen to the bedroom?") and the Gusev safe route. They replay in either mode
+with zero simulations and zero model calls, including the "Watch" route runs. They live in `demos/` (4.6 MB in all)
+and are rebuilt from `reports/` with `python scripts/build_demos.py`.
+
+**What needs no download:** the terrain presets ship in `simgate/terrains/` (300 KB of heightmaps); the raw NASA
+elevation files they were cut from are not needed to run. The G1 robot model ships in `third_party/`. Only the
+optional NASA InSight lander visual is fetched (`scripts/fetch_assets.py`, size- and hash-checked); if that download
+fails, Mars landers use a simple fallback shape and the log shows a warning.
+
+See [What is a Meta model here, and what isn't](#what-is-a-meta-model-here-and-what-isnt) for exactly which parts are
+models and which are code.
+
 ---
+
+## What is a Meta model here, and what isn't
+
+**Meta models (all runtime AI):**
+- **Muse Spark** plans requests and writes explanations.
+- **Muse Wonder** proposes robot designs and fix strategies.
+
+**Not models:**
+- Physics: MuJoCo (robots on terrain) and OpenSees (structures).
+- Robot controllers written as plain code: wheel speeds, rhythmic gaits, PD standing, waypoint following, A* routing.
+- Statistics: Wilson intervals and reliability bands.
+- Rule-based fallbacks, used only when the API is unavailable (shown in the UI as *rules (no model)*).
+
+**Data:** NASA/USGS terrain (HiRISE and other elevation models) and the NASA InSight lander model, credited where
+used; no endorsement by NASA or USGS is implied. **Robot models:** the Unitree G1 meshes (BSD-3-Clause, credited
+in `third_party/unitree_rl_gym/NOTICE.md`); MuJoCo Menagerie models keep their own licenses (none are bundled in this
+version).
+
+No third-party trained models are used. Walking humanoid support (which needs a trained policy) is not part of this
+submission.
 
 ## Structures in the world
 
@@ -112,47 +185,39 @@ not a continuous mission or a claim that the second leg physically followed a su
 
 ### Live Meta-model examples
 
-The four demo prompts were rerun with Mock mode **disabled**, planner `muse-spark-1.3`,
-and configured builder `muse-wonder-1.0`. Builder mode was `template`, so there were **no Builder
-model calls**. The G1 apartment question reused the rover apartment session and its kitchen/bedroom
-mission. Reports, replay recipes and cost events are saved under
-[reports/traversability-live](reports/traversability-live/summary.json).
+Rerun with mock mode **disabled**, planner `muse-spark-1.3` and builder `muse-wonder-1.0` (builder mode
+`template`, so **no Builder model calls**). Reports, replay recipes, recorded route runs and cost events are saved
+under [reports/traversability-live](reports/traversability-live/summary.json); the Gusev and apartment runs are
+also the home page's demo runs. The card's top line is plain words built in code from the runs:
+
+- Apartment: "The rover can reach the bedroom via the ramp (41.7 s). The stairs are too high: 0.17 m, it handles
+  about 0.06 m."
+- Gusev: "The rover can reach the summit (40.6 s). Driving straight there works too."
 
 | World / robot | Green / amber / red | Spot agreement; corrections | Route result | Runs / wall time / model calls |
 | --- | --- | --- | --- | --- |
-| Gusev / G1 | 0.0% / 65.1% / 34.8% | 1 of 4; 1 red prediction corrected to measured green | Straight reached in 143.5 s; planned route reached in 156.3 s, 2% longer actual travel | 22 / 64.5 s / 1 |
-| Apartment / rover | 59.4% / 31.7% / 8.9% | 3 of 6; 1 local red step/ledge prediction corrected to measured green | Straight stuck; safe route reached via ramp in 36.0 s | 16 / 16.0 s / 1 |
-| Apartment / G1 | 62.4% / 29.0% / 8.6% | 2 of 6; 2 predicted-green spots corrected red (stuck, fell) | Straight fell at 6.73 s; safe route stuck | 20 / 28.2 s / 1 |
-| Apartment / rover, via living room | 59.4% / 31.7% / 8.9% | 3 of 6; 1 local red step/ledge prediction corrected to measured green | Kitchen → living room: straight 7.2 s, safe 7.5 s; living room → bedroom: straight stuck, safe 25.7 s via ramp | 18 / 14.8 s / 1 |
+| Gusev / rover | 100.0% / 0.0% / 0.0% | 2 of 2; none | Straight reached in 34.2 s; safe route reached in 40.6 s, 2% longer | 14 / 84 s / 1 |
+| Apartment / rover | 69.3% / 21.8% / 8.9% | 3 of 6; the north room step was predicted red, the rover crossed it, map corrected | Straight stuck at the stairs; safe route reached the bedroom via the ramp in 41.7 s | 17 / 43 s / 1 |
+| Apartment / rover, via living room (recorded before the T6 fixes) | 59.4% / 31.7% / 8.9% | 3 of 6; 1 step corrected | Kitchen → living room: straight 7.2 s, safe 7.5 s; living room → bedroom: straight stuck, safe 25.7 s via ramp | 18 / 15 s / 1 |
 
-**All four maps are flagged unreliable.** The apartment maps now have two spots per colour;
-Gusev still has four spots (two amber and two red). Two amber spots are included in each denominator
-but not judged. Flat-baseline passes do not establish nonzero reliable slope/roughness limits,
-so nonflat Gusev remains mostly amber rather than being promoted for the demo.
-The Gusev correction is a tiny area that rounds to 0.0% green. It changes local evidence, not
-the whole-map reliability verdict. The outdoor grid covers the measured 80 m Gusev patch
-(160 x 160 cells), not the entire real region. Apartment maps are 56 x 40 cells.
-The rover's local correction is on a ramp-side ledge, not the bedroom stairs; the stairs stay red.
-The safe kitchen-to-bedroom route travels 665% farther than the **failed, truncated** straight run;
-the safe living-room-to-bedroom leg travels 181% farther than its failed straight run.
-Kitchen-to-living-room actual travel differs by about 0%. These are travelled-distance comparisons,
-not detour percentages against a completed direct trip.
+**The maps are flagged unreliable** (fewer than 4 spot checks agreed). The apartment's quick scan measures slope
+up to 1.5× the ramp's angle, so the ramp is judged on evidence; its surface line lists the floor zones ("tile 0.6,
+wood 0.5, rug 0.8, wet patch 0.15") and spots are named by place ("hallway doorway", "kitchen tile", "bedroom
+platform edge"). A spot only counts for a step if its path crossed that step. The outdoor grid covers the measured
+80 m Gusev patch (160 × 160 cells), not the entire region; apartment maps are 56 × 40 cells. Route percentages
+compare travelled distance with the straight run (a failed straight run is truncated), not a detour against a
+completed direct trip. The standing-only G1 has no route examples: it can't walk.
 
-The D1 saved requests total **76 simulations, 123.5 s wall time and 4 planning model calls**.
-The preceding T5 work used 10 planning model calls, for **14 across T5 and D1**.
-Browser screenshot checks replay saved reports and make no model calls. The optional side-by-side
-robot comparison is not implemented.
-
-![Gusev G1 map, corrected cells, straight and planned routes](tests/screenshots/traversability/mars-g1-map-routes.png)
+![Gusev rover map, straight and planned routes](tests/screenshots/traversability/mars-rover-map-routes.png)
 ![Apartment rover map and route via the connected ramp](tests/screenshots/traversability/apartment-rover-map-routes.png)
-![Apartment G1 map, corrected cells and attempted route](tests/screenshots/traversability/apartment-g1-map-routes.png)
 ![Apartment rover map with both requested legs](tests/screenshots/traversability/apartment-rover-two-leg-map-routes.png)
 
 Reproduce the live evidence using configured Meta models, then capture/check the UI with local Edge
 and the optional development dependencies:
 
 ```powershell
-.\.venv\Scripts\python.exe scripts\run_traversability_examples.py
+.\.venv\Scripts\python.exe scripts\run_traversability_examples.py mars-rover apartment-rover
+.\.venv\Scripts\python.exe scripts\build_demos.py
 .\.venv\Scripts\python.exe -m pytest -q tests\test_traversability_browser.py
 ```
 
@@ -256,7 +321,6 @@ limits (`feasibility_reference_designs`). The script prints each attempted setti
 its feasibility evidence and the adjustment.
 
 ### Lander design constraints and escalation
-
 The `victoria-rim-boulders` challenge carries mission-style design constraints
 (`RobotDesignConstraints`): `max_mass_kg`, `max_size_m` (stowed length × width;
 rover stowed length = chassis length + 2 × wheel radius, so wheel diameter counts)
@@ -368,7 +432,7 @@ prompt ─► Director ─► fixed workflow ─► Builder/Checker ─► (you 
   corrections; LLM Builder mode receives the exact failed checks. Remaining failures are shown and block a run.
   The two advisory warnings (a steep straight path, a course beyond the robot's measured limits) are shown but
   never trigger a repair or block a run.
-- **Build, then analyse, in one message:** a request that builds a scene and asks one analysis question (*"G1 on
+- **Build, then analyse, in one message:** a request that builds a scene and asks one analysis question (*"Rover on
   Mars hills to the summit — where does it break?"*, *"... and stress test it"*, *"... then why did it fail?"*) is a
   build plan with `then` set to that analysis. Once the scene is built and its checks pass, the session goes straight
   on: where it breaks and stress tests need no run first; *why did it fail* runs the scene, then diagnoses it (or says
@@ -380,8 +444,8 @@ prompt ─► Director ─► fixed workflow ─► Builder/Checker ─► (you 
   20–120 s; in a race the slowest robot to its goal sets it. Nominal speeds (`simgate/timing.py`) were measured on
   flat Earth rock over 12 s: the rover 0.83 m/s (92% of wheel speed × radius, so a faster or bigger-wheeled design
   gets less time), the 4-legged walker 0.37 m/s and the hexapod 0.77 m/s at the 2 Hz gait (scaled with the gait
-  frequency), and a library robot 92% of its commanded speed (the G1: 0.55 m/s). The reply says how it was set:
-  *"Gave the robot up to 61 s to reach the goal: 13.5 m at about 0.55 m/s, times 2.5, kept within 20–120 s."*
+  frequency), and an uploaded library robot 92% of its commanded speed. The reply says how it was set:
+  *"Gave the robot up to 41 s to reach the goal: 13.5 m at about 0.83 m/s, times 2.5, kept within 20–120 s."*
 - **Approval:** the Director asks "Run it?" unless the user explicitly requested a run. One click gives exactly
   one run, and an explicit "run again" repeats it. A scene whose checks still fail is never run by "run" or "run again"; the reply
   names the failing checks, and "run anyway" is the explicit override.
@@ -395,7 +459,7 @@ prompt ─► Director ─► fixed workflow ─► Builder/Checker ─► (you 
 
 The Director's model call produces one complete JSON Plan: workflow, world, robot count and choices, obstacles,
 goals, variants, and whether the user explicitly asked to run. The plan is checked against registered robot,
-policy, world, and terrain IDs. Invalid output gets one correction request; if that is still invalid, the rules
+controller, world, and terrain IDs. Invalid output gets one correction request; if that is still invalid, the rules
 planner is used and the user is told.
 
 After planning, deterministic code runs the fixed workflow: build/race sets up the world and robots, places
@@ -732,78 +796,68 @@ rules/model guards and library selection. Browser captures are in `tests/screens
   and floating labels distinguish robots in shared scenes; clicking a leaderboard row follows that robot.
 - **Show code** shows the simulation code the Builder wrote.
 
-### 8. Robot and policy library
+### 8. Robot and controller library
 
-- Open **Library** to browse the shipped robot, policy and world cards. Choose a robot, one of its
-  compatible policies, and a world, then apply the selection before describing or rebuilding a robot
-  scene. The panel displays each card's license and credit. Upload your own terrains, robots and policies from the
+- Open **Library** to browse the shipped robot, controller and world cards. Choose a robot and a world, then apply
+  the selection before describing or rebuilding a robot scene. Every controller is plain code (no model): the rover's
+  wheel speeds, the walkers' rhythmic gait, an uploaded robot's wheel controller or baseline gait, and the G1's PD
+  standing hold. The panel displays each card's license and credit. Upload your own terrains and robots from the
   same panel (section 9).
-- The library includes the G1 humanoid and its trained walking policy, alongside the built-in rover and
-  walkers. Prompts such as *"G1 humanoid on flat ground"* select the registered G1 robot and
-  `g1_walking` policy; the planner is given the installed IDs and must not invent library entries.
-- The G1 model and policy are sourced from Unitree Robotics' `unitree_rl_gym` repository under
-  BSD-3-Clause. The SimGate copy, source file list and modifications are recorded in
-  [`third_party/unitree_rl_gym/NOTICE.md`](third_party/unitree_rl_gym/NOTICE.md). The policy was
-  trained for flat ground and Earth gravity; results on other surfaces, gravity levels and obstacle
-  courses are transfers to validate, not guaranteed behavior.
-- To add a policy, put its model under a project-relative asset directory and add a JSON
-  `PolicyCard` in `simgate/library/presets/policies/` (or `simgate/library/uploads/policies/`).
-  Set `robot_id`, format, model file, control interval, ordered joint names, observation blocks and
-  scales, action scale, default angles, gains, command axes and ranges, training notes, license and
-  credit. For a robot with a different ID, compatibility is checked by matching all policy joints
-  against the robot card's joint names and count. The current G1 card records the exact 12-joint
-  deployment order. Robot cards and any MJCF/mesh assets belong in the corresponding robots folder;
-  asset paths must remain inside the project.
-- G1 inference uses the shipped ONNX model and named MuJoCo joints/actuators, not fixed qpos offsets.
-  A 0.5 s default-angle settle precedes policy control; the Navigator supplies walking commands. The
-  browser sends shared mesh assets once and draws the G1 meshes as BufferGeometry, positioned from
-  MuJoCo geom poses so asset offsets are not applied a second time.
+- **G1 humanoid (standing only).** *Humanoid (standing only). Walking needs a trained policy, which is not
+  included.* The G1's robot model (MJCF and meshes) comes from Unitree Robotics' `unitree_rl_gym` repository under
+  BSD-3-Clause; see [`third_party/unitree_rl_gym/NOTICE.md`](third_party/unitree_rl_gym/NOTICE.md). Its controller,
+  `g1_stand`, holds the default standing pose with a PD loop: joint targets are fixed standing angles (hip pitch
+  −0.05 rad, knee 0.1 rad, ankle pitch −0.05 rad, the rest 0) and gains are fixed (kp 400/500/300 for hips, knees and
+  ankles; kd 10/12/10). It cannot walk. The Director never plans a walk, route, race, evolution or redesign for it; if
+  asked, it says so and suggests a rover or walker.
+- What it can answer: *"Can the humanoid stand safely on this slope?"* runs the Finder's standing preset (section 14):
+  the ground is tilted (by rotating gravity, which is physically the same as tilting rigid ground, so it also works
+  on real terrain) and the robot is pushed sideways. Measured on flat Earth ground (22 runs, 3 seeds per confirmed
+  point): it stands 10 s with at most 1.5° of tilt; **ground tilt reliably OK at 1.9° (3/3), falls at 3.8° (3/3)**;
+  **sideways push (0.3 s, 2 s in) reliably OK at 20 N (3/3), falls at 25 N (3/3)**. A stiff PD hold has no balance
+  reflexes, so these limits are low; that is the honest result for a standing controller written as plain code.
+- To add a robot, put its card in `simgate/library/presets/robots/` and its controller card (a `ControllerCard`:
+  robot id, control interval, joint order, default angles, PD gains and command axes) in
+  `simgate/library/presets/controllers/`; asset paths must remain inside the project.
+- The browser sends shared mesh assets once and draws the G1 meshes as BufferGeometry, positioned from MuJoCo geom
+  poses so asset offsets are not applied a second time.
 
-### 9. Bring your own: terrains, robots and policies
+### 9. Bring your own: terrains and robots
 
-Upload a **world** (terrain), a **robot** (its body) or a **policy** (a trained brain for a Library robot). Agents
-inspect it, write its Library card, ask when they're unsure, test it, and then it appears in the Library to use like
-any built-in item: in plans, races, stress tests, diagnose and redesign.
+Upload a **world** (terrain) or a **robot** (its body). Agents inspect it, write its Library card, ask when they're
+unsure, test it, and then it appears in the Library to use like any built-in item: in plans, races, stress tests,
+diagnose and redesign. SimGate doesn't run uploaded AI controllers: an `.onnx`, `.pt` or other trained-model file is
+rejected with *"SimGate doesn't run uploaded AI controllers in this version."*
 
-**How to upload.** Open **Library**, pick the tab and press **Upload robot**, **Upload policy** or **Upload world**.
-Drop files (or one `.zip`) on the form or choose them, and fill in a name, a credit and a license (all three are
-required and shown on the card). A policy needs the Library robot it drives; a world asks which world it's on and
-what the ground is like. The chat shows the work as agent steps: **Upload** → **Inspector** or **Adapter** (the
-FACTS it measured and the draft card) → **Checker** (each check). Questions come as quick-reply chips, and an answer
-updates the card without a re-upload. A listed item gets an *uploaded* badge, its credit and license, and a **Use**
-button; one whose checks failed is shown as *not ready*, with the reasons. Behind the panel: `POST /upload`,
-`POST /upload/{robot|policy}/{id}/answers` and `GET /library`.
+**How to upload.** Open **Library**, pick the tab and press **Upload robot** or **Upload world**. Drop files (or one
+`.zip`) on the form or choose them, and fill in a name, a credit and a license (all three are required and shown on
+the card). A world asks which world it's on and what the ground is like. The chat shows the work as agent steps:
+**Upload** → **Inspector** (the FACTS it measured and the draft card) → **Checker** (each check). Questions come as
+quick-reply chips, and an answer updates the card without a re-upload. A listed item gets an *uploaded* badge, its
+credit and license, and a **Use** button; one whose checks failed is shown as *not ready*, with the reasons. Behind
+the panel: `POST /upload`, `POST /upload/robot/{id}/answers` and `GET /library`.
 
 | Upload | Files | What happens |
 | --- | --- | --- |
 | World | A GeoTIFF elevation model in a metric projection, or a square greyscale PNG/JPG heightmap | A GeoTIFF goes through the HiRISE converter's path (patch picking, hole filling, north up). A heightmap needs its width and height range in metres; black is the lowest point and the image's top edge is north. A scene can resize it from the chat ("make it wider and not as tall", "make the hill 30 m wide"); the upload itself is unchanged, and real elevation data keeps its measured scale. |
-| Robot | MJCF (`.xml`/`.mjcf`) or URDF, with its meshes (`.stl`, `.obj`, `.msh`) | Compiled with MuJoCo from upload files only (a URDF is converted with `mj_saveLastXML`), then inspected and tested. |
-| Policy | An ONNX model plus a yaml/json config and/or a README | Read in code, adapted to the chosen robot's joints by name, and tested on that robot. |
+| Robot | MJCF (`.xml`/`.mjcf`) or URDF, with its meshes (`.stl`, `.obj`, `.msh`) and texture images | Compiled with MuJoCo from upload files only (a URDF is converted with `mj_saveLastXML`), then inspected and tested. |
 
 **Safety rules.** Nothing uploaded is ever run.
 - At most 50 MB per upload; a zip holds at most 500 files and may unpack to at most 200 MB, counted while unpacking.
-- Allowed file types only: `.xml .urdf .mjcf .stl .obj .msh .png .jpg .tif .tiff .onnx .yaml .yml .json .md .txt`.
-  Code and pickles (`.py`, `.so`, executables, `.pt`/`.pth`) are refused.
+- Allowed file types only: `.xml .urdf .mjcf .stl .obj .msh .png .jpg .tif .tiff .json .md .txt`. Code, pickles and
+  trained models (`.py`, `.so`, executables, `.onnx`, `.pt`/`.pth`, `.ckpt`, `.safetensors`, …) are refused.
 - No absolute paths, no `..` in stored file names, no drive letters, no symbolic links; a rejected upload leaves
   nothing on disk.
-- YAML is read with `yaml.safe_load`; model XML may not declare a DOCTYPE or entities; MJCF `<plugin>` (native code)
-  is refused; every `file`, `filename`, `meshdir`, `texturedir` and `assetdir` must stay inside the upload, counted
-  from the model's own folder (`meshdir="../meshes"` from `urdf/` is fine).
-- Policies must be ONNX: a TorchScript `.pt` file can run arbitrary code when loaded. Export it on your own machine:
-  ```python
-  import torch
-  policy = torch.jit.load("policy.pt", map_location="cpu").eval()   # run this on your own machine
-  observation = torch.zeros(1, NUM_OBSERVATIONS)                      # the size your policy expects
-  torch.onnx.export(policy, observation, "policy.onnx", input_names=["observation"],
-                    output_names=["action"], opset_version=17)
-  ```
+- Model XML may not declare a DOCTYPE or entities; MJCF `<plugin>` (native code) is refused; every `file`,
+  `filename`, `meshdir`, `texturedir` and `assetdir` must stay inside the upload, counted from the model's own folder
+  (`meshdir="../meshes"` from `urdf/` is fine).
 - Uploads are stored under `simgate/library/uploads/<type>/<id>/` (the id is the name plus a content hash), stay on
   the machine they were made on (git-ignored), and are listed with source `upload`. `SIMGATE_UPLOADS_DIR` moves the
   folder.
 
-**How the agents inspect it.** In each case code measures the FACTS and an agent (the planner model; rules in mock
-mode) only drafts what needs judgment. Its draft is checked against the FACTS in code, with one retry that shows it
-the exact errors, and the rules draft is used if it is still wrong.
+**How the agents inspect it.** In each case code measures the FACTS and an agent (Muse Spark; rules (no model) when
+the API is unavailable) only drafts what needs judgment. Its draft is checked against the FACTS in code, with one retry
+that shows it the exact errors, and the rules draft is used if it is still wrong.
 - **Terrain:** the Inspector reports size, relief and typical (95th percentile) and maximum slope, and warns when the
   ground is steeper than walkers (20°) or rovers (25°) usually climb or smaller than 10 m across.
 - **Robot:** SimGate stores it with one root body and a free joint, turned so forward is +x, every joint named, and
@@ -812,23 +866,9 @@ the exact errors, and the rules draft is used if it is still wrong.
   warning), meshes, candidate feet and wheels, and name hints. The Inspector drafts its kind, forward axis, wheels or
   legs and which controller fits; code measures wheel sides, radii and spin, and each leg's gait phase. Checks before
   it is listed: it compiles, mass and size are plausible, it stands 1 s, a wheeled robot drives 0.5 m with the wheel
-  controller, and a legged robot's simple gait is tried and labelled *baseline gait* (it may walk badly). A robot
-  without a trained policy gets a built-in controller: the wheel controller, the baseline gait, or holding its pose.
-- **Policy:** FACTS are the ONNX inputs and outputs (and an LSTM's state), the config's keys and values, and the
-  robot's joints and default pose. The Adapter drafts the card in a fixed vocabulary of observation blocks
-  (`base_ang_vel`, `base_lin_vel`, `projected_gravity`, `command`, `joint_pos`, `joint_vel`, `last_action`, `clock`;
-  `height_scan` is refused as unsupported), with scales, action scale, default angles, gains, control step, joint
-  order and commands. Anything the files don't give (the clock period, missing default angles) becomes a question.
-  Checks: the blocks add up to the ONNX input, the actions match the output and the joints mapped by name, the policy
-  loads, it stands 2 s at command 0 and walks 0.5 m forward in 4 s. A failure says what is likely wrong, for example
-  "the observation order or scales (the robot falls immediately)".
-
-**The golden test.** The G1's own `motion.onnx` and `g1.yaml`, uploaded as a user would for robot `g1`, must give a
-card equal to the shipped G1 card field by field, and the G1 must walk with it. `g1.yaml` doesn't contain the gait
-clock's period (Unitree's `deploy_mujoco.py` hard-codes 0.8 s), so the Adapter asks for it; after the answer "0.8"
-every field matches and the G1 walks about 1.9 m in the 4 s check. This shows the Adapter works on a real policy.
-With gpt-4o-mini as the planner model, the model's own drafts were rejected by the checks in our runs, so the rules
-draft was used; the checks are what keep a wrong draft out of the Library.
+  controller, and a legged robot's simple gait is tried and labelled *baseline gait* (it may walk badly). Every
+  uploaded robot gets a built-in controller written as plain code: the wheel controller, the baseline gait, or
+  holding its pose.
 
 ### 10. Stress test (robots)
 
@@ -842,8 +882,8 @@ draft was used; the checks are what keep a wrong draft out of the Library.
 - The planner can vary gravity, surface, friction, added payload, slope angle (slope terrain only),
   obstacle scale (when obstacles exist), lateral push and terrain seed. Surface changes reset friction
   to the surface preset. Gravity changes the gravity value directly and does not change the body/world,
-  including for real terrain. Payload mass is added to the robot's mass (not for library robots such as the G1, whose trained policy
-  expects its exact body); a push lasts 0.3 seconds and comes 2 s after the robot starts moving, once it is in its
+  including for real terrain. Payload mass is added to the robot's mass (not for library robots such as the G1, whose body
+  comes from its model file); a push lasts 0.3 seconds and comes 2 s after the robot starts moving, once it is in its
   gait (the run summary gives `push_at_s`).
 - A run passes if it reaches its goal. Without a goal, it passes if it stays upright and makes at least
   1 m of forward progress. The report card lists each outcome and measured progress or goal distance,
@@ -910,7 +950,7 @@ Ask *"Make it pass"* (or *"fix it"*, *"what would work?"*), optionally with limi
 | --- | --- |
 | Rover | wheel radius 0.08–0.35 m, 4 or 6 wheels, wheel speed 2–12 rad/s, chassis length 0.4–1.2 m, chassis width 0.3–0.9 m, mass 3–40 kg |
 | Walker | 4 or 6 legs, leg length 0.15–0.35 m, gait 1.2–2.5 Hz, stride 8–22° (outside the tuned 2.0 Hz / 15° the result is labelled "untested gait") |
-| Library robot with a trained policy | walking command speed 0.2–1.0 m/s and the choice of compatible policy only; the body is never edited because the policy expects that exact body |
+| Uploaded library robot | walking command speed 0.2–1.0 m/s only; the body is never edited because it comes from the robot's model file (the standing-only G1 is never redesigned) |
 
 The user's limits narrow these bounds and are never violated; out-of-range proposals are clamped and the
 adjustment is shown.
@@ -992,7 +1032,8 @@ design, until one robot fails, and report where. No earlier run is needed.
   | friction | the scene's → 0.1 | always |
   | roughness | the scene's → 1 | the ground isn't flat |
   | sideways push (0.3 s, 2 s after it starts moving) | 0 → 80 N | always |
-  | payload | 0 → 50% of the robot's mass | not a library robot (its policy expects its exact body) |
+  | payload | 0 → 50% of the robot's mass | not a library robot (its body comes from its model file) |
+  | ground tilt (the whole ground, by rotating gravity; works on real terrain) | the scene's → 30° | standing-only robots (the G1), with the sideways push |
   | gravity | the scene's → 1.62 m/s² | the scene is on Earth, or the request mentions gravity (on any world) |
   | commanded speed | the scene's → +50%, and for walkers and library robots also → −50% (two half-searches of one condition) | always (rovers: faster only) |
 
@@ -1083,19 +1124,21 @@ Of the 8 map combinations that ran, 6 failed; the 2 inferred cells that were che
 
 ### 15. Model support
 
-The prototype works with any OpenAI-compatible endpoint, configured in `.env`:
+Every model SimGate calls at runtime is a Meta model, served by the Meta Model API (`https://api.meta.ai/v1`):
 
-| Provider | Base URL | Models |
-| --- | --- | --- |
-| Meta Model API | `https://api.meta.ai/v1` | Muse Spark for planning and explaining, Muse Wonder for building |
-| Claude (Anthropic) | `https://api.anthropic.com/v1/` | Any current Claude model |
-| OpenAI, OpenRouter or local Ollama | see `.env.example` | Any chat model |
+| Model | Used for |
+| --- | --- |
+| Muse Spark (`muse-spark-1.3`, `PLANNER_MODEL`) | planning, editing, explanations, the Inspector, Hunter and Explainer |
+| Muse Wonder (`muse-wonder-1.0`, `BUILDER_MODEL`) | robot designs, fix strategies, and simulation code when `BUILDER_MODE=llm` |
 
-Without a key, it runs in mock mode.
+Any other model name is rejected at startup, and every call is checked again before it is sent.
+`SIMGATE_DEV_ALLOW_OTHER_MODELS=1` lifts that for local development only (off by default; never used for the
+submission). Without a key, SimGate runs in mock mode: the rule-based fallbacks plan and explain, and the UI labels
+those steps *rules (no model)*.
 
 ### 16. Tests
 
-`python tests/test_pipeline.py` runs 155 offline tests (simulations, the agents with scripted models, uploads and
+`python tests/test_pipeline.py` runs 171 offline tests (simulations, the agents with scripted models, uploads and
 the page's wiring). rasterio is in requirements.txt, so the real-terrain integration test runs too; without it
 that test reports "skip" with the reason.
 
@@ -1107,9 +1150,9 @@ that test reports "skip" with the reason.
 | `legacy_robot_spec_becomes_single_entry` | The single-robot format remains backward compatible |
 | `director_plan_schema_validates_ids_and_expanded_robot_limit` | Plan IDs are registered and expanded robot counts stay within six |
 | `director_planning_uses_one_call_retries_validation_and_falls_back` | A valid plan uses one call; a validation error gets one retry that shows the model its own reply and the exact error; then rules fallback |
-| `model_library_robot_entries_validate_first_time` | The model's own G1 entries (`"kind": "library"` with `robot_id`) validate on the first call with the robots, world, goal and run it asked for; a redundant kind is dropped, a missing policy is the robot's default, an unknown one becomes its only policy with a note, and kind "rover" with g1 says to omit kind |
+| `model_library_robot_entries_validate_first_time` | The model's own G1 entries (`"kind": "library"` with `robot_id`) validate on the first call with the robots and world it asked for and no goal (it only stands); a G1 asked to walk to the summit is refused with the standing-only note; a redundant kind is dropped, a missing controller is the robot's default, an unknown one becomes its only controller with a note, and kind "rover" with g1 says to omit kind |
 | `robot_entry_errors_list_kinds_and_library_ids` | A bad robot entry (unknown kind, no robot, unknown robot_id, rover kind with g1) gets an error listing the built-in kinds and library robot_ids and saying to give robot_id and omit kind |
-| `rules_planner_keeps_goals_and_races_have_a_finish_line` | In mock mode "G1 … walking on Mars hills to the summit" builds with the summit as its goal, "race a G1 against a rover on Jezero" gets a far-side finish line, "to the bottom" is the lowest point, and any race without a goal finishes at the far side |
+| `rules_planner_keeps_goals_and_races_have_a_finish_line` | In mock mode "a walker on Mars hills to the summit" builds with the summit as its goal, "race a walker against a rover on Jezero" gets a far-side finish line, "to the bottom" is the lowest point, and any race without a goal finishes at the far side |
 | `model_plans_get_a_finish_line_and_a_named_goal` | A model's race plan without a goal (the real goal-less Jezero reply) gets the far-side finish line with the note "No finish line was given, so I put it on the far side."; a goal-less single robot asked to go "to the summit" gets the highest point |
 | `race_goals_and_run_cues_in_plans` | "Race … to the summit/top/bottom/far side" sets the shared goal, a closing "go"/"start"/"run it" asks to run, and a model's "far side" maps to the east goal |
 | `model_plans_are_corrected_from_the_request_words` | Model plans are corrected from the request's words (named world or real place, unrequested preset dropped, course obstacles on the path, closing run words), with a note the user sees |
@@ -1180,19 +1223,17 @@ that test reports "skip" with the reason.
 | `stress_planner_falls_back_when_conditions_do_not_apply` | A repeated model suggestion for an inapplicable slope variation falls back to compatible conditions |
 | `stress_payload_is_never_claimed_for_a_library_robot` | A G1 stress test has no payload row (its body is fixed, so the payload could not be applied); a rover's payload still adds mass |
 | `g1_stands_for_two_seconds_at_zero_command` | G1 stays upright with pelvis height within 10% of its standing height |
-| `g1_walks_two_metres_in_ten_seconds` | G1 makes at least 2 m of forward progress on flat Earth terrain without falling |
-| `g1_reaches_diagonal_five_metre_goal` | G1's Navigator reaches a 5 m goal at 45° to its starting heading |
 | `two_g1s_share_one_scene` | A race with two G1s compiles: their shared MJCF defaults go into the scene once |
-| `g1_lying_on_the_ground_counts_as_fallen` | A G1 that falls on a 10° slope and lies near 90° is reported as fell, with fall time and direction (humanoids count as fallen past 60°, not the rovers' 100°) |
-| `g1_named_mapping_policy_validation_and_mesh_budget` | Checker validates the policy and 1 s stand, joint-name mapping survives obstacles/goal markers, bad observation sizes are rejected, and the mesh scene stays under 5 MiB |
-| `policy_with_out_of_range_targets_is_rejected_on_load` | A policy whose first targets leave the joint ranges is rejected on load with the joint named, not silently clipped |
+| `g1_lying_on_the_ground_counts_as_fallen` | A standing G1 on a 5° slope (past what it holds) falls back and lies near 96°, and is reported as fell, with fall time and direction (humanoids count as fallen past 60°, not the rovers' 100°) |
+| `g1_gale_start_check_failure_offers_recovery_actions` | When the G1 can't stand at Gale's start, the question says how steep the ground is (no trained-policy wording) and offers flatter ground, gentler terrain, a 6-legged walker or run anyway |
+| `g1_on_gale_moves_implicit_start_flatter_and_reports_the_slope` | A G1 on Gale gets its start moved up to 5 m to flatter ground, and its stand check fails honestly with the footprint slope (~14°, past the couple of degrees a standing-only G1 holds) |
 | `g1_planner_and_library_selection_use_registered_cards` | G1 prompts and UI selections resolve to registered robot, policy and world cards |
 | `library_selection_builds_and_checks_the_selected_robot` | After "Use selected setup", the next scene is built and checked as the selected G1, not built as a rover and relabelled |
 | `library_selection_sets_up_one_scene_only` | A Library setup applies to one scene; a later "race three rovers on Mars" gets three rovers on Mars, not the selected G1 and world |
-| `rules_planner_reads_a_unitree_robot_in_a_race_as_the_g1` | "Race a Unitree robot against a rover" plans a G1 and a rover; "Unitree G1 humanoid" is one G1 |
-| `library_lists_only_each_robots_own_compatible_policies` | The rover and walker controllers, which name no joints, are offered only for their own robot (server and browser) |
-| `uploads_reject_unsafe_files` | Uploads refuse code and pickles (.py, .so, .pt with the ONNX export snippet), unsafe zip paths, symlinks, more than 500 files, zip bombs, oversize uploads, MJCF plugins, file references leaving the upload, DOCTYPE/entities, unsafe YAML, a missing main file and missing name/credit/license, and leave nothing on disk |
-| `uploads_are_stored_and_listed_in_the_registry` | A safe upload is stored under uploads/<type>/<id>/ with an upload.json record, the same upload twice is stored once, and the registry lists it with source "upload" |
+| `rules_planner_reads_a_unitree_robot_as_the_g1_and_refuses_racing_it` | "Unitree G1 humanoid" is one G1; "race a Unitree robot against a rover" is read as the G1 and refused, since it only stands |
+| `library_lists_only_each_robots_own_compatible_controllers` | The rover and walker controllers, which name no joints, are offered only for their own robot, and the G1 gets only its stand controller (server and browser) |
+| `uploads_reject_unsafe_files` | Uploads refuse code and pickles (.py, .so), any trained model or policy upload (.onnx, .pt: "SimGate doesn't run uploaded AI controllers in this version."), unsafe zip paths, symlinks, more than 500 files, zip bombs, oversize uploads, MJCF plugins, file references leaving the upload, DOCTYPE/entities, YAML, a missing main file and missing name/credit/license, and leave nothing on disk |
+| `uploads_are_stored_and_listed_in_the_registry` | A safe upload is stored under uploads/robot/<id>/ with an upload.json record, the same upload twice is stored once, and the registry lists it with source "upload" (robots only: no controller uploads) |
 | `upload_endpoint_stores_files_and_reports_errors` | POST /upload stores a robot and answers 400 with the reason for a rejected file or a missing credit, and 413 for an oversize upload |
 | `uploaded_geotiff_and_png_terrains_become_presets` | A fake GeoTIFF (make_test_dtm.py) and a small PNG heightmap uploaded as terrains become presets that build and pass the physics checks; missing world, surface, size or height range come back as questions; the image's top is north; the Inspector reports size, relief and slopes and warns when it is too steep or too small; both appear as Library worlds with source "upload" |
 | `planner_names_an_uploaded_terrain_only_by_its_whole_name` | An uploaded terrain called "My hill" is chosen for "a rover on my hill" but not for "make my rover faster" |
@@ -1203,11 +1244,7 @@ that test reports "skip" with the reason.
 | `uploaded_mjcf_quadruped_gets_a_baseline_gait` | An MJCF quadruped (scene parts dropped) gets a baseline gait in diagonal pairs, labelled as such |
 | `inspector_flags_wrong_units` | A robot 8 mm tall gets the mm/inches warning and isn't listed |
 | `inspector_model_draft_is_checked_against_facts` | The Inspector agent's draft is checked against FACTS with one retry showing the exact errors, falls back to the rules when still wrong, and loses questions that FACTS already settle |
-| `uploaded_robots_race_with_name_prefixes_and_their_own_defaults` | An uploaded cart and dog race a G1 with prefixed names: the G1's joint defaults stay on the G1, visual meshes stay visual, and all three move |
-| `golden_g1_policy_upload_matches_the_shipped_card_and_walks` | GOLDEN: the G1's own motion.onnx and g1.yaml, uploaded as a user would for robot g1, ask which robot and then the clock period (g1.yaml doesn't give it); after "0.8" the Adapter's card equals the shipped G1 card field by field, it stands 2 s, walks 0.5 m in 4 s and is listed |
-| `adapter_model_draft_is_checked_against_the_config` | The Adapter agent's draft is checked against the ONNX sizes and the config's own numbers, with one retry showing the exact errors; a height scan is refused as unsupported |
-| `adapter_checks_explain_a_wrong_observation_order` | A policy card with joint positions and velocities swapped fails the standing/walking checks, each with what is likely wrong, and isn't listed |
-| `policy_runtime_reads_base_linear_velocity_in_the_body_frame` | The base_lin_vel block is the root's velocity in its own frame |
+| `uploaded_robots_race_with_name_prefixes_and_their_own_defaults` | An uploaded cart and dog race beside a standing G1 with prefixed names: the G1's joint defaults stay on the G1, visual meshes stay visual, the cart and dog move and the G1 stays up where it is |
 | `library_page_offers_uploads` | The Library's Upload buttons open a working form (drag-and-drop or file picker; name, credit and license required; robot picker for policies) and show Upload → Inspector/Adapter → Checker steps, question chips, "uploaded"/"not ready" badges and a Use button |
 | `library_endpoint_shows_uploads_with_their_state` | GET /library lists uploaded cards and each upload's state: listed, needs answers (with its questions), or not ready (with the failed checks) |
 | `an_uploaded_robot_is_usable_everywhere` | An uploaded cart is offered to the Director by id, planned by name, titled by its name, raced, run with its own climb limits, diagnosed, redesigned by command speed only, and stress-tested in worker processes |
@@ -1220,7 +1257,7 @@ that test reports "skip" with the reason.
 | `diagnose_still_runs_a_follow_up_after_three_causes_on_two_seeds` | With faked batch results, after 3 causes on 2 seeds each, two causes that each only partly help are tested together as a follow-up on 2 seeds and confirmed: 2 + 6 + 2 = 10 runs within the 12-rerun budget |
 | `finder_slope_limit_matches_a_direct_sweep_and_the_map_agrees` | On Earth sand the finder's slope bracket overlaps a direct 2.5° sweep's (passes at 22.5°, fails from 25°), within 40 runs and 5 per condition, each run one change; the map's edges agree with phase 1; the honesty line and the rules text's numbers check out |
 | `finder_budget_explainer_number_check_and_baseline_failure` | With a faked batch runner: a thorough search uses 4 conditions within 80 runs and fills the map; the slope bracket is 1/16 of its range; a scene that already fails stops after 1 run; the number check rejects "fails at 21.0°" and a reply that doesn't start with the tightest limit, retries once and falls back to the rules text |
-| `finder_searches_speed_both_ways_for_legged_and_library_robots` | A walker (and a library robot) gets speed searched faster and slower as one condition with two half-searches of at most 5 runs each, finding both limits; a rover is searched faster only |
+| `finder_searches_speed_both_ways_for_legged_robots_and_standing_limits_for_the_g1` | A walker gets speed searched faster and slower as one condition with two half-searches of at most 5 runs each, finding both limits; a rover is searched faster only; the standing-only G1 gets tilt and push, never speed |
 | `finder_searches_gravity_on_any_world_only_when_asked` | On Mars, "where does it break if gravity drops?" searches gravity from 3.71 m/s² and finds its limit; without the word it isn't searched; gravity named only by the model is removed with a note |
 | `finder_inferred_map_cells_are_labelled_counted_and_never_explained_as_measured` | Inferred map cells have no run id while run cells point to phase-2 runs; the counts add up, the honesty line counts the inferred cells, FACTS for the Explainer state only the combinations that ran, and the card labels inferred cells |
 | `hunter_value_past_a_single_limit_is_rejected_with_the_exact_error` | A fake Hunter that sets slope at its single limit is rejected; the retry names the value, the limit and the window; only the corrected combination runs |
@@ -1254,41 +1291,26 @@ that test reports "skip" with the reason.
 | `mixed_race_time_limit_uses_the_slowest_robot` | A rover and walker race gets the walker's longer time limit (from the distance), rovers alone a shorter one, and reruns keep it |
 | `crashed_runs_are_a_system_problem_not_physics` | Crashed stress runs are reported as a system problem and left out of the analysis; if all crash, there is no Explainer call |
 | `mock_tips_fit_the_scene` | Mock tips fit the scene: a course suggests wheels or legs, flat ground never "make the slope steeper", a 4-legged walker "use six legs" |
-| `policy_without_default_angles_asks_for_them` | A policy config without default angles gets a question ("robot pose" or "zeros"); the answer fills them from the robot's own pose and a bad answer is refused |
-| `policy_whose_onnx_sizes_dont_fit_is_refused_with_the_numbers` | A config that explains 44 of the ONNX's 47 inputs, or a 12-action policy for a 4-joint robot, is refused with those numbers and shown as not ready |
+
+Other suites run under pytest (`python -m pytest tests`). `tests/test_run_modes.py` covers running from a fresh
+clone: mode selection (no key, valid key, invalid key, `SIMGATE_MOCK_MODE=1`), the startup status and header label,
+mock mode making zero API calls, an API timeout mid-session falling back to labelled rules without crashing,
+`.env.example` holding exactly the variables the code reads, the missing InSight model using the fallback shape,
+`fetch_assets.py` checking size and hash and only warning on failure, every terrain preset loading without raw data,
+a structure patch without raw data keeping the shipped patch, and the saved demos replaying with zero simulations
+and zero model calls in both modes.
+
 ---
 
 ## Quick start
 
-```bash
-python -m venv .venv && source .venv/bin/activate      # Windows: .venv\Scripts\activate
-pip install -r requirements.txt
-python tests/test_pipeline.py                          # offline tests
-uvicorn server:app --reload                            # then open http://localhost:8000
-```
+See [Run it](#run-it) for Docker, plain Python and the two modes. Offline tests: `python tests/test_pipeline.py`
+(and `python -m pytest tests` for the rest; browser tests need `pip install -r requirements-dev.txt`).
 
-## Docker
-
-Clone SimGate, prepare any missing runtime assets and Mars terrain, then start the container:
-
-```bash
-git clone https://github.com/angelinadegay/meta-ai-simgate.git
-cd meta-ai-simgate
-docker compose build
-docker compose run --rm simgate python scripts/bootstrap.py
-docker compose up
-```
-
-Open `http://localhost:8000`. The bootstrap script clones Unitree's `unitree_rl_gym` only if the required G1
-assets are missing. It imports Gale Crater, Jezero Crater and Ares 3 HiRISE terrain only when their files are
-missing; the normal checkout already includes both the model assets and terrain presets. To re-import all three
-Mars datasets, run `docker compose run --rm simgate python scripts/bootstrap.py --refresh-terrains`. Terrain
-and user-upload data persist in Docker volumes. Copy `.env.example` to `.env` and set your model configuration
-before starting Compose to enable a hosted model; otherwise the app runs in Mock mode. The API key is passed
-to the container as an environment variable and is not baked into the image.
-
-To use a model, copy `.env.example` to `.env` and fill in a base URL, key and model names. Then open
-`http://localhost:8000/health` to confirm which mode is active.
+`scripts/bootstrap.py` re-fetches the G1 robot model (MJCF and meshes, never Unitree's trained policies) or
+re-imports the Gale, Jezero and Ares 3 terrain if those files are missing; the checkout already has them. User
+uploads persist in a Docker volume. The API key reaches the container as an environment variable and is never
+baked into the image (`.env` is excluded from the build).
 
 To import real terrain:
 
@@ -1332,12 +1354,10 @@ Things to try:
 | `simgate/reliability.py` | Honest uncertainty: the same condition on several seeds, Wilson 95% interval, reliable pass / borderline / reliable fail |
 | `simgate/cost.py` | What a request cost: runs, wall time and model calls |
 | `simgate/redesign.py` | Make it pass: bounded design search, constraints, robustness checks |
-| `simgate/library/` | Validated robot, policy and world cards and filesystem registry |
-| `simgate/policy_runtime.py` | Named-joint policy inference and PD control |
-| `simgate/simple_control.py` | Built-in controllers for uploaded robots: wheels, baseline gait, held pose |
+| `simgate/library/` | Validated robot, controller and world cards and filesystem registry |
+| `simgate/simple_control.py` | Built-in controllers in plain code: wheels, baseline gait, held pose, the G1's PD standing hold |
 | `simgate/library/uploads.py` | Safe upload storage: size, file type, path and content checks |
 | `simgate/library/inspector.py` | The Inspector: uploaded robot → normalized MJCF, FACTS, draft card, checks |
-| `simgate/library/adapter.py` | The Adapter: uploaded ONNX policy → policy card for a Library robot, checks |
 | `simgate/library/terrain_upload.py`, `simgate/terrain_import.py` | Uploaded GeoTIFF/heightmap → terrain preset and the Inspector's report |
 | `simgate/orchestrator.py` | Runs a session and streams events to the browser |
 | `simgate/backends/` | One file per simulator (`mujoco_backend.py`, `opensees_backend.py`) |
@@ -1367,8 +1387,6 @@ reports use the real local simulation pipeline; only open-ended planning is mock
 | --- | --- | --- |
 | Explore | [1440×900](docs/screenshots/home-1440.png) | [390×844](docs/screenshots/home-390.png) |
 | World and robot selection | [1440×900](docs/screenshots/home-chooser-1440.png) | [390×844](docs/screenshots/home-chooser-390.png) |
-| G1 Workbench | [1440×900](docs/screenshots/workbench-g1-mars-1440.png) | [390×844](docs/screenshots/workbench-g1-mars-390.png) |
-| G1 run results | [1440×900](docs/screenshots/g1-run-1440.png) | [390×844](docs/screenshots/g1-run-390.png) |
 | Agent detail | [1440×900](docs/screenshots/agent-detail-1440.png) | [390×844](docs/screenshots/agent-detail-390.png) |
 | Scene analysis panel | [1440×900](docs/screenshots/details-on-1440.png) | [390×844](docs/screenshots/details-on-390.png) |
 | Presentation mode | [1440×900](docs/screenshots/presentation-1440.png) | [390×844](docs/screenshots/presentation-390.png) |
@@ -1387,12 +1405,10 @@ events.
 - Robots steer straight at the goal and go over obstacles; there's no route planning around them yet.
 - Uploaded robots: the baseline gait is a simple open-loop gait and may walk badly; MJCF equality constraints,
   tendons and texture images in an upload aren't used; slip is measured only on built-in feet and wheels.
-- The Adapter's rules know legged_gym / unitree_rl_gym deploy configs; other conventions rely on the planner model
-  or the user's answers. A config that names no joints is mapped in the robot's own joint order (noted on the card).
 - Gap widths snap to the terrain grid (about 0.13 m steps on a 20 m terrain); the measured width is reported.
-- The built-in walkers use a fixed rhythmic gait. The G1 humanoid uses a trained policy but was trained
-  for flat Earth conditions; the 4-legged built-in walker falls on side slopes
-  of about 10° or more.
+- The built-in walkers use a fixed rhythmic gait; the 4-legged built-in walker falls on side slopes of about 10° or
+  more. The G1 humanoid only stands (a PD hold with no balance reflexes): it falls on ground tilted about 4° or under
+  a 25 N sideways push. Walking humanoid support needs a trained policy and is not part of this submission.
 - Orbital terrain can't show rocks smaller than about 1 m. Small random bumps stand in for them.
 - The OpenSees model is linear-elastic (no yielding, no P-delta), so damage levels are rough estimates.
 - The mock planner understands only simple keywords; a real model handles open-ended prompts.
@@ -1404,13 +1420,13 @@ events.
 ## Planned next
 
 - Steering around obstacles (route planning)
-- Additional robot and policy library entries
+- Additional robot library entries
 - Quick-tune swarm, and voice editing if time allows
 
 ## Credits and licenses
 
 - Mars elevation data: NASA/JPL/University of Arizona HiRISE; DTMs via USGS on AWS Open Data (CC0 1.0).
-- G1 model, meshes and walking policy: Unitree Robotics, `unitree_rl_gym` (BSD-3-Clause); see
-  `third_party/unitree_rl_gym/LICENSE` and `NOTICE.md`.
+- G1 robot model and meshes: Unitree Robotics, `unitree_rl_gym` (BSD-3-Clause); see
+  `third_party/unitree_rl_gym/LICENSE` and `NOTICE.md`. No Unitree policy is included or run.
 - three.js is vendored in `static/vendor/` (MIT license, see `three-LICENSE`).
 - MuJoCo (Apache-2.0) and OpenSeesPy are installed from PyPI.

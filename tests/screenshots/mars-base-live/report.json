@@ -1257,7 +1257,7 @@
     "robot": {
       "kind": "rover",
       "robot_id": null,
-      "policy_id": null,
+      "controller_id": null,
       "wheels": 4,
       "wheel_radius": 0.15,
       "wheel_width": 0.08,

@@ -1,4 +1,4 @@
-"""Filesystem-backed registry for robot and policy library cards."""
+"""Filesystem-backed registry for robot, controller and world library cards."""
 
 import json
 from pathlib import Path
@@ -7,15 +7,16 @@ from typing import TypeVar
 from pydantic import ValidationError
 
 from .. import presets
+from ..indoor import get_layout
 from ..terrain_data import list_presets
-from .cards import PolicyCard, RobotCard, WorldCard
+from .cards import ControllerCard, RobotCard, WorldCard
 from . import uploads as uploads_module
 from .uploads import UploadRecord, list_uploads
 
-CardType = TypeVar("CardType", RobotCard, PolicyCard)
+CardType = TypeVar("CardType", RobotCard, ControllerCard)
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 PRESETS_DIR = Path(__file__).resolve().parent / "presets"
-UPLOAD_CARD_FILES = {"robots": "robot_card.json", "policies": "policy_card.json"}   # in uploads/<type>/<id>/
+UPLOAD_CARD_FILES = {"robots": "robot_card.json", "controllers": "controller_card.json"}   # in uploads/<type>/<id>/
 
 
 class LibraryRegistry:
@@ -32,19 +33,19 @@ class LibraryRegistry:
     def robots(self) -> list[RobotCard]:
         return self._cards(RobotCard, "robots")
 
-    def policies(self) -> list[PolicyCard]:
-        return self._cards(PolicyCard, "policies")
+    def controllers(self) -> list[ControllerCard]:
+        return self._cards(ControllerCard, "controllers")
 
-    def compatible_policies(self, robot_id: str) -> list[PolicyCard]:
+    def compatible_controllers(self, robot_id: str) -> list[ControllerCard]:
         robot = self.robot(robot_id)
         return [
-            policy
-            for policy in self.policies()
-            if policy.robot_id == robot.id
+            controller
+            for controller in self.controllers()
+            if controller.robot_id == robot.id
             or (
-                bool(policy.joint_order)   # built-in controllers name no joints: they fit only their own robot
-                and len(policy.joint_order) == len(robot.joint_names)
-                and all(name in robot.joint_names for name in policy.joint_order)
+                bool(controller.joint_order)   # the rover and walker controllers name no joints: only their own robot
+                and len(controller.joint_order) == len(robot.joint_names)
+                and all(name in robot.joint_names for name in controller.joint_order)
             )
         ]
 
@@ -54,14 +55,14 @@ class LibraryRegistry:
                 return card
         raise ValueError(f"Unknown robot library id: {robot_id}")
 
-    def policy(self, policy_id: str) -> PolicyCard:
-        for card in self.policies():
-            if card.id == policy_id:
+    def controller(self, controller_id: str) -> ControllerCard:
+        for card in self.controllers():
+            if card.id == controller_id:
                 return card
-        raise ValueError(f"Unknown policy library id: {policy_id}")
+        raise ValueError(f"Unknown controller library id: {controller_id}")
 
     def uploads(self, kind: str | None = None) -> list[UploadRecord]:
-        """User uploads stored on disk (source "upload"), newest first; kind is terrain, robot or policy."""
+        """User uploads stored on disk (source "upload"), newest first; kind is terrain or robot."""
         return list_uploads(kind, self.uploads_dir)
 
     def worlds(self) -> list[WorldCard]:
@@ -81,7 +82,7 @@ class LibraryRegistry:
             for surface, friction in surfaces.items()
         ]
         worlds.append(WorldCard(id="apartment", name="Apartment", body="earth", gravity_m_s2=9.81,
-                    surface="rock", friction=0.5, terrain_kind="indoor", terrain_preset="apartment",
+                    surface="rock", friction=get_layout("apartment")["nominal_friction"], terrain_kind="indoor", terrain_preset="apartment",
                     license="Procedural engineering layout", credit="SimGate 14 x 10 m apartment; nominal per-zone friction."))
         for name, meta in list_presets().items():
             body = meta.get("body", "earth")
@@ -108,7 +109,7 @@ class LibraryRegistry:
         cards: dict[str, CardType] = {}
         paths = [path for folder in (self.presets_dir / category, self.uploads_dir / category) if folder.exists()
                  for path in sorted(folder.glob("*.json"))]
-        # an uploaded robot or policy gets its card once the Inspector's checks pass
+        # an uploaded robot gets its cards once the Inspector's checks pass
         paths += sorted(self.uploads_dir.glob(f"*/*/{UPLOAD_CARD_FILES[category]}"))
         for path in paths:
             try:

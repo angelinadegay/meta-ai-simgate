@@ -177,7 +177,7 @@ def test_g1_in_challenge_is_untouched_and_never_a_design(monkeypatch):
     monkeypatch.setattr(config, "MOCK_MODE", True)
     scene = SceneSpec(
         domain="robot_terrain", terrain=Terrain(kind="flat"),
-        robot=Robot(kind="library", robot_id="g1", policy_id="g1_walking"),
+        robot=Robot(kind="library", robot_id="g1", controller_id="g1_stand"),
     ).fill_defaults()
     before = scene.model_dump()
     designs = evolve.propose_generation0(scene)

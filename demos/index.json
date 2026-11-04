@@ -1,0 +1,61 @@
+[
+  {
+    "id": "crater-evolution",
+    "title": "Crater evolution",
+    "kind": "evolution",
+    "prompt": "Design a robot under 12 kg that can climb out of Victoria Crater.",
+    "file": "crater-evolution.json.gz",
+    "size_bytes": 2017210,
+    "recorded": {
+      "planner_model": "muse-spark-1.3",
+      "builder_model": "muse-wonder-1.0",
+      "mock_mode": false,
+      "cost": {
+        "runs": 38,
+        "wall_s": 397.3,
+        "model_calls": 7,
+        "text": "38 runs · 397 s · 7 model calls"
+      }
+    }
+  },
+  {
+    "id": "gusev-safe-route",
+    "title": "Gusev safe route",
+    "kind": "traversability",
+    "prompt": "Where on Gusev can the rover drive safely? Plan a safe route to the summit and drive it.",
+    "file": "gusev-safe-route.json.gz",
+    "size_bytes": 2278735,
+    "recorded": {
+      "planner_model": "muse-spark-1.3",
+      "builder_model": "muse-wonder-1.0",
+      "mock_mode": false,
+      "cost": {
+        "runs": 14,
+        "wall_s": 84.1,
+        "model_calls": 1,
+        "model_failures": 0,
+        "text": "14 runs · 84 s · 1 model call"
+      }
+    }
+  },
+  {
+    "id": "apartment-traversability",
+    "title": "Apartment: kitchen to bedroom",
+    "kind": "traversability",
+    "prompt": "In the apartment, can the rover get from the kitchen to the bedroom?",
+    "file": "apartment-traversability.json.gz",
+    "size_bytes": 275772,
+    "recorded": {
+      "planner_model": "muse-spark-1.3",
+      "builder_model": "muse-wonder-1.0",
+      "mock_mode": false,
+      "cost": {
+        "runs": 17,
+        "wall_s": 43.0,
+        "model_calls": 1,
+        "model_failures": 0,
+        "text": "17 runs · 43 s · 1 model call"
+      }
+    }
+  }
+]

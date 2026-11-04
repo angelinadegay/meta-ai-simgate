@@ -5,3 +5,11 @@ __pycache__/
 .pytest_cache/
 
 assets/nasa/
+
+# No third-party trained models in this project (policy work lives on the g1-policy branch)
+*.onnx
+*.pt
+*.pth
+*.ckpt
+third_party/unitree_rl_gym/deploy/
+unitree_rl_gym/

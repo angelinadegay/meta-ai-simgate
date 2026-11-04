@@ -806,7 +806,7 @@ def race_generation(
     for candidate in candidates:
         kind = candidate["robot"]["kind"]
         robot = {key: value for key, value in candidate["robot"].items()
-                 if key not in {"kind", "robot_id", "policy_id"}}
+                 if key not in {"kind", "robot_id", "controller_id"}}
         variations.append({
             "label": f"{candidate['id']} {candidate['name']}",
             "seed": seed,
@@ -1235,7 +1235,7 @@ def verify_winner(challenge: SceneSpec, design: dict) -> dict:
         raise ValueError(f"{candidate['id']} violates challenge design constraints: {'; '.join(violations)}.")
     seed = base.terrain.seed
     robot = {key: value for key, value in candidate["robot"].items()
-             if key not in {"kind", "robot_id", "policy_id"}}
+             if key not in {"kind", "robot_id", "controller_id"}}
     variations = [{
         "label": f"Verification seed {index}",
         "seed": seed + index,

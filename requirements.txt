@@ -9,7 +9,6 @@ httpx>=0.27               # tests: FastAPI's TestClient
 openai>=1.30
 pydantic>=2.6
 pytest>=8
-onnxruntime>=1.17
 
 # Real terrain: GeoTIFF elevation models (scripts/hirise_to_simgate.py, terrain uploads) and heightmap images
 rasterio>=1.3

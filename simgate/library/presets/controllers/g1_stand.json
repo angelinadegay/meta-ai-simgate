@@ -1,0 +1,94 @@
+{
+  "id": "g1_stand",
+  "name": "G1 Standing Hold",
+  "robot_id": "g1",
+  "control_dt": 0.002,
+  "joint_order": [
+    "left_hip_pitch_joint",
+    "left_hip_roll_joint",
+    "left_hip_yaw_joint",
+    "left_knee_joint",
+    "left_ankle_pitch_joint",
+    "left_ankle_roll_joint",
+    "right_hip_pitch_joint",
+    "right_hip_roll_joint",
+    "right_hip_yaw_joint",
+    "right_knee_joint",
+    "right_ankle_pitch_joint",
+    "right_ankle_roll_joint"
+  ],
+  "default_angles": [
+    -0.05,
+    0.0,
+    0.0,
+    0.1,
+    -0.05,
+    0.0,
+    -0.05,
+    0.0,
+    0.0,
+    0.1,
+    -0.05,
+    0.0
+  ],
+  "kps": [
+    400,
+    400,
+    400,
+    500,
+    300,
+    300,
+    400,
+    400,
+    400,
+    500,
+    300,
+    300
+  ],
+  "kds": [
+    10,
+    10,
+    10,
+    12,
+    10,
+    10,
+    10,
+    10,
+    10,
+    12,
+    10,
+    10
+  ],
+  "command": {
+    "names": [
+      "vx",
+      "vy",
+      "yaw_rate"
+    ],
+    "ranges": [
+      [
+        -1.0,
+        1.0
+      ],
+      [
+        -1.0,
+        1.0
+      ],
+      [
+        -1.0,
+        1.0
+      ]
+    ],
+    "default": [
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  "notes": [
+    "PD hold of the standing pose with fixed gains; plain code, no learned model.",
+    "Humanoid (standing only). Walking needs a trained policy, which is not included."
+  ],
+  "license": "Project",
+  "credit": "Built-in SimGate controller."
+}

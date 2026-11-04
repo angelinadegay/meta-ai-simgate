@@ -1,6 +1,6 @@
 {
   "id": "g1",
-  "name": "G1 Humanoid",
+  "name": "G1 Humanoid (standing only)",
   "kind": "humanoid",
   "source": "preset",
   "mjcf_path": "third_party/unitree_rl_gym/resources/robots/g1_description/g1_12dof.xml",
@@ -24,7 +24,12 @@
   "mass_kg": 32.1069,
   "footprint_length_m": 0.5,
   "footprint_width_m": 0.35,
-  "forward_axis": [1.0, 0.0, 0.0],
+  "forward_axis": [
+    1.0,
+    0.0,
+    0.0
+  ],
   "license": "BSD-3-Clause",
-  "credit": "Unitree Robotics, unitree_rl_gym; see third_party/unitree_rl_gym/LICENSE and NOTICE.md."
+  "credit": "Unitree Robotics, unitree_rl_gym; see third_party/unitree_rl_gym/LICENSE and NOTICE.md.",
+  "controller": "stand"
 }

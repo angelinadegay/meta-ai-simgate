@@ -89,12 +89,26 @@ def test_meta_plan_schema_and_guard(monkeypatch):
     monkeypatch.setattr(llm, "chat", lambda *args: json.dumps({
         "workflow": "traversability", "summary": "Gusev walking map",
         "world": {"terrain_kind": "real", "preset": "gusev-columbia-hills"},
-        "robots": [{"robot_id": "g1"}], "goal": {"place": "highest"},
+        "robots": [{"kind": "walker"}], "goal": {"place": "highest"},
     }))
-    result = Director().plan("Where on Gusev can the G1 walk safely? Plan a safe route to the summit and walk it.")
+    result = Director().plan("Where on Gusev can the walker go safely? Plan a safe route to the summit and walk it.")
     assert result.workflow == "traversability"
     assert result.goal.place == "highest"
     assert result.world.preset == "gusev-columbia-hills"
+
+
+def test_a_g1_traversability_map_is_refused_because_it_only_stands(monkeypatch):
+    from simgate import llm
+    from simgate.director import STANDING_ONLY
+
+    monkeypatch.setattr(config, "MOCK_MODE", False)
+    monkeypatch.setattr(llm, "chat", lambda *args: json.dumps({
+        "workflow": "traversability", "summary": "Gusev walking map",
+        "world": {"terrain_kind": "real", "preset": "gusev-columbia-hills"},
+        "robots": [{"robot_id": "g1"}], "goal": {"place": "highest"},
+    }))
+    result = Director().plan("Where on Gusev can the G1 walk safely? Plan a safe route to the summit and walk it.")
+    assert result.workflow == "answer" and STANDING_ONLY in result.reply
 
 
 def test_finder_next_action_opens_map():

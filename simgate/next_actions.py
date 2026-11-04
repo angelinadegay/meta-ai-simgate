@@ -126,16 +126,13 @@ def _plain_check_reason(outcome: dict[str, Any], facts: dict[str, Any], scene: S
     evidence = f"{name} {detail}".lower()
     robot_name = _robot_name(scene, facts)
     slope = facts.get("start_slope_deg") or outcome.get("start_slope_deg")
-    entry = _robot(scene)
-    trained_walker = bool(entry and entry.robot.kind == "library")
     if slope is None and (match := re.search(r"starting footprint ground slope ([\d.]+)°", str(detail), re.I)):
         slope = float(match.group(1))
     if "unit" in evidence:
         return "The robot file uses inconsistent units, so its size and movement cannot be checked safely."
     if "rest" in evidence or "stand" in evidence or "spawn" in evidence:
         if slope is not None:
-            policy = ", and its trained walking policy was trained on flat ground" if trained_walker else ""
-            return f"{robot_name} can't stand where it starts: the ground there is about {slope:g}° steep{policy}."
+            return f"{robot_name} can't stand where it starts: the ground there is about {slope:g}° steep."
         return f"{robot_name} can't stand securely where it starts, so the physics check stopped the run."
     if "slope" in evidence and slope is not None:
         return f"The starting ground is about {slope:g}° steep, beyond what this robot can safely start on."
@@ -332,7 +329,7 @@ def next_actions(workflow: str, outcome: dict[str, Any] | str, facts: dict[str, 
         best = report.get("best_attempt") or {}
         details = []
         if scene and scene.robot and scene.robot.kind == "library":
-            details.append("the trained robot body is fixed, so only its speed or a compatible policy can change")
+            details.append("the library robot's body comes from its model file, so only its speed can change")
         if conclusion:
             details.append(_first_sentence(conclusion, "" ).rstrip("."))
         if best.get("description"):
@@ -347,11 +344,7 @@ def next_actions(workflow: str, outcome: dict[str, Any] | str, facts: dict[str, 
             _action(f"Try gentler terrain ({_gentler_terrain(scene)})", f"change terrain to {_gentler_terrain(scene)}"),
             _action(f"Race it against {other_label}", race_message),
         ]
-        if scene and scene.robot and scene.robot.kind == "library":
-            actions.append(_action("Upload a better policy", action={"type": "open_upload", "kind": "policy"}))
-        else:
-            actions.append(_workflow_action("See where it breaks", "find_failures", robot_id,
-                                            "find where it breaks"))
+        actions.append(_workflow_action("See where it breaks", "find_failures", robot_id, "find where it breaks"))
         return {"reason": reason, "actions": actions[:4]}
 
     if workflow in {"finder", "find_failures", "envelope"}:

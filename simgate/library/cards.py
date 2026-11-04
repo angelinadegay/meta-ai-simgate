@@ -1,4 +1,4 @@
-"""Validated metadata models for library robots, policies, and worlds."""
+"""Validated metadata models for library robots, their plain-code controllers, and worlds."""
 
 from pathlib import PurePosixPath
 from typing import Literal
@@ -51,8 +51,8 @@ class RobotCard(Card):
     footprint_length_m: float | None = Field(None, gt=0)
     footprint_width_m: float | None = Field(None, gt=0)
     forward_axis: tuple[float, float, float] = (1.0, 0.0, 0.0)
-    # uploaded robots without a trained policy: which built-in controller drives them, and its parts
-    controller: Literal["policy", "wheels", "gait", "hold"] = "policy"
+    # which plain-code controller drives the robot ("builtin": SimGate's procedural rover/walker code), and its parts
+    controller: Literal["builtin", "wheels", "gait", "hold", "stand"] = "builtin"
     wheels: list[WheelSpec] = []
     track_m: float | None = None    # distance between left and right wheels
     legs: list[LegSpec] = []
@@ -66,20 +66,6 @@ class RobotCard(Card):
             raise ValueError("robot joint_names must be unique")
         if (self.footprint_length_m is None) != (self.footprint_width_m is None):
             raise ValueError("robot footprint length and width must be provided together")
-        return self
-
-
-class ObservationBlock(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    name: str
-    size: int = Field(gt=0)
-    scale: float | list[float] = 1.0
-
-    @model_validator(mode="after")
-    def validate_scale(self) -> "ObservationBlock":
-        if isinstance(self.scale, list) and len(self.scale) != self.size:
-            raise ValueError(f"{self.name} scale must have {self.size} values")
         return self
 
 
@@ -103,44 +89,25 @@ class CommandSpec(BaseModel):
         return self
 
 
-class PolicyCard(Card):
+class ControllerCard(Card):
+    """A controller written as plain code (wheel speeds, a rhythmic gait, PD hold of a pose); no learned model."""
     robot_id: str
-    format: Literal["onnx", "torchscript", "builtin"]
-    file: str | None = None
     control_dt: float = Field(gt=0)
     joint_order: list[str] = []
-    obs_layout: list[ObservationBlock] = []
-    action_scale: float | list[float] = 1.0
     default_angles: list[float] = []
     kps: list[float] = []
     kds: list[float] = []
     command: CommandSpec | None = None
-    clock_period_s: float | None = Field(None, gt=0)
-    recurrent_state_size: int | None = Field(None, gt=0)
-    training_notes: list[str] = []
+    notes: list[str] = []
 
     @model_validator(mode="after")
-    def validate_policy_layout(self) -> "PolicyCard":
-        if self.format == "builtin" and self.file is not None:
-            raise ValueError("built-in policies do not have a model file")
-        if self.format != "builtin" and self.file is None:
-            raise ValueError(f"{self.format} policies require a model file")
-        if self.file is not None:
-            _validate_relative_asset_path(self.file)
+    def validate_joint_gains(self) -> "ControllerCard":
         if len(set(self.joint_order)) != len(self.joint_order):
-            raise ValueError("policy joint_order must be unique")
-        if len({block.name for block in self.obs_layout}) != len(self.obs_layout):
-            raise ValueError("observation block names must be unique")
+            raise ValueError("controller joint_order must be unique")
         sizes = (len(self.default_angles), len(self.kps), len(self.kds))
         if any(sizes) and any(size != len(self.joint_order) for size in sizes):
-            raise ValueError("default_angles, kps, and kds must match the policy joint count")
-        if isinstance(self.action_scale, list) and len(self.action_scale) != len(self.joint_order):
-            raise ValueError("action_scale must match the policy joint count")
+            raise ValueError("default_angles, kps, and kds must match the controller joint count")
         return self
-
-    @property
-    def observation_size(self) -> int:
-        return sum(block.size for block in self.obs_layout)
 
 
 class WorldCard(BaseModel):

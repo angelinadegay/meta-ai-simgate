@@ -14,7 +14,6 @@ import numpy as np
 
 from .. import presets
 from ..library import LibraryRegistry
-from ..policy_runtime import PolicyRunner
 from ..simple_control import SimpleController
 from ..spec import Mission, SceneSpec
 from ..terrain_data import load_ortho_image, load_preset, resample, scene_heights
@@ -25,6 +24,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 SCENE_EVENT_BUDGET_BYTES = 5 * 1024 * 1024
 GRID = 160         # heightfield resolution (GRID x GRID): 0.13 m cells on the default 20 m terrain
 FPS = 30           # recorded frames per simulated second
+PATH_EVERY = 6     # frames between recorded path points in a run summary (0.2 s)
 
 
 # ── Terrain ────────────────────────────────────────────────────────────────
@@ -578,10 +578,11 @@ def push_time(spec: SceneSpec) -> float:
 class Outcome:
     """Watches one robot for the moment its outcome is decided."""
 
-    def __init__(self) -> None:
+    def __init__(self, can_move: bool = True) -> None:
         self.tipped_since: float | None = None
         self.window: deque = deque()
         self.decided: dict | None = None
+        self.can_move = can_move   # a standing-only robot is never "stuck": it stands to the time limit or falls
 
     def tipped(self, tilt: float, t: float) -> float | None:
         """When a tilt past 60° began, once it has lasted a second (it has fallen); else None."""
@@ -602,10 +603,23 @@ class Outcome:
             self.decided = {"reason": "reached", "at_s": round(t, 2)}
         elif fell:
             self.decided = {"reason": "fell", "at_s": round(t, 2)}
-        elif self.window[0][0] <= t - STUCK_WINDOW_S and float(np.linalg.norm(xy - self.window[0][1])) < STUCK_MOVE_M \
+        elif self.can_move and self.window[0][0] <= t - STUCK_WINDOW_S and float(np.linalg.norm(xy - self.window[0][1])) < STUCK_MOVE_M \
                 and (heading is None or self.window[0][2] is None
                      or float(np.linalg.norm(heading - self.window[0][2])) < 0.1):
             self.decided = {"reason": "stuck", "at_s": round(t, 2)}
+
+
+def gravity_vector(env, heading_deg: float) -> str:
+    """MJCF gravity: straight down, or tilted so the ground rises ahead of heading_deg by env.ground_tilt_deg."""
+    tilt, heading = math.radians(env.ground_tilt_deg or 0.0), math.radians(heading_deg)
+    g = env.gravity
+    return (f"{-g * math.sin(tilt) * math.cos(heading):.4f} {-g * math.sin(tilt) * math.sin(heading):.4f} "
+            f"{-g * math.cos(tilt):.4f}")
+
+
+def stands_only(rb) -> bool:
+    """A library robot whose only controller holds its standing pose (the G1): it never walks."""
+    return rb.kind == "library" and LibraryRegistry().robot(rb.robot_id).controller == "stand"
 
 
 def flip_tilt_deg(rb) -> float:
@@ -736,9 +750,9 @@ def _library_robot_parts(
     robot = spec.robot
     registry = LibraryRegistry()
     robot_card = registry.robot(robot.robot_id)
-    policy_card = registry.policy(robot.policy_id)
-    if policy_card.id not in {card.id for card in registry.compatible_policies(robot_card.id)}:
-        raise ValueError(f"Policy {policy_card.id!r} is not compatible with robot {robot_card.id!r}.")
+    controller_card = registry.controller(robot.controller_id)
+    if controller_card.id not in {card.id for card in registry.compatible_controllers(robot_card.id)}:
+        raise ValueError(f"Controller {controller_card.id!r} is not compatible with robot {robot_card.id!r}.")
     if robot_card.mjcf_path is None:
         raise ValueError(f"Library robot {robot_card.id!r} does not provide an MJCF file.")
 
@@ -1337,7 +1351,7 @@ class MuJoCoSimulator(Simulator):
         obstacle_xml = obstacle_xml + "\n" if obstacle_xml else ""
         xml = f'''<mujoco model="{spec.title}">
   {compiler_xml}
-  <option timestep="0.002" gravity="0 0 {-environment.gravity:.4f}"/>
+  <option timestep="0.002" gravity="{gravity_vector(environment, self.missions[spec.robots[0].id]["heading_deg"])}"/>
   <default><geom friction="{environment.friction:.3f} 0.005 0.0001"/>{''.join(dict.fromkeys(defaults_xml))}</default>
   <asset>
     <hfield name="terrain" nrow="{GRID}" ncol="{GRID}" size="{half:.3f} {half:.3f} {zmax:.4f} 0.5" elevation="{elevation}"/>
@@ -1430,7 +1444,7 @@ class MuJoCoSimulator(Simulator):
         f = env.friction
         xml = f'''<mujoco model="{spec.title}">
   {compiler_xml}
-  <option timestep="0.002" gravity="0 0 {-env.gravity:.4f}"/>
+  <option timestep="0.002" gravity="{gravity_vector(env, yaw)}"/>
   <default><geom friction="{f:.3f} 0.005 0.0001"/>{defaults_xml}</default>
   <asset>
     <hfield name="terrain" nrow="{GRID}" ncol="{GRID}" size="{half:.3f} {half:.3f} {zmax:.4f} 0.5" elevation="{elevation}"/>
@@ -1743,25 +1757,19 @@ class MuJoCoSimulator(Simulator):
                                  "moved_poses": moved, "code_unchanged": True, "duration_s": updated.duration_s,
                                  "timing_note": timing_note}
 
-    def _policy_runner(
+    def _controller_runner(
         self,
         spec: SceneSpec,
         model: mujoco.MjModel,
         data: mujoco.MjData,
         name_prefix: str = "",
-    ) -> PolicyRunner | SimpleController:
+    ) -> SimpleController:
+        """A library robot's plain-code controller: wheel speeds, a baseline gait, or a PD hold of its pose."""
         if spec.robot.kind != "library":
-            raise ValueError("A library policy can only control a library robot.")
+            raise ValueError("A library controller can only drive a library robot.")
         registry = LibraryRegistry()
-        policy = registry.policy(spec.robot.policy_id)
-        if policy.format == "builtin":   # an uploaded robot's wheel controller, baseline gait or held pose
-            return SimpleController(registry.robot(spec.robot.robot_id), policy, model, data, name_prefix=name_prefix)
-        return PolicyRunner(
-            policy,
-            model,
-            data,
-            name_prefix=name_prefix,
-        )
+        controller = registry.controller(spec.robot.controller_id)
+        return SimpleController(registry.robot(spec.robot.robot_id), controller, model, data, name_prefix=name_prefix)
 
     def _multi_states(self, spec: SceneSpec, model: mujoco.MjModel, data: mujoco.MjData) -> dict:
         states = {}
@@ -1777,7 +1785,7 @@ class MuJoCoSimulator(Simulator):
                 for actuator in range(model.nu)
                 if int(model.body_rootid[int(model.jnt_bodyid[int(model.actuator_trnid[actuator, 0])])]) == root
             ]
-            runner = self._policy_runner(robot_spec, model, data, prefix) if robot.kind == "library" else None
+            runner = self._controller_runner(robot_spec, model, data, prefix) if robot.kind == "library" else None
             mission = self.missions[entry.id]
             states[entry.id] = {
                 "entry": entry,
@@ -1785,7 +1793,7 @@ class MuJoCoSimulator(Simulator):
                 "spec": robot_spec,
                 "root": root,
                 "actuators": actuator_ids,
-                "policy": runner,
+                "controller": runner,
                 "navigator": Navigator(mission, robot.kind),
                 "heading": np.array([math.cos(math.radians(mission["heading_deg"])),
                                      math.sin(math.radians(mission["heading_deg"]))]),
@@ -1810,12 +1818,12 @@ class MuJoCoSimulator(Simulator):
                 state["support_offset"] = support_height_offset(state["robot"])
             turn, go = nav.command(data.xpos[root][:2].copy(), state["heading"], max(active_time, 0.0),
                                    float(data.xpos[root][2]) - state["support_offset"])
-            policy = state["policy"]
-            if policy is not None:
+            controller = state["controller"]
+            if controller is not None:
                 if active_time <= 0.0:
-                    policy.hold_default()
+                    controller.hold_default()
                 else:
-                    card = policy.card.command
+                    card = controller.card.command
                     if nav.goal is None:
                         commands = dict(zip(card.names, card.default))
                     elif nav.reached_at is not None:
@@ -1829,8 +1837,8 @@ class MuJoCoSimulator(Simulator):
                             "vy": 0.0,
                             "yaw_rate": float(np.clip(turn, yaw_range[0], yaw_range[1])),
                         }
-                    policy.set_command(commands)
-                    policy.step(active_time)
+                    controller.set_command(commands)
+                    controller.step(active_time)
                 continue
             scale = float(np.clip(active_time / 1.0, 0.0, 1.0)) * go
             if robot.kind == "walker":
@@ -1854,7 +1862,7 @@ class MuJoCoSimulator(Simulator):
         `turn` steers (> 0 = left); `go` (0..1) fades the gait out once the goal is reached."""
         rb = spec.robot
         if rb.kind == "library":
-            raise ValueError("Library robots must be controlled by their selected policy.")
+            raise ValueError("Library robots must be controlled by their selected controller.")
         scale = float(np.clip(t_active / 1.0, 0.0, 1.0)) * go
         if rb.kind == "walker":
             c = walker_ctrl(rb, max(t_active, 0.0), scale, turn)
@@ -1888,22 +1896,22 @@ class MuJoCoSimulator(Simulator):
         model, data = self._make(build)
         if len(spec.robots) > 1:
             return self._validate_multi(spec, build, model, data, checks)
-        policy_runner = None
+        controller_runner = None
         if spec.robot.kind == "library":
             try:
-                policy_runner = self._policy_runner(spec, model, data)
+                controller_runner = self._controller_runner(spec, model, data)
                 checks.append(
                     Check(
-                        "Library policy loads and validates",
+                        "Library controller loads and validates",
                         True,
-                        f"Loaded {spec.robot.policy_id} with named joints and finite policy output.",
+                        f"Loaded {spec.robot.controller_id} with named joints and finite controller output.",
                     )
                 )
             except (FileNotFoundError, RuntimeError, ValueError) as exc:
-                checks.append(Check("Library policy loads and validates", False, str(exc)))
+                checks.append(Check("Library controller loads and validates", False, str(exc)))
 
         ref = presets.gravity_for(env.body)
-        g = -float(model.opt.gravity[2])
+        g = float(np.linalg.norm(model.opt.gravity))   # its size: a ground tilt only turns it
         if ref is not None:
             ok = abs(g - ref) / ref < 0.01
             checks.append(Check("Gravity matches reference", ok, f"{g:.3f} m/s² in model vs {ref} m/s² for {env.body}."))
@@ -1964,9 +1972,9 @@ class MuJoCoSimulator(Simulator):
                                 + (f"crosses gaps up to about {lim['gap_m']} m. " if lim["gap_m"] else "can't cross gaps. ")
                                 + "A warning, not a ban: run it to find out.", advisory=True))
 
-        if spec.robot.kind == "library" and policy_runner is None:
+        if spec.robot.kind == "library" and controller_runner is None:
             checks.append(
-                Check("Library robot stands for 1 s at zero command", False, "The selected policy did not load.")
+                Check("Library robot stands for 1 s at zero command", False, "The selected controller did not load.")
             )
             return checks
 
@@ -1974,18 +1982,18 @@ class MuJoCoSimulator(Simulator):
         ground = ground_geoms(model)
         touched_late = 0                     # most ground contacts seen in the last 0.3 s (robots may still bounce a little)
         n_steps = int(1.0 / model.opt.timestep)
-        if policy_runner is not None:
-            command = policy_runner.card.command
-            policy_runner.set_command({name: 0.0 for name in command.names})
+        if controller_runner is not None:
+            command = controller_runner.card.command
+            controller_runner.set_command({name: 0.0 for name in command.names})
             settle_steps = int(0.5 / model.opt.timestep)
             for _ in range(settle_steps):
-                policy_runner.hold_default()
+                controller_runner.hold_default()
                 mujoco.mj_step(model, data)
             robot_body = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "rover")
             start_height = float(data.xpos[robot_body][2])
             tilt_peak = 0.0
             for i in range(n_steps):
-                policy_runner.step(i * model.opt.timestep)
+                controller_runner.step(i * model.opt.timestep)
                 mujoco.mj_step(model, data)
                 if i >= n_steps - int(0.3 / model.opt.timestep):
                     touched_late = max(
@@ -2047,7 +2055,7 @@ class MuJoCoSimulator(Simulator):
         return checks
 
     def _validate_multi(self, spec: SceneSpec, build: BuildResult, model, data, checks: list[Check]) -> list[Check]:
-        gravity = -float(model.opt.gravity[2])
+        gravity = float(np.linalg.norm(model.opt.gravity))
         reference = presets.gravity_for(spec.environment.body)
         if reference is not None:
             checks.append(Check(
@@ -2094,18 +2102,18 @@ class MuJoCoSimulator(Simulator):
             ", ".join(obstacle_clearance) if obstacle_clearance else "No start or goal intersects a placed obstacle.",
         ))
         ground = ground_geoms(model)
-        policy_states = [state for state in entries if state["policy"] is not None]
-        for state in policy_states:
-            policy = state["policy"]
-            policy.set_command({name: 0.0 for name in policy.card.command.names})
+        controller_states = [state for state in entries if state["controller"] is not None]
+        for state in controller_states:
+            controller = state["controller"]
+            controller.set_command({name: 0.0 for name in controller.card.command.names})
 
-        def hold_all_still(policy_time: float | None = None) -> None:
+        def hold_all_still(controller_time: float | None = None) -> None:
             data.ctrl[:] = 0.0
-            for state in policy_states:
-                if policy_time is None:
-                    state["policy"].hold_default()
+            for state in controller_states:
+                if controller_time is None:
+                    state["controller"].hold_default()
                 else:
-                    state["policy"].step(policy_time)
+                    state["controller"].step(controller_time)
 
         for _ in range(int(0.5 / model.opt.timestep)):
             hold_all_still()
@@ -2198,7 +2206,7 @@ class MuJoCoSimulator(Simulator):
         settle_s = 0.5
         push_start = push_time(spec)
         settled = False
-        watches, stopped = {robot_id: Outcome() for robot_id in states}, None
+        watches, stopped = {robot_id: Outcome(not stands_only(state["robot"])) for robot_id, state in states.items()}, None
         for frame in range(n_frames):
             for _ in range(steps_per_frame):
                 active_time = data.time - settle_s
@@ -2317,10 +2325,10 @@ class MuJoCoSimulator(Simulator):
                 "id": metrics["id"],
                 "label": metrics["label"],
                 "robot": metrics["robot"].get("robot_id") or metrics["robot"]["kind"],
-                "brain": metrics["robot"].get("policy_id") or {
+                "brain": metrics["robot"].get("controller_id") or {
                     "rover": "wheel controller",
                     "walker": "open-loop gait",
-                }.get(metrics["robot"]["kind"], "library policy"),
+                }.get(metrics["robot"]["kind"], "library controller"),
                 "result": result,
                 "goal_reached": metrics["goal_reached"],
                 "time_to_goal_s": metrics["time_to_goal_s"],
@@ -2350,7 +2358,7 @@ class MuJoCoSimulator(Simulator):
         model, data = self._make(build)
         rover = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "rover")
         mujoco.mj_forward(model, data)
-        policy_runner = self._policy_runner(spec, model, data) if spec.robot.kind == "library" else None
+        controller_runner = self._controller_runner(spec, model, data) if spec.robot.kind == "library" else None
         start = data.xpos[rover].copy() if rover >= 0 else np.zeros(3)
         steps_per_frame = max(1, int(round(1.0 / (FPS * model.opt.timestep))))
         n_frames = int(spec.duration_s * FPS)
@@ -2379,7 +2387,7 @@ class MuJoCoSimulator(Simulator):
         path_len, last_xy = 0.0, None
         settled = False
         push_start = push_time(spec)
-        watch, stopped = Outcome(), None
+        watch, stopped = Outcome(not stands_only(spec.robot)), None
         for f in range(n_frames):
             for s in range(steps_per_frame):
                 turn, go = 0.0, 1.0
@@ -2389,11 +2397,11 @@ class MuJoCoSimulator(Simulator):
                         nav_heading = heading_of(xm)
                     turn, go = nav.command(data.xpos[rover][:2].copy(), nav_heading, data.time - settle_s,
                                            float(data.xpos[rover][2]) - support_offset)
-                if policy_runner is not None:
+                if controller_runner is not None:
                     if data.time <= settle_s:
-                        policy_runner.hold_default()
+                        controller_runner.hold_default()
                     else:
-                        command_card = policy_runner.card.command
+                        command_card = controller_runner.card.command
                         if nav.goal is None:
                             command_values = dict(zip(command_card.names, command_card.default))
                         elif nav.reached_at is not None:
@@ -2407,8 +2415,8 @@ class MuJoCoSimulator(Simulator):
                                 "vy": 0.0,
                                 "yaw_rate": float(np.clip(turn, yaw_limits[0], yaw_limits[1])),
                             }
-                        policy_runner.set_command(command_values)
-                        policy_runner.step(data.time - settle_s)
+                        controller_runner.set_command(command_values)
+                        controller_runner.step(data.time - settle_s)
                 else:
                     data.ctrl[:] = self._ctrl(spec, model, data.time - settle_s, turn, go)
                 if rover >= 0 and spec.disturbance is not None:
@@ -2574,4 +2582,7 @@ class MuJoCoSimulator(Simulator):
             "path_efficiency": round(float(np.clip((start_dist - final) / path_len, 0.0, 1.0)), 2) if path_len > 0.5 else None,
             "goal_xy": [round(float(v), 2) for v in nav.goal],
             "goal_radius_m": nav.radius,
+            # where it actually drove (about every 0.2 s): spot checks use it to tell "crossed" from "went around"
+            "path_xy": [[round(float(p[0]), 2), round(float(p[1]), 2)]
+                        for _, _, p in dist_log[::PATH_EVERY] + dist_log[-1:]],
         }

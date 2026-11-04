@@ -91,7 +91,7 @@
             "robot": {
               "kind": "rover",
               "robot_id": null,
-              "policy_id": null,
+              "controller_id": null,
               "wheels": 6,
               "wheel_radius": 0.1,
               "wheel_width": 0.09,
@@ -114,7 +114,7 @@
             "robot": {
               "kind": "walker",
               "robot_id": null,
-              "policy_id": null,
+              "controller_id": null,
               "wheels": 4,
               "wheel_radius": 0.15,
               "wheel_width": 0.08,
@@ -227,7 +227,7 @@
             "robot": {
               "kind": "rover",
               "robot_id": null,
-              "policy_id": null,
+              "controller_id": null,
               "wheels": 6,
               "wheel_radius": 0.1,
               "wheel_width": 0.09,
@@ -250,7 +250,7 @@
             "robot": {
               "kind": "walker",
               "robot_id": null,
-              "policy_id": null,
+              "controller_id": null,
               "wheels": 4,
               "wheel_radius": 0.15,
               "wheel_width": 0.08,
@@ -363,7 +363,7 @@
             "robot": {
               "kind": "rover",
               "robot_id": null,
-              "policy_id": null,
+              "controller_id": null,
               "wheels": 6,
               "wheel_radius": 0.2,
               "wheel_width": 0.09,
@@ -386,7 +386,7 @@
             "robot": {
               "kind": "walker",
               "robot_id": null,
-              "policy_id": null,
+              "controller_id": null,
               "wheels": 4,
               "wheel_radius": 0.15,
               "wheel_width": 0.08,
@@ -753,7 +753,7 @@
           "robot": {
             "kind": "rover",
             "robot_id": null,
-            "policy_id": null,
+            "controller_id": null,
             "wheels": 6,
             "wheel_radius": 0.2,
             "wheel_width": 0.09,
@@ -776,7 +776,7 @@
           "robot": {
             "kind": "walker",
             "robot_id": null,
-            "policy_id": null,
+            "controller_id": null,
             "wheels": 4,
             "wheel_radius": 0.15,
             "wheel_width": 0.08,
@@ -889,7 +889,7 @@
           "robot": {
             "kind": "rover",
             "robot_id": null,
-            "policy_id": null,
+            "controller_id": null,
             "wheels": 6,
             "wheel_radius": 0.2,
             "wheel_width": 0.09,
@@ -912,7 +912,7 @@
           "robot": {
             "kind": "walker",
             "robot_id": null,
-            "policy_id": null,
+            "controller_id": null,
             "wheels": 4,
             "wheel_radius": 0.15,
             "wheel_width": 0.08,

@@ -16,8 +16,8 @@ MAX_BATCH_RUNS = 24
 MAX_BATCH_GHOST_BYTES = 4 * 1024 * 1024
 Surface = Literal["rock", "regolith", "gravel", "sand", "mud", "ice"]
 WORKERS = max(1, (os.cpu_count() or 1) - 1)   # every core but one
-_pool: ProcessPoolExecutor | None = None      # kept between batches: starting a worker re-imports MuJoCo and ONNX
-# One thread per worker: a worker per core, each starting a thread per core (BLAS, OpenMP, onnxruntime) for tiny
+_pool: ProcessPoolExecutor | None = None      # kept between batches: starting a worker re-imports MuJoCo
+# One thread per worker: a worker per core, each starting a thread per core (BLAS, OpenMP) for tiny
 # workloads, is mostly contention.
 ONE_THREAD = {name: "1" for name in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS")}
 
@@ -62,6 +62,7 @@ class Variation(BaseModel):
     friction: float | None = Field(default=None, ge=0, le=2)
     payload_kg: float | None = Field(default=None, ge=0, le=1000)
     slope_deg: float | None = Field(default=None, ge=-89, le=89)
+    ground_tilt_deg: float | None = Field(default=None, ge=0, le=60)   # tilt the whole ground (any terrain)
     obstacle_scale: float | None = Field(default=None, gt=0, le=10)
     push_n: float | None = Field(default=None, gt=0, le=1000)
     seed: int | None = Field(default=None, ge=0)
@@ -150,9 +151,11 @@ def _validate_variation(base_spec: SceneSpec, raw: dict) -> tuple[Variation, Sce
         spec.environment.gravity = knobs["gravity"]
     if "friction" in knobs:
         spec.environment.friction = knobs["friction"]
+    if "ground_tilt_deg" in knobs:
+        spec.environment.ground_tilt_deg = knobs["ground_tilt_deg"]
     if "payload_kg" in knobs:
         if any(entry.robot.kind == "library" for entry in _target_entries(spec, target)):
-            raise ValueError("payload_kg can't be applied to a library robot: its trained policy expects its exact body.")
+            raise ValueError("payload_kg can't be applied to a library robot: its body comes from its model file.")
         payload = knobs["payload_kg"]
         _update_robots(spec, target, lambda robot: robot.model_copy(update={"mass_kg": robot.mass_kg + payload}))
     if "slope_deg" in knobs:

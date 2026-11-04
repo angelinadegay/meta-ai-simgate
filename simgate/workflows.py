@@ -416,7 +416,7 @@ def _spawn_args(robot_plan: RobotPlan) -> list[dict[str, Any]]:
             "label": f"{base} {copy_index + 1}" if robot_plan.count > 1 else base,
             "kind": robot_plan.kind,
             "robot_id": robot_plan.robot_id,
-            "policy_id": robot_plan.policy_id,
+            "controller_id": robot_plan.controller_id,
             "legs": robot_plan.legs,
             "wheels": robot_plan.wheels,
         }

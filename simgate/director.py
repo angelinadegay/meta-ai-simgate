@@ -24,13 +24,20 @@ class Director:
         self._root_id: str | None = None
         self.last_checker_id: str | None = None   # latest Checker hand-off step, parent of any repair
         self.used_rule_planner = False            # the model's plan failed twice; the user is told
+        self.model_unavailable: str | None = None  # the API didn't answer (timeout/error): planned with rules, said so
         self.guard_notes: list[str] = []          # corrections made to the model's plan from the request's words
         self.last_plan: Plan | None = None
 
     def plan(self, text: str, world_state: World | SceneSpec | dict[str, Any] | None = None,
              state: Any = None) -> Plan:
         """Create a complete validated plan, retry once, then use the deterministic planner.
-        ``state`` is the session's workflows.SessionState (last run, diagnosis, redesign), if any."""
+        ``state`` is the session's workflows.SessionState (last run, diagnosis, redesign), if any.
+        A plan that would move a standing-only robot becomes an answer saying it can't walk."""
+        plan = self._plan(text, world_state, state)
+        return _standing_only_answer(plan, world_state) or plan
+
+    def _plan(self, text: str, world_state: World | SceneSpec | dict[str, Any] | None = None,
+              state: Any = None) -> Plan:
         if (real_change := real_terrain_body_change(text, world_state)) is not None:
             return Plan(
                 workflow="answer",
@@ -63,7 +70,11 @@ class Director:
                     "role": "user",
                     "content": f"The previous response failed validation with this exact error:\n{last_error}\nReturn a corrected Plan JSON only.",
                 })
-            reply = llm.chat(messages, config.PLANNER_MODEL)
+            try:
+                reply = llm.chat(messages, config.PLANNER_MODEL)
+            except llm.ModelUnavailable as exc:   # the API failed mid-session: the rules plan this step
+                self.model_unavailable = str(exc)
+                break
             try:
                 plan = Plan.model_validate(llm.extract_json(reply))
                 if follow is not None and plan.workflow not in ("build", "race"):
@@ -149,8 +160,11 @@ class Director:
             ms=0,
         )
         started = time.perf_counter()
+        self.model_unavailable = None
         plan = given_plan or await asyncio.to_thread(self.plan, text, current, state)
         self.last_plan = plan
+        if self.model_unavailable:
+            model = "rules (model unavailable)"
         plan_step = self._id()
         await self._emit_step(
             id=plan_step,
@@ -162,6 +176,8 @@ class Director:
             thought=plan.summary,
             result=(
                 f"Following up with the {plan.workflow} the request asked for." if given_plan is not None else
+                f"The Meta Model API didn't answer ({self.model_unavailable}); used the rules planner's {plan.workflow} plan."
+                if self.model_unavailable else
                 f"The model's plan failed validation twice; used the rules planner's {plan.workflow} plan."
                 if self.used_rule_planner else f"Validated {plan.workflow} plan."
                 + (f" Then: {plan.then}." if plan.then else "")
@@ -198,7 +214,8 @@ class Director:
                 if not check.get("passed", False)
             ]
             handoffs = [
-                ("Builder", config.BUILDER_MODEL if config.BUILDER_MODE == "llm" else "template", "Build finished."),
+                ("Builder", config.BUILDER_MODEL if config.BUILDER_MODE == "llm" and not config.MOCK_MODE else "rules",
+                 "Build finished."),   # the verified template is code: "rules (no model)" on its card
                 (
                     "Checker",
                     "rules",
@@ -284,6 +301,45 @@ class Director:
         return f"step-{self._counter}-{uuid.uuid4().hex[:8]}"
 
 
+STANDING_ONLY = "Humanoid (standing only). Walking needs a trained policy, which is not included."
+_MOVING_WORKFLOWS = ("traversability", "race", "evolve", "redesign")
+
+
+def standing_only(robot_id: str | None) -> bool:
+    """A library robot whose only controller holds its standing pose (the G1): it can't walk anywhere."""
+    if not robot_id:
+        return False
+    try:
+        return LibraryRegistry().robot(robot_id).controller == "stand"
+    except ValueError:
+        return False
+
+
+def _standing_only_answer(plan: Plan, world_state: World | SceneSpec | dict[str, Any] | None) -> Plan | None:
+    """Never plan a walk, route, race, evolution or redesign for a standing-only robot; say so and suggest others."""
+    changes = plan.changes
+    planned = [*plan.robots, *((changes.robots or []) if changes else [])]
+    ids = {robot.robot_id for robot in planned} | {plan.robot_id}
+    if changes is not None:
+        ids |= {changes.robot_id, changes.robot.robot_id if changes.robot else None}
+    current = _current_spec(world_state)
+    if current is not None and current.domain == "robot_terrain" and not plan.robots:
+        ids |= {entry.robot.robot_id for entry in current.robots} | {current.robot.robot_id if current.robot else None}
+    standing = sorted(robot_id for robot_id in ids if standing_only(robot_id))
+    if not standing:
+        return None
+    moves = (plan.workflow in _MOVING_WORKFLOWS or plan.goal is not None
+             or any(robot.goal_place for robot in planned)
+             or (changes is not None and (changes.goal is not None or changes.mission is not None)))
+    if not moves:
+        return None
+    name = LibraryRegistry().robot(standing[0]).name.split(" (")[0]
+    return Plan(workflow="answer", summary=f"{name} can only stand",
+                reply=(f"{STANDING_ONLY} The {name} can't walk to a goal, follow a route, race or evolve. "
+                       "To get somewhere, try a rover or a walker; to test the humanoid, ask whether it can stand "
+                       "on a slope or under a push."))
+
+
 def _plan_system() -> str:
     registry = LibraryRegistry()
     robots = [
@@ -291,19 +347,24 @@ def _plan_system() -> str:
             "id": robot.id,
             "name": robot.name,
             "kind": robot.kind,
-            "compatible_policies": [policy.id for policy in registry.compatible_policies(robot.id)],
+            "controllers": [controller.id for controller in registry.compatible_controllers(robot.id)],
+            **({"standing_only": True, "note": STANDING_ONLY} if robot.controller == "stand" else {}),
         }
         for robot in registry.robots()
         if robot.source != "builtin"   # built-ins are chosen by kind, not robot_id
     ]
     terrain_presets = agents.presets_text()
     world_ids = [world.id for world in registry.worlds()]
+    movable = [robot for robot in robots if not robot.get("standing_only")]
+    standing = [robot for robot in robots if robot.get("standing_only")]
     library_examples = (   # library robots by robot_id with no kind; the places and world are only illustrative
-        f'Library robot plan: {{"workflow":"build","summary":"Humanoid walks to the north edge","world":{{"terrain_kind":"flat"}},'
-        f'"robots":[{{"robot_id":"{robots[0]["id"]}"}}],"goal":{{"place":"north"}},"run_now":false}}\n'
-        f'Mixed race plan: {{"workflow":"race","summary":"Humanoid and rover race to the west edge",'
-        f'"robots":[{{"robot_id":"{robots[0]["id"]}"}},{{"kind":"rover"}}],"goal":{{"place":"west"}},"run_now":false}}\n'
-    ) if robots else ""
+        (f'Library robot plan: {{"workflow":"build","summary":"Uploaded robot drives to the north edge",'
+         f'"world":{{"terrain_kind":"flat"}},"robots":[{{"robot_id":"{movable[0]["id"]}"}}],"goal":{{"place":"north"}},'
+         f'"run_now":false}}\n' if movable else "")
+        + (f'Standing robot plan: {{"workflow":"build","summary":"Humanoid stands on a Mars slope",'
+           f'"world":{{"body":"mars","terrain_kind":"slope"}},"robots":[{{"robot_id":"{standing[0]["id"]}"}}],'
+           f'"then":"find_failures","run_now":false}}\n' if standing else "")
+    )
     schema = json.dumps(Plan.model_json_schema(), separators=(",", ":"))
     return f"""You are the Director for a physics simulation sandbox. Make a complete plan in ONE response.
 Return only one JSON object matching the Plan schema below. Do not return tools or a sequence of actions.
@@ -316,7 +377,7 @@ Workflows:
   Cues: "where can it go", "can it reach", "is it safe to walk", "safe route", "plan a route",
   "map where it can drive", "show where it can go", or "walk safely". Works with a new or existing scene.
   Optional robots, start (same shape as goal), goal, world and robot_id. Summit means goal.place "highest".
-  For "same question for the G1" keep the current world, start and goal but replace the robot.
+  For "same question for the walker" keep the current world, start and goal but replace the robot.
 - build: create a robot_terrain or structure scene and ask before running unless run_now is true.
 - race: create multiple robots sharing a course; ask before running unless run_now is true.
 - compare: build one scene and compare its variants.
@@ -339,8 +400,12 @@ Workflows:
   building. Never change loads, sections, stories or physical properties to match a visual style.
 
 Guidance:
-- Use only robot, policy, and terrain-preset IDs listed below. Built-in kinds are rover and walker.
-- Use robot_id with its compatible policy_id for library robots such as the humanoid.
+- Use only robot, controller, and terrain-preset IDs listed below. Built-in kinds are rover and walker.
+- Use robot_id with one of its controllers for library robots.
+- A robot marked standing_only (the humanoid) can only stand: never give it a goal, a route, a race, evolve,
+  traversability or redesign. If asked, use workflow answer: say it is standing only (walking needs a trained
+  policy, which is not included) and suggest a rover or walker. It can be tested standing: build with no goal and
+  then find_failures (knobs slope_deg, push_n).
 - Put repeated identical robots in one robots entry with count (1–6); code expands the count.
 - Robot terrain scenes may include static structures in "structures": habitat, bridge or lander; placement is
     near_start, near_goal, over_gap or a named place. A bridge over a trench needs a path gap obstacle; when the
@@ -389,7 +454,7 @@ Build then analyse plan: {{"workflow":"build","summary":"Rover climbs Mars hills
 Redesign plan: {{"workflow":"redesign","summary":"A rover that passes the course","constraints":"<the user's limits, in their words>"}}
 Answer plan: {{"workflow":"answer","summary":"What SimGate can do","reply":"You can build robot scenes, compare conditions, race robots, or run stress tests."}}
 
-Available library robots and policies:
+Available library robots and their controllers:
 {json.dumps(robots, separators=(",", ":"))}
 Built-in robot kinds: rover, walker
 
@@ -463,12 +528,11 @@ def _plan_world_state(world_state: World | SceneSpec | dict[str, Any] | None) ->
 
 
 def evolve_requested(text: str) -> bool:
-    return bool(re.search(
-        r"\bdesign a robot\b|\bwhat robot could\b|\binvent a robot\b|\bevolve\b|"
-        r"\bbest robot for (?:this|the) place\b|\bfit(?:s|ting)? in\b|"
-        r"\bunder\s+\d+(?:\.\d+)?\s*kg\b|\bmust weigh\b",
-        text, re.I,
-    ))
+    if re.search(r"\bdesign a robot\b|\bwhat robot could\b|\binvent a robot\b|\bevolve\b|"
+                 r"\bbest robot for (?:this|the) place\b|\bfit(?:s|ting)? in\b", text, re.I):
+        return True
+    # a weight limit alone asks for a new design, unless it's a limit on fixing this robot ("make it pass, under 15 kg")
+    return bool(re.search(r"\bunder\s+\d+(?:\.\d+)?\s*kg\b|\bmust weigh\b", text, re.I)) and not _FIX.search(text.lower())
 
 
 def _evolution_design_constraints(text: str, defaults):
@@ -1067,14 +1131,26 @@ def _finder_plan(text: str, world_state: World | SceneSpec | dict[str, Any] | No
     "red team", "operating limits" search the world's conditions for where one robot starts to fail. The failure
     kind, the budget and any named conditions come from the request's own words."""
     source = text.lower()
-    if not _FIND.search(source) or not _has_robot_scene(world_state):
+    if not _has_robot_scene(world_state):
         return None
+    standing = False
+    if not _FIND.search(source):
+        if not _STAND.search(source):
+            return None
+        robot_id = _mentioned_robot(text, world_state)
+        current = _current_spec(world_state)
+        entry = next((item for item in current.robots if robot_id in (None, item.id)), None) if current else None
+        if entry is None or not standing_only(entry.robot.robot_id):
+            return None
+        standing = True
+        # "can the humanoid stand safely on this slope?": the standing preset (tilted ground, sideways push)
     knobs = [knob for knob, pattern in _KNOB_WORDS.items() if re.search(pattern, source)]
     return Plan(workflow="find_failures", summary="Where it breaks", robot_id=_mentioned_robot(text, world_state),
-                failure="safety" if _SAFETY.search(source) else "task",
+                failure="safety" if standing or _SAFETY.search(source) else "task",
                 budget="thorough" if _THOROUGH.search(source) else "quick", knobs=knobs[:4] or None)
 
 
+_STAND = re.compile(r"\b(?:stand|stands|standing|stay (?:up|upright)|keep (?:its|his|her|their) balance|balance)\b")
 _STRESS = re.compile(r"\bstress[- ]?test")
 _FOLLOW_CUES = (("find_failures", _FIND), ("stress_test", _STRESS), ("diagnose", _WHY))
 _FOLLOW_WORDS = {"find_failures": "where it breaks", "stress_test": "a stress test", "diagnose": "why it fails"}
@@ -1255,13 +1331,13 @@ def _rule_robot_plans(text: str, fallback: Robot | None) -> list[dict[str, Any]]
     grouped: dict[tuple[Any, ...], dict[str, Any]] = {}
     for robot in requested:
         signature = (
-            robot.get("kind"), robot.get("robot_id"), robot.get("policy_id"),
+            robot.get("kind"), robot.get("robot_id"), robot.get("controller_id"),
             robot.get("legs"), robot.get("wheels"),
         )
         if signature not in grouped:
             grouped[signature] = {
                 key: robot[key]
-                for key in ("kind", "robot_id", "policy_id", "label", "legs", "wheels")
+                for key in ("kind", "robot_id", "controller_id", "label", "legs", "wheels")
                 if key in robot
             }
             grouped[signature]["count"] = 0
@@ -1292,7 +1368,7 @@ def _compact_world_state(world: World) -> str:
                 "label": entry.label,
                 "kind": entry.robot.kind,
                 "robot_id": entry.robot.robot_id,
-                "policy_id": entry.robot.policy_id,
+                "controller_id": entry.robot.controller_id,
                 "start": entry.start_xy or entry.start_place,
                 "goal": entry.goal_xy or entry.goal_place,
             }
@@ -1352,8 +1428,8 @@ def _uploaded_robot_mentions(source: str) -> list[tuple[int, int, str | None, di
     for card in registry.robots():
         if card.source != "upload":
             continue
-        policies = registry.compatible_policies(card.id)
-        item = {"robot_id": card.id, "policy_id": policies[0].id if policies else None, "label": card.name}
+        controllers = registry.compatible_controllers(card.id)
+        item = {"robot_id": card.id, "controller_id": controllers[0].id if controllers else None, "label": card.name}
         for word in {card.name.lower(), card.id}:
             for match in re.finditer(rf"(?:\b(\d+|one|two|three|four|five|six)\s+)?\b{re.escape(word)}(?:e?s)?\b", source):
                 if not any(start < match.end() and match.start() < end for start, end, _, _ in found):
@@ -1377,7 +1453,7 @@ def _requested_robots(text: str, fallback: Robot | None) -> list[dict[str, Any]]
         if uploaded_item is not None:
             item = uploaded_item
         elif name.startswith(("g1", "humanoid", "unitree")):
-            item = {"robot_id": "g1", "policy_id": "g1_walking", "label": "G1"}
+            item = {"robot_id": "g1", "controller_id": "g1_stand", "label": "G1"}
         elif name.startswith("walker") or name.startswith("hexapod"):
             item = {"kind": "walker", "label": "Walker"}
             if re.search(r"\b(?:6|six)[\s-]*leg", source):
@@ -1390,7 +1466,7 @@ def _requested_robots(text: str, fallback: Robot | None) -> list[dict[str, Any]]
     if not parsed:
         robot = fallback or Robot()
         if robot.kind == "library":
-            return [{"robot_id": robot.robot_id, "policy_id": robot.policy_id, "label": _library_label(robot.robot_id)}]
+            return [{"robot_id": robot.robot_id, "controller_id": robot.controller_id, "label": _library_label(robot.robot_id)}]
         item = {"kind": robot.kind, "label": robot.kind.title()}
         if robot.kind == "walker":
             item["legs"] = robot.legs

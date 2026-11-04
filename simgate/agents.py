@@ -28,8 +28,10 @@ Rules:
 - Leave environment.gravity and environment.friction null unless the user gives numbers; the system fills real reference values.
 - robot.kind is "rover" (wheels), "walker" (built-in gait), or "library" (a registered library robot).
   Use "walker" for built-in walkers: legs, dog, quadruped, insect, spider, hexapod. legs is 4 or 6.
-- For G1, a humanoid, or a Unitree robot, select robot_id "g1" and policy_id "g1_walking".
-  Only use robot and policy IDs from the library list below; never invent IDs.
+- For G1, a humanoid, or a Unitree robot, select robot_id "g1" and controller_id "g1_stand". It is a humanoid
+  (standing only): walking needs a trained policy, which is not included. Give it no mission (no goal) and add an
+  assumption saying it stands in place; for getting somewhere suggest a rover or walker.
+  Only use robot and controller IDs from the library list below; never invent IDs.
 - Keep the walker's gait_freq_hz and stride_deg at their defaults unless the user asks to walk faster/slower or take bigger steps; large changes can make it fall.
 - Real terrain: when the user asks for a real place or "real terrain", set terrain.kind to "real" and terrain.preset to one of the available presets below. Never invent a preset name; if none fits, use generated terrain and say so in assumptions.
 - Start and goal: when the user wants the robot to get somewhere ("reach", "get to", "go to", "from X to Y",
@@ -146,12 +148,14 @@ def planner_system() -> str:
     registry = LibraryRegistry()
     library = []
     for robot in registry.robots():
-        policies = ", ".join(
-            f"{policy.id} ({policy.name})"
-            for policy in registry.compatible_policies(robot.id)
+        controllers = ", ".join(
+            f"{controller.id} ({controller.name})"
+            for controller in registry.compatible_controllers(robot.id)
         ) or "none"
         library.append(
-            f"- robot_id={robot.id}: {robot.name} ({robot.kind}); compatible policies: {policies}"
+            f"- robot_id={robot.id}: {robot.name} ({robot.kind}); controllers: {controllers}"
+            + (". Humanoid (standing only). Walking needs a trained policy, which is not included."
+               if robot.controller == "stand" else "")
         )
     return (
         PLANNER_SYSTEM.replace("{presets}", presets_text())
@@ -223,7 +227,7 @@ def _mock_plan(text: str, current: SceneSpec | None = None) -> SceneSpec:
         if "wheel" in t or "rover" in t:
             rb.kind = "rover"
         if re.search(r"\bg1\b", t) or "humanoid" in t or "unitree" in t:
-            rb.kind, rb.robot_id, rb.policy_id = "library", "g1", "g1_walking"
+            rb.kind, rb.robot_id, rb.controller_id = "library", "g1", "g1_stand"
         # A count applies only to the part it names: "six-legged" never sets wheels, "six wheels" never sets legs.
         for number, count in (("six|6", 6), ("four|4", 4)):
             if re.search(rf"\b(?:{number})[\s-]*leg", t):
@@ -451,7 +455,10 @@ def _llm_spec(system: str, user: str) -> SceneSpec:
 def plan(text: str) -> SceneSpec:
     if config.MOCK_MODE:
         return _mock_plan(text)
-    return _llm_spec(planner_system(), text)
+    try:
+        return _llm_spec(planner_system(), text)
+    except llm.ModelUnavailable:   # the API failed: plan this step with the rules
+        return _mock_plan(text)
 
 
 def edit(spec: SceneSpec, instruction: str) -> SceneSpec:
@@ -459,7 +466,10 @@ def edit(spec: SceneSpec, instruction: str) -> SceneSpec:
         return _mock_plan(instruction, spec)
     clean = spec.model_copy(deep=True)
     clean.assumptions = []
-    return _llm_spec(planner_system() + EDIT_RULES, f"Current spec:\n{clean.model_dump_json()}\n\nChange requested: {instruction}")
+    try:
+        return _llm_spec(planner_system() + EDIT_RULES, f"Current spec:\n{clean.model_dump_json()}\n\nChange requested: {instruction}")
+    except llm.ModelUnavailable:   # the API failed: edit this step with the rules
+        return _mock_plan(instruction, spec)
 
 
 def plan_stress(spec: SceneSpec, text: str) -> list[dict]:
@@ -500,7 +510,10 @@ def plan_stress(spec: SceneSpec, text: str) -> list[dict]:
                     "do not use obstacle_scale unless obstacles are present."
                 ),
             })
-        reply = llm.chat(messages)
+        try:
+            reply = llm.chat(messages)
+        except llm.ModelUnavailable:   # the API failed: the fixed condition set
+            return fallback
         messages.append({"role": "assistant", "content": reply})
         try:
             plan = StressPlan.model_validate(llm.extract_json(reply))
@@ -581,7 +594,11 @@ def build(sim: Simulator, spec: SceneSpec, log, feedback: str | None = None) -> 
         {"role": "user", "content": request},
     ]
     for attempt in range(1, config.BUILDER_MAX_RETRIES + 1):
-        reply = llm.chat(messages, model=config.BUILDER_MODEL)
+        try:
+            reply = llm.chat(messages, model=config.BUILDER_MODEL)
+        except llm.ModelUnavailable as exc:
+            log(f"The builder model is unavailable ({exc}); using the verified template.")
+            return sim.build(spec)
         code = llm.extract_code(reply, lang)
         try:
             result = sim.build(spec, code=code)
@@ -688,7 +705,7 @@ def _mock_explain(spec: SceneSpec, m: dict) -> str:
 ROBOT_FIELDS = {   # the design properties each kind of robot actually has
     "rover": ("kind", "wheels", "wheel_radius", "wheel_width", "drive_speed", "chassis_length", "chassis_width", "mass_kg"),
     "walker": ("kind", "legs", "leg_length", "gait_freq_hz", "stride_deg", "chassis_length", "chassis_width", "mass_kg"),
-    "library": ("kind", "robot_id", "policy_id", "command_speed_m_s", "mass_kg"),
+    "library": ("kind", "robot_id", "controller_id", "command_speed_m_s", "mass_kg"),
 }
 
 

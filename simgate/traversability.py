@@ -7,7 +7,7 @@ from typing import Any, Callable
 import numpy as np
 
 from .backends.mujoco_backend import GRID, MuJoCoSimulator
-from .indoor import get_layout, height_grid
+from .indoor import floor_zones_text, get_layout, height_grid, place_name
 from .library.cards import RobotCard
 from .spec import Robot, RobotEntry, SceneSpec
 
@@ -387,7 +387,7 @@ def classify(
     limits_by_knob = _report_limits(finder_report if matching else None)
     needed = ["slope_deg", "roughness", "step", "friction"]
     if working.terrain.kind == "indoor":
-        needed = ["step", "friction"]
+        needed = ["slope_deg", "step", "friction"]
     present = set(limits_by_knob)
     aliases = {"step": "obstacle_scale", "roughness": "roughness_m"}
     missing = [key for key in needed if key not in present and aliases.get(key) not in present]
@@ -415,6 +415,10 @@ def classify(
         reliable, first_fail = _thresholds(limit, working, selected)
         passed_values = [baseline["values"][label] for baseline in baselines
                          if label in baseline.get("values", {})]
+        if limit and limit.get("last_ok") is not None:   # a search run passed there (the harsh end if never broke)
+            passed = _physical_value(limit, "last_ok", limit["last_ok"], working, selected)
+            if passed is not None:
+                passed_values.append(passed)
         if reliable is not None:
             passed_values.append(reliable)
         reliable = (max(passed_values) if higher_is_harsher else min(passed_values)) if passed_values else None
@@ -441,8 +445,12 @@ def classify(
 
     gravity = float(working.environment.gravity)
     surface = str(working.environment.surface)
-    scope = (f"Limits apply to {working.environment.body} gravity ({gravity:g} m/s²) and the "
-             f"{surface} surface (base friction {float(working.environment.friction):.2f}).")
+    if working.terrain.kind == "indoor":   # the floors are the surface
+        scope = (f"Limits apply to Earth gravity ({gravity:g} m/s²) and the apartment's floors: "
+                 f"{floor_zones_text(working.terrain.preset)} (friction).")
+    else:
+        scope = (f"Limits apply to {working.environment.body} gravity ({gravity:g} m/s²) and the "
+                 f"{surface} surface (base friction {float(working.environment.friction):.2f}).")
     if scan_report:
         reason = "No matching Finder result for this world" if not matching else "Finder limits were missing"
         scan_note = (f"{reason} for {', '.join(missing)}; ran a quick scan "
@@ -525,20 +533,10 @@ def _indoor_feature_target(scene: SceneSpec) -> tuple[float, float, str, str] | 
 def _spot_name(scene: SceneSpec, result: dict[str, Any], row: int, col: int,
                special_target: tuple[float, float, str, str] | None) -> str:
     x, y = float(result["x_m"][col]), float(result["y_m"][row])
+    if scene.terrain is not None and scene.terrain.kind == "indoor":   # by place: "the bedroom stairs"
+        return f"the {place_name(scene.terrain.preset, x, y, float(result['max_step_m'][row, col]))}"
     if special_target and math.dist((x, y), special_target[:2]) <= float(result["cell_size_m"]):
         return f"the {special_target[3]}"
-    if scene.terrain is not None and scene.terrain.kind == "indoor":
-        layout = get_layout(scene.terrain.preset)
-        surfaces = [
-            geom for geom in layout["geoms"]
-            if geom["surface"] in ("rug", "wet")
-            and abs(x - geom["position"][0]) <= geom["size_m"][0] / 2
-            and abs(y - geom["position"][1]) <= geom["size_m"][1] / 2
-        ]
-        if surfaces:
-            return "the wet patch" if surfaces[0]["surface"] == "wet" else "the rug"
-        if result["max_step_m"][row, col] >= 0.05:
-            return "the step"
     return "the selected area"
 
 
@@ -591,6 +589,26 @@ def _classify_spot_outcome(run: dict[str, Any], robot_id: str) -> tuple[bool | N
     return True, "crossed without falling or getting stuck"
 
 
+def _max_step_crossed(run: dict[str, Any], robot_id: str, grid: dict[str, Any]) -> float | None:
+    """The tallest mapped step (footprint step height of the cells its centre passed) the robot actually drove over,
+    from the run's recorded path; None when the run recorded no path."""
+    summary = run.get("summary") or {}
+    robots = summary.get("robots") if isinstance(summary, dict) else None
+    metrics = robots.get(robot_id, summary) if isinstance(robots, dict) else summary
+    path = metrics.get("path_xy") if isinstance(metrics, dict) else None
+    if not path:
+        return None
+    xs, ys, steps = np.asarray(grid["x_m"]), np.asarray(grid["y_m"]), np.asarray(grid["max_step_m"])
+    spacing = float(grid["cell_size_m"]) / 2
+    points = [path[0]] + [(a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t)   # between samples too
+                          for a, b in zip(path, path[1:])
+                          for t in np.linspace(0, 1, max(2, math.ceil(math.dist(a, b) / spacing)))[1:]]
+    return max(float(steps[int(np.argmin(np.abs(ys - y))), int(np.argmin(np.abs(xs - x)))]) for x, y in points)
+
+
+STEP_FEATURE_M = 0.02   # a spot whose cell has a step at least this tall must drive over it to count
+
+
 def verify(
     scene: SceneSpec,
     robot: Robot | RobotCard | RobotEntry | None,
@@ -615,7 +633,7 @@ def verify(
     if isinstance(selected, RobotCard) and (
         entry.robot.kind != "library" or entry.robot.robot_id != selected.id
     ):
-        raise ValueError("Spot verification must simulate the selected robot's matching library-card policy.")
+        raise ValueError("Spot verification must simulate the selected robot's matching library-card controller.")
     if isinstance(selected, Robot) and selected != entry.robot:
         entry.robot = selected.model_copy(deep=True)
     # Spot checks belong to one robot; other racers must not affect its result.
@@ -707,14 +725,21 @@ def verify(
         row, col, route, _ = candidate
         predicted = str(map_result["classes"][row, col])
         passed, outcome = _classify_spot_outcome(run, robot_id)
-        judged = predicted in ("green", "red") and passed is not None
+        label = _spot_name(working, grid, row, col, special_target)
+        crossed = _max_step_crossed(run, robot_id, grid)
+        step_here = float(np.asarray(map_result["max_step_m"])[row, col])
+        went_around = bool(passed and crossed is not None and step_here >= STEP_FEATURE_M
+                           and crossed < step_here - 1e-6)
+        if went_around:   # it got through without going over the feature: no evidence about the feature itself
+            outcome = (f"went around {label} without crossing it (largest step crossed {crossed:.2f} m, "
+                       f"the step there is {step_here:.2f} m)")
+        judged = predicted in ("green", "red") and passed is not None and not went_around
         agrees = judged and ((predicted == "green") == passed)
         if agrees:
             agreement += 1
         run_id = str(run.get("id", f"spot-{index}"))
         start, goal, heading, axis = route
         cells = _spot_cells(grid, row, col, axis, distance_m, length_m, width_m)
-        label = _spot_name(working, grid, row, col, special_target)
         corrected = False
         if judged and not agrees:
             actual_class = "green" if passed else "red"
@@ -738,6 +763,8 @@ def verify(
             "judged": judged,
             "agreed": agrees,
             "corrected": corrected,
+            "max_step_crossed_m": None if crossed is None else round(crossed, 3),
+            "step_at_spot_m": round(step_here, 3),
             "cells": cells,
             "start_xy": start,
             "goal_xy": goal,
@@ -749,6 +776,10 @@ def verify(
     report = f"{agreement} of {len(spots)} spot checks agreed with the map."
     if amber_count:
         report += f" {amber_count} amber spot{'s were' if amber_count != 1 else ' was'} reported, not judged."
+    around = [spot["site"] for spot in spots if spot["outcome"].startswith("went around")]
+    if around:
+        report += (f" {len(around)} spot{'s' if len(around) != 1 else ''} went around {', '.join(around)} "
+                   "without crossing it, so it didn't count.")
     if disagreements:
         count = len(disagreements)
         report += f" {count} spot{'s' if count != 1 else ''} disagreed: " + "; ".join(disagreements) + "."
@@ -769,6 +800,72 @@ def verify(
         "corrections": disagreements,
         "unreliable": unreliable,
     }
+
+
+def _run_metrics(run: dict[str, Any], robot_id: str) -> dict[str, Any]:
+    summary = run.get("summary") or {}
+    robots = summary.get("robots") if isinstance(summary, dict) else None
+    return (robots.get(robot_id, summary) if isinstance(robots, dict) else summary) or {}
+
+
+def _ended_at(metrics: dict[str, Any]) -> tuple[float, float] | None:
+    path = metrics.get("path_xy") or []
+    end = metrics.get("final_xy") or (path[-1] if path else None)
+    return (float(end[0]), float(end[1])) if end else None
+
+
+GOAL_WORDS = {"highest": "summit", "lowest": "lowest point"}   # "reach the summit", not "reach the highest"
+
+
+def headline(scene: SceneSpec, entry: RobotEntry, result: dict[str, Any], comparison: dict[str, Any]) -> str:
+    """The card's top line in plain words, built in code from the measured runs:
+    "The rover can reach the bedroom via the ramp (36 s). The stairs are too high: 0.17 m, it handles about 0.06 m." """
+    who = f"The {entry.label.lower()}"
+    goal = GOAL_WORDS.get(entry.goal_place, (entry.goal_place or "goal").replace("_", " "))
+    indoor = scene.terrain is not None and scene.terrain.kind == "indoor"
+    route, runs = comparison.get("route"), comparison.get("runs") or []
+    xs, ys, steps = np.asarray(result["x_m"]), np.asarray(result["y_m"]), np.asarray(result["max_step_m"])
+    handles = result["limits"].get("step", {}).get("first_fail") or result["limits"].get("step", {}).get("reliable_ok")
+
+    def step_near(point, radius=0.6):
+        """The tallest mapped step near a point, and where it is."""
+        near = (np.abs(xs[None, :] - point[0]) <= radius) & (np.abs(ys[:, None] - point[1]) <= radius)
+        if not near.any():
+            return 0.0, point
+        row, col = np.unravel_index(np.argmax(np.where(near, steps, -1.0)), steps.shape)
+        return float(steps[row, col]), (float(xs[col]), float(ys[row]))
+
+    if not runs:
+        reason = (route or {}).get("reason") or comparison.get("text", "")
+        return f"{who} has no safe way to the {goal}. {reason}".strip()
+    straight, safe = (_run_metrics(run, entry.id) for run in runs[:2])
+    lines = []
+    if safe.get("goal_reached"):
+        via = ""
+        if indoor and route:
+            path = route["path_xy"]
+            names = [place_name(scene.terrain.preset, a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t)
+                     for a, b in zip(path, path[1:])
+                     for t in np.linspace(0, 1, max(2, math.ceil(math.dist(a, b) / 0.25)))]
+            via = " via the ramp" if "bedroom ramp" in names else ""
+        seconds = safe.get("time_to_goal_s")
+        lines.append(f"{who} can reach the {goal}{via}" + (f" ({seconds:g} s)." if seconds is not None else "."))
+    else:
+        end = _ended_at(safe)
+        where = f" at the {place_name(scene.terrain.preset, *end)}" if indoor and end else ""
+        lines.append(f"{who} didn't reach the {goal}: the safe route {safe.get('outcome') or 'stopped'}{where}.")
+    if straight.get("goal_reached"):
+        lines.append("Driving straight there works too.")
+    elif (end := _ended_at(straight)) is not None:
+        rise, at = step_near(end)
+        place = place_name(scene.terrain.preset, *at, rise) if indoor else "step"
+        feature = place.replace("bedroom ", "") if place in ("bedroom stairs", "bedroom platform edge") else place
+        verb = "are" if feature.endswith("s") else "is"
+        if rise >= 0.05 and handles:
+            lines.append(f"The {feature} {verb} too high: {rise:.2f} m, it handles about {handles:.2f} m.")
+        else:
+            lines.append(f"Driving straight, it {straight.get('outcome') or 'stopped'} at the {place}.")
+    return " ".join(lines)
 
 
 def map_report(scene: SceneSpec, robot_id: str | None = None, finder_report: dict | None = None,
@@ -849,6 +946,7 @@ def map_report(scene: SceneSpec, robot_id: str | None = None, finder_report: dic
                        for color in ("green", "amber", "red")}
         report = {
             **result, "type": "traversability", "robot_id": entry.id, "robot_label": entry.label,
+            "headline": headline(working, entry, result, comparison) if not via else comparison["text"],
             "percentages": percentages, "percentage_basis": "non-blocked cells",
             "comparison": comparison, "replays": recipes, "cost": spent.snapshot(),
             "summary": (f"{entry.label}: {percentages['green']}% green, {percentages['amber']}% amber, "

@@ -141,6 +141,24 @@ def _clearance_mask(scene: SceneSpec, grid: dict, robot) -> np.ndarray:
     return allowed
 
 
+WALL_SWEEP_COST = 2.0   # per cell, beside a wall: below an amber cell's 5, so a doorway is still used
+
+
+def _near_walls(grid: dict, blockers: list[tuple], robot) -> np.ndarray:
+    """Cells where turning the robot in place would sweep its corners into a wall (within half its footprint
+    diagonal). Costlier, not forbidden: routes keep to the middle of doorways and corridors, where a long robot
+    can make its turn, and still use a doorway when there is no other way."""
+    length, width = _robot_dimensions(robot)
+    sweep = math.hypot(length, width) / 2
+    xs, ys = np.meshgrid(grid["x_m"], grid["y_m"])
+    near = np.zeros(xs.shape, dtype=bool)
+    for cx, cy, yaw, hl, hw in blockers:
+        along = (xs - cx) * math.cos(yaw) + (ys - cy) * math.sin(yaw)
+        across = -(xs - cx) * math.sin(yaw) + (ys - cy) * math.cos(yaw)
+        near |= np.hypot(np.maximum(np.abs(along) - hl, 0), np.maximum(np.abs(across) - hw, 0)) < sweep
+    return near
+
+
 def _blocking_reason(scene: SceneSpec, grid: dict, start, goal, allowed) -> str:
     relaxed = np.where(np.asarray(grid["classes"]) == "red", 20.0, 1.0)
     relaxed[~allowed & (np.asarray(grid["classes"]) != "red")] = 100.0
@@ -222,6 +240,7 @@ def plan_route(scene: SceneSpec, map_result: dict[str, Any], *, robot: RobotEntr
     costs += green * (0.1 * np.clip(slope / 45, 0, 1)
                       + 0.1 * np.clip(_robot_dimensions(entry.robot)[1] / np.maximum(clearance, 0.1), 0, 1))
     blockers = _indoor_geometry(working.terrain.preset)[0] if working.terrain.kind == "indoor" else []
+    costs += WALL_SWEEP_COST * _near_walls(map_result, blockers, entry.robot)
     nav_grid = {"cell_size_m": cell, "x_m": list(map_result["x_m"]), "y_m": list(map_result["y_m"]),
                 "allowed": allowed.tolist(), "blockers": blockers,
                 "radius_m": _robot_dimensions(entry.robot)[1] / 2 + 0.01}

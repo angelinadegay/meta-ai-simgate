@@ -6,7 +6,7 @@ from scripts import bootstrap
 
 def test_bootstrap_skips_clones_and_imports_when_assets_are_shipped(tmp_path, monkeypatch):
     unitree = tmp_path / "third_party" / "unitree_rl_gym"
-    for relative_path in bootstrap.UNITREE_SOURCE_ASSETS + (bootstrap.SIMGATE_POLICY_ASSET,):
+    for relative_path in bootstrap.UNITREE_SOURCE_ASSETS:   # the robot model only: no trained policy
         asset = unitree / relative_path
         asset.parent.mkdir(parents=True, exist_ok=True)
         asset.touch()
@@ -36,34 +36,13 @@ def test_bootstrap_clones_missing_unitree_runtime_assets(tmp_path, monkeypatch):
             asset.touch()
 
     monkeypatch.setattr(bootstrap.subprocess, "run", fake_clone)
-    policy = tmp_path / "third_party" / "unitree_rl_gym" / bootstrap.SIMGATE_POLICY_ASSET
-    policy.parent.mkdir(parents=True, exist_ok=True)
-    policy.touch()
     bootstrap.ensure_unitree_assets(tmp_path)
 
     assert len(calls) == 1
     assert calls[0][:4] == ["git", "clone", "--depth", "1"]
     for relative_path in bootstrap.UNITREE_SOURCE_ASSETS:
         assert (tmp_path / "third_party" / "unitree_rl_gym" / relative_path).is_file()
-
-
-def test_bootstrap_explains_that_upstream_does_not_supply_onnx(tmp_path, monkeypatch):
-    unitree = tmp_path / "third_party" / "unitree_rl_gym"
-    for relative_path in bootstrap.UNITREE_SOURCE_ASSETS:
-        asset = unitree / relative_path
-        asset.parent.mkdir(parents=True, exist_ok=True)
-        asset.touch()
-
-    def unexpected_clone(*_args, **_kwargs):
-        raise AssertionError("Complete Unitree source assets should not be cloned again.")
-
-    monkeypatch.setattr(bootstrap.subprocess, "run", unexpected_clone)
-    try:
-        bootstrap.ensure_unitree_assets(tmp_path)
-    except RuntimeError as error:
-        assert "upstream Unitree repository provides motion.pt, not this ONNX runtime file" in str(error)
-    else:
-        raise AssertionError("A missing converted policy should be reported.")
+    assert not (tmp_path / "third_party" / "unitree_rl_gym" / "deploy").exists()   # no policy is ever copied
 
 
 def test_bootstrap_imports_missing_mars_terrain_from_metadata(tmp_path, monkeypatch):

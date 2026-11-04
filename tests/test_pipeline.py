@@ -1,6 +1,6 @@
 """Smoke tests: run with `python -m pytest -q` or `python tests/test_pipeline.py`.
 
-They run offline in MOCK mode unless you've configured a model.
+They run offline in MOCK mode, even with a key in .env (SIMGATE_MOCK_MODE=0 runs them against the API).
 """
 import atexit
 import math
@@ -12,12 +12,17 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+os.environ.setdefault("SIMGATE_MOCK_MODE", "1")   # before simgate.config is imported (tests/conftest.py under pytest)
 
 # Tests always use an empty uploads folder, regardless of the developer's app configuration.
 _real_uploads = Path(__file__).resolve().parent.parent / "simgate" / "library" / "uploads"
 _real_uploads.mkdir(parents=True, exist_ok=True)
 _previous_uploads_dir = os.environ.get("SIMGATE_UPLOADS_DIR")
-_test_uploads_dir = tempfile.mkdtemp(dir=_real_uploads, prefix=".test-session-")
+if __name__ == "__mp_main__" and _previous_uploads_dir:
+    # a batch worker of `python tests/test_pipeline.py` re-imports this file: it keeps the folder its parent set
+    _test_uploads_dir = _previous_uploads_dir
+else:
+    _test_uploads_dir = tempfile.mkdtemp(dir=_real_uploads, prefix=".test-session-")
 os.environ["SIMGATE_UPLOADS_DIR"] = _test_uploads_dir
 from simgate.library import uploads as _uploads  # noqa: E402
 
@@ -32,7 +37,8 @@ def _cleanup_test_uploads():
         os.environ["SIMGATE_UPLOADS_DIR"] = _previous_uploads_dir
 
 
-atexit.register(_cleanup_test_uploads)
+if __name__ != "__mp_main__":   # only the test run removes its folder, never a worker that borrowed it
+    atexit.register(_cleanup_test_uploads)
 
 from simgate import agents  # noqa: E402
 from simgate.backends.mujoco_backend import MuJoCoSimulator  # noqa: E402
@@ -225,11 +231,11 @@ def test_director_planning_uses_one_call_retries_validation_and_falls_back():
 
 # gpt-4o-mini's first replies to "G1 humanoid walking on Mars hills to the summit, go" and
 # "race a G1 against a rover on Jezero, go"; both used to fail validation on "kind".
-G1_SUMMIT_REPLY = ('{"workflow":"build","summary":"G1 Humanoid walking on Mars hills to the summit","world":{"body":"mars",'
-                   '"terrain_kind":"hills"},"robots":[{"kind":"library","robot_id":"g1","policy_id":"g1_walking"}],'
-                   '"goal":{"place":"highest"},"run_now":true}')
-G1_JEZERO_REPLY = ('{"workflow":"race","summary":"G1 Humanoid vs Rover on Jezero","world":{"preset":"real-jezero"},'
-                   '"robots":[{"kind":"library","robot_id":"g1","policy_id":"g1_walking"},{"kind":"rover"}],"run_now":true}')
+G1_SUMMIT_REPLY = ('{"workflow":"build","summary":"G1 Humanoid standing on Mars hills","world":{"body":"mars",'
+                   '"terrain_kind":"hills"},"robots":[{"kind":"library","robot_id":"g1","controller_id":"g1_stand"}],'
+                   '"run_now":true}')
+G1_JEZERO_REPLY = ('{"workflow":"build","summary":"G1 Humanoid on Jezero","world":{"preset":"real-jezero"},'
+                   '"robots":[{"kind":"library","robot_id":"g1","controller_id":"g1_stand"}],"run_now":true}')
 
 
 def test_model_library_robot_entries_validate_first_time():
@@ -238,34 +244,37 @@ def test_model_library_robot_entries_validate_first_time():
     import pytest
 
     from simgate import config, llm
-    from simgate.director import Director
+    from simgate.director import STANDING_ONLY, Director
     from simgate.plan import RobotPlan
 
     original_mock, original_chat = config.MOCK_MODE, llm.chat
     try:
         config.MOCK_MODE = False
-        for text, reply in (("G1 humanoid walking on Mars hills to the summit, go", G1_SUMMIT_REPLY),
-                            ("race a G1 against a rover on Jezero, go", G1_JEZERO_REPLY)):
+        for text, reply in (("put a G1 humanoid on Mars hills, go", G1_SUMMIT_REPLY),
+                            ("put a G1 humanoid on Jezero, go", G1_JEZERO_REPLY)):
             calls = []
             llm.chat = lambda messages, *args, reply=reply, **kwargs: calls.append(messages) or reply
             director = Director()
             plan = director.plan(text)
             assert len(calls) == 1 and not director.used_rule_planner, text
             asked = json.loads(reply)
-            expected = [(None, "g1", "g1_walking")] + [(robot["kind"], None, None) for robot in asked["robots"][1:]]
-            assert [(robot.kind, robot.robot_id, robot.policy_id) for robot in plan.robots] == expected
+            expected = [(None, "g1", "g1_stand")] + [(robot["kind"], None, None) for robot in asked["robots"][1:]]
+            assert [(robot.kind, robot.robot_id, robot.controller_id) for robot in plan.robots] == expected
             assert plan.workflow == asked["workflow"] and plan.run_now == asked["run_now"]
             assert plan.world.model_dump(exclude_none=True) == asked["world"]
-            # the model's goal; a race without one gets the far-side finish line
-            assert plan.goal.model_dump(exclude_none=True) == asked.get("goal", {"place": "east"})
+            assert plan.goal is None   # it only stands: no goal
+        # the same robot asked to walk somewhere is refused, whatever the model planned
+        llm.chat = lambda messages, *args, **kwargs: G1_SUMMIT_REPLY.replace('"run_now"', '"goal":{"place":"highest"},"run_now"')
+        refused = Director().plan("G1 humanoid walking on Mars hills to the summit, go")
+        assert refused.workflow == "answer" and STANDING_ONLY in refused.reply
     finally:
         config.MOCK_MODE, llm.chat = original_mock, original_chat
 
     for kind in ("library", "humanoid", "walker"):
         assert RobotPlan.model_validate({"kind": kind, "robot_id": "g1"}).kind is None
-    assert RobotPlan.model_validate({"robot_id": "g1"}).policy_id == "g1_walking"
-    guessed = RobotPlan.model_validate({"robot_id": "g1", "policy_id": "g1_walk"})
-    assert guessed.policy_id == "g1_walking" and "g1_walk" in guessed._notes[0]
+    assert RobotPlan.model_validate({"robot_id": "g1"}).controller_id == "g1_stand"
+    guessed = RobotPlan.model_validate({"robot_id": "g1", "controller_id": "g1_walk"})
+    assert guessed.controller_id == "g1_stand" and "g1_walk" in guessed._notes[0]
     with pytest.raises(ValueError, match="omit kind when you give robot_id"):
         RobotPlan.model_validate({"kind": "rover", "robot_id": "g1"})
 
@@ -284,10 +293,10 @@ def test_rules_planner_keeps_goals_and_races_have_a_finish_line():
         missions = world.build.scene.get("robots") or {"r1": {"mission": world.build.scene["mission"]}}
         return world.spec, [info["mission"]["goal"] for info in missions.values()]
 
-    summit, goals = built("G1 humanoid walking on Mars hills to the summit, go")
-    assert summit.robots[0].robot.robot_id == "g1" and summit.robots[0].goal_place == "highest"
+    summit, goals = built("a walker on Mars hills to the summit, go")
+    assert summit.robots[0].robot.kind == "walker" and summit.robots[0].goal_place == "highest"
     assert goals[0] is not None
-    jezero, goals = built("race a G1 against a rover on Jezero, go")
+    jezero, goals = built("race a walker against a rover on Jezero, go")
     assert [entry.goal_place for entry in jezero.robots] == ["east", "east"] and all(goals)
     assert jezero.terrain.preset == "jezero"
 
@@ -307,22 +316,22 @@ def test_model_plans_get_a_finish_line_and_a_named_goal():
     async def emit(event):
         pass
 
-    # gpt-4o-mini's valid but goal-less reply to "race a G1 against a rover on Jezero, go"
-    jezero = ('{"workflow":"race","summary":"G1 Humanoid races against a rover on Jezero","world":{"preset":"real-jezero"},'
-              '"robots":[{"robot_id":"g1"},{"kind":"rover"}],"run_now":true}')
-    summit = ('{"workflow":"build","summary":"G1 on Mars hills","world":{"body":"mars","terrain_kind":"hills"},'
-              '"robots":[{"robot_id":"g1"}],"run_now":true}')
+    # a valid but goal-less reply to "race a walker against a rover on Jezero, go"
+    jezero = ('{"workflow":"race","summary":"Walker races against a rover on Jezero","world":{"preset":"real-jezero"},'
+              '"robots":[{"kind":"walker"},{"kind":"rover"}],"run_now":true}')
+    summit = ('{"workflow":"build","summary":"Walker on Mars hills","world":{"body":"mars","terrain_kind":"hills"},'
+              '"robots":[{"kind":"walker"}],"run_now":true}')
     original_mock, original_chat = config.MOCK_MODE, llm.chat
     try:
         config.MOCK_MODE = False
         llm.chat = lambda *args, **kwargs: jezero
-        world, _ = asyncio.run(Director(emit).execute_plan("race a G1 against a rover on Jezero, go"))
+        world, _ = asyncio.run(Director(emit).execute_plan("race a walker against a rover on Jezero, go"))
         assert [entry.goal_place for entry in world.spec.robots] == ["east", "east"]
         assert all(info["mission"]["goal"] for info in world.build.scene["robots"].values())
         assert "No finish line was given, so I put it on the far side." in world.spec.assumptions
 
-        for text, reply, place in (("G1 humanoid walking on Mars hills to the summit, go", summit, "highest"),
-                                   ("G1 on Mars hills, go", summit, None)):
+        for text, reply, place in (("a walker on Mars hills to the summit, go", summit, "highest"),
+                                   ("a walker on Mars hills, go", summit, None)):
             llm.chat = lambda *args, reply=reply, **kwargs: reply
             plan = Director(emit).plan(text)
             assert (plan.goal.place if plan.goal else None) == place, text
@@ -1002,7 +1011,7 @@ def test_director_tools_validate_and_update_world():
     added = tools.add_obstacles(world, {"obstacles": [{"kind": "rock", "count": 2}]})
     assert len(added.data["obstacles"]) == 1
     library = tools.list_library(world)
-    assert library.data["robots"] and library.data["policies"]
+    assert library.data["robots"] and library.data["controllers"]
     removed = tools.remove_robot(world, {"id": "r2"})
     assert len(removed.data["robots"]) == 1
     checked = tools.build_and_check(world)
@@ -1133,8 +1142,9 @@ def test_plan_prompt_offers_built_in_robots_only_as_kinds(monkeypatch, tmp_path)
     monkeypatch.setattr(uploads, "UPLOADS_DIR", tmp_path / "uploads")
 
     prompt = _plan_system()
-    listed = prompt.split("Available library robots and policies:\n", 1)[1].splitlines()[0]
+    listed = prompt.split("Available library robots and their controllers:\n", 1)[1].splitlines()[0]
     assert [robot["id"] for robot in json.loads(listed)] == ["g1"]
+    assert json.loads(listed)[0]["standing_only"] and json.loads(listed)[0]["controllers"] == ["g1_stand"]
     assert "Built-in robot kinds: rover, walker" in prompt
 
 
@@ -1147,7 +1157,7 @@ def test_plan_summaries_are_scene_names():
     assert '"Three rovers race on Mars hills", not an action' in prompt
     examples = [line for line in prompt.splitlines() if line.endswith("}") and ' plan: {"workflow"' in line]
     summaries = [json.loads(line.split(" plan: ", 1)[1])["summary"] for line in examples]
-    assert len(summaries) == 15
+    assert len(summaries) == 14
     assert not any(summary.split()[0] in {"Race", "Compare", "Test", "Make", "Explain", "Create"} for summary in summaries)
 
     plan = Director().plan("compare a rover on the moon and mars")
@@ -1171,12 +1181,11 @@ def test_plan_prompt_states_world_course_and_preset_rules():
     assert examples["Named world"].world.body == "moon" and examples["Named world"].world.preset is None
     assert [obstacle.placement for obstacle in examples["Course"].obstacles] == ["path"] * 3
     assert examples["Real place"].world.preset == "real-gale"
-    library = examples["Library robot"].robots
-    assert [(robot.kind, robot.robot_id) for robot in library] == [(None, "g1")] and examples["Library robot"].goal
-    mixed = examples["Mixed race"]
-    assert mixed.workflow == "race" and [(robot.kind, robot.robot_id) for robot in mixed.robots] == [(None, "g1"), ("rover", None)]
+    standing = examples["Standing robot"]   # the G1 only stands: no goal, and its question goes to the Finder
+    assert [(robot.kind, robot.robot_id) for robot in standing.robots] == [(None, "g1")] and standing.goal is None
+    assert standing.then == "find_failures" and "Library robot" not in examples and "Mixed race" not in examples
     assert '"robots":[{"robot_id":"g1"}]' in prompt   # shown without a kind, as the model should write it
-    assert len(examples) == 15  # every example in the prompt validates as a Plan
+    assert len(examples) == 14  # every example in the prompt validates as a Plan
 
     assert "30" not in prompt.split("Short examples:", 1)[1].split("Available library robots", 1)[0]
     steeper = examples["Steeper edit"].changes
@@ -1263,7 +1272,7 @@ def test_visual_only_scene_data_leaves_simulation_models_and_results_unchanged()
                   duration_s=20).fill_defaults(),
         SceneSpec(domain="robot_terrain", environment=Environment(body="mars", surface="regolith"),
                   terrain=Terrain(kind="hills", seed=4),
-                  robot=Robot(kind="library", robot_id="g1", policy_id="g1_walking"),
+                  robot=Robot(kind="library", robot_id="g1", controller_id="g1_stand"),
                   mission=Mission(goal_place="highest"), duration_s=50).fill_defaults(),
         SceneSpec(domain="robot_terrain", terrain=Terrain(kind="flat", roughness=0), duration_s=22,
                   robots=[RobotEntry(id=f"r{i}", label=f"Rover {i}", robot=Robot(), goal_place="east")
@@ -1745,7 +1754,7 @@ def test_design_constraints_narrow_the_design_space():
     assert DesignSpace(rover, "keep 4 wheels and don't change the speed").fixed == {"wheels": 4, "drive_speed": 6.0}
     walker = DesignSpace(Robot(kind="walker"), "keep six legs")
     assert walker.fixed == {"legs": 6} and "mass_kg" not in walker.bounds
-    g1 = DesignSpace(Robot(kind="library", robot_id="g1", policy_id="g1_walking"), None)
+    g1 = DesignSpace(Robot(kind="library", robot_id="g1", controller_id="g1_stand"), None)
     assert g1.knobs == ["command_speed_m_s"]
 
 
@@ -2109,7 +2118,7 @@ def test_next_actions_cover_the_outcome_matrix():
     scene = SceneSpec(
         domain="robot_terrain",
         terrain=Terrain(kind="real", preset="gale"),
-        robot=Robot(kind="library", robot_id="g1", policy_id="g1_walking"),
+        robot=Robot(kind="library", robot_id="g1", controller_id="g1_stand"),
     ).fill_defaults()
 
     def check_result(result, labels):
@@ -2129,8 +2138,7 @@ def test_next_actions_cover_the_outcome_matrix():
     check_result(start_failure, ["Start on flatter ground", "Try gentler terrain (hills)",
                                  "Use a 6-legged walker", "Run anyway"])
     assert start_failure["reason"] == (
-        "The G1 can't stand where it starts: the ground there is about 14° steep, "
-        "and its trained walking policy was trained on flat ground."
+        "The G1 can't stand where it starts: the ground there is about 14° steep."
     )
 
     units_failure = next_actions("checks", {
@@ -2181,8 +2189,8 @@ def test_next_actions_cover_the_outcome_matrix():
         "diagnosis": {"conclusion": "A steep route was confirmed."},
     }}, failed_facts, scene)
     check_result(redesign_empty, ["Find a gentler route", "Try gentler terrain (hills)",
-                                  "Race it against a rover", "Upload a better policy"])
-    assert "trained robot body is fixed" in redesign_empty["reason"]
+                                  "Race it against a rover", "See where it breaks"])
+    assert "body comes from its model file" in redesign_empty["reason"]
     assert "steep route" in redesign_empty["reason"]
 
     fragile = next_actions("redesign", {"report": {"type": "redesign",
@@ -2336,12 +2344,12 @@ def test_flattest_start_search_respects_radius_and_robot_footprint():
     assert unchanged[1] == unchanged[2]
 
 
-def test_g1_on_gale_moves_implicit_start_flatter_and_stands():
+def test_g1_on_gale_moves_implicit_start_flatter_and_reports_the_slope():
     from simgate import agents
     from simgate.backends.mujoco_backend import MuJoCoSimulator, make_heights, resolve_mission
 
     spec = SceneSpec(domain="robot_terrain", terrain=Terrain(kind="real", preset="gale"),
-                     robot=Robot(kind="library", robot_id="g1", policy_id="g1_walking"),
+                     robot=Robot(kind="library", robot_id="g1", controller_id="g1_stand"),
                      mission=Mission(start_place="highest", goal_place="lowest")).fill_defaults()
     initial = resolve_mission(spec, make_heights(spec)[0])["start"]
     simulator = MuJoCoSimulator()
@@ -2351,11 +2359,12 @@ def test_g1_on_gale_moves_implicit_start_flatter_and_stands():
     stand = next(check for check in checks if check.name == "Library robot stands for 1 s at zero command")
     assert math.dist(initial, final) <= 5.0
     assert any("Moved the start" in note and "flatter ground" in note for note in spec.assumptions)
-    assert stand.passed
+    # standing only, it holds a couple of degrees: Gale's flattest nearby ground (~14°) is too steep, and it says so
+    assert not stand.passed and "Starting footprint ground slope" in stand.detail
 
 
 def test_g1_gale_start_check_failure_offers_recovery_actions():
-    _, (events,) = session_turns("G1 Humanoid walking on real terrain at Gale Crater")
+    _, (events,) = session_turns("G1 Humanoid on real terrain at Gale Crater")
     checks = next(event["checks"] for event in events if event["type"] == "checks")
     stand = next(check for check in checks if check["name"] == "Library robot stands for 1 s at zero command")
     assert not stand["passed"]
@@ -2364,7 +2373,7 @@ def test_g1_gale_start_check_failure_offers_recovery_actions():
     assert question["type"] == "question"
     assert "G1 can't stand where it starts" in question["message"]
     assert "about " in question["message"] and "° steep" in question["message"]
-    assert "trained on flat ground" in question["message"]
+    assert "trained" not in question["message"]   # no trained policy is involved
     assert [action["label"] for action in question["actions"]] == [
         "Start on flatter ground", "Try gentler terrain (hills)", "Use a 6-legged walker", "Run anyway"]
     assert not any(event["type"] == "run_start" for event in events)
@@ -2378,7 +2387,7 @@ def test_explicit_flatter_start_action_uses_wider_search():
     from simgate.orchestrator import Session
 
     spec = SceneSpec(domain="robot_terrain", terrain=Terrain(kind="real", preset="gale"),
-                     robot=Robot(kind="library", robot_id="g1", policy_id="g1_walking"),
+                     robot=Robot(kind="library", robot_id="g1", controller_id="g1_stand"),
                      mission=Mission(start_place="highest", goal_place="lowest")).fill_defaults()
     initial = resolve_mission(spec, make_heights(spec)[0])["start"]
 
@@ -2813,7 +2822,7 @@ def test_explainer_retries_and_removes_action_tips_and_raw_settings():
     from simgate import config, llm
     from simgate.facts import drop_invalid_tips, facts
 
-    g1 = Robot(kind="library", robot_id="g1", policy_id="g1_walking")
+    g1 = Robot(kind="library", robot_id="g1", controller_id="g1_stand")
     spec = SceneSpec(domain="robot_terrain", terrain=Terrain(kind="flat", roughness=0), robot=g1).fill_defaults()
     metrics = {"simulator": "MuJoCo", "forward_progress_m": 2.5, "max_tilt_deg": 9.0, "flipped": False,
                "robot": spec.robot.model_dump()}
@@ -3196,8 +3205,8 @@ def _run_finder(spec, breaks, **kwargs):
         finder.run_batch = real
 
 
-def test_finder_searches_speed_both_ways_for_legged_and_library_robots():
-    from simgate.finder import scene_knobs
+def test_finder_searches_speed_both_ways_for_legged_robots_and_standing_limits_for_the_g1():
+    from simgate.finder import STANDING_PRESET, scene_knobs
 
     def scene(robot):
         return SceneSpec(domain="robot_terrain", terrain=Terrain(kind="flat", roughness=0), robot=robot,
@@ -3205,7 +3214,8 @@ def test_finder_searches_speed_both_ways_for_legged_and_library_robots():
 
     walker, rover = scene(Robot(kind="walker", legs=4)), scene(Robot(kind="rover"))
     assert {"speed", "speed_slower"} <= set(scene_knobs(walker, walker.robot)[0])
-    assert {"speed", "speed_slower"} <= set(scene_knobs(walker, Robot(kind="library", robot_id="g1"))[0])
+    standing = scene_knobs(walker, Robot(kind="library", robot_id="g1"))[0]   # it only stands: tilt and push
+    assert set(STANDING_PRESET) <= set(standing) and not {"speed", "speed_slower"} & set(standing)
     assert "speed_slower" not in scene_knobs(rover, rover.robot)[0]   # a rover is searched faster only
 
     def too_fast_or_slow(variation):
@@ -3870,9 +3880,9 @@ def test_default_time_limit_comes_from_the_distance_to_the_goal():
 def _g1(**fields):
     from simgate.library import LibraryRegistry
 
-    policy = LibraryRegistry().compatible_policies("g1")[0].id
+    controller = LibraryRegistry().compatible_controllers("g1")[0].id
     return SceneSpec(domain="robot_terrain", terrain=Terrain(kind="flat", roughness=0, size_m=20),
-                     robot=Robot(kind="library", robot_id="g1", policy_id=policy),
+                     robot=Robot(kind="library", robot_id="g1", controller_id=controller),
                      mission=Mission(goal_xy=[6.0, 0.0]), **fields).fill_defaults()
 
 
@@ -3895,10 +3905,11 @@ def test_runs_stop_once_the_outcome_is_decided_and_batches_keep_no_frames():
     recorded, frames = summary(stuck, True)   # recorded: the same outcome, and frames for the viewer
     assert recorded["outcome"] == "stuck" and frames > 0
 
-    m, _ = summary(_g1(), False)
-    assert m["outcome"] == "reached" and m["stopped_early"]["reason"] == "reached"
-    pushed, _ = summary(_g1(disturbance=Disturbance(push_n=80)), False)   # the push comes 2 s in, once it walks
-    assert pushed["push_at_s"] == PUSH_AT_S == 2.0 and pushed["outcome"] == "fell"
+    standing = SceneSpec(domain="robot_terrain", terrain=Terrain(kind="flat", roughness=0),   # never "stuck"
+                         robot=Robot(kind="library", robot_id="g1", controller_id="g1_stand"),
+                         disturbance=Disturbance(push_n=80)).fill_defaults()   # knocked over by the push 2 s in
+    pushed, _ = summary(standing, False)
+    assert pushed["push_at_s"] == PUSH_AT_S == 2.0 and pushed["flipped"]
     assert pushed["stopped_early"]["reason"] == "fell" and pushed["stopped_early"]["at_s"] < 10
 
     row = run_batch(stuck, [{"label": "same", "seed": stuck.terrain.seed}], baseline=False, record=False)[0]
@@ -3910,8 +3921,6 @@ def test_batch_workers_reuse_one_pool_one_thread_each_and_build_without_the_view
     import os
 
     from simgate import batch
-    from simgate.policy_runtime import PROJECT_ROOT, _OnnxModel
-
     assert batch.WORKERS == max(1, (os.cpu_count() or 1) - 1)
     spec = SceneSpec(domain="robot_terrain", terrain=Terrain(kind="flat", roughness=0), robot=Robot(kind="rover"),
                      mission=Mission(goal_place="east")).fill_defaults()
@@ -3920,13 +3929,6 @@ def test_batch_workers_reuse_one_pool_one_thread_each_and_build_without_the_view
     batch.run_batch(spec, [{"label": "b", "seed": spec.terrain.seed}], baseline=False, record=False)
     assert pool is not None and batch._pool is pool   # kept between batches
     assert all(os.environ.get(name) == "1" for name in batch.ONE_THREAD)   # inherited by the workers
-
-    from simgate.library import LibraryRegistry
-
-    card = LibraryRegistry().policy(LibraryRegistry().compatible_policies("g1")[0].id)
-    model = _OnnxModel((PROJECT_ROOT / str(card.file)).resolve(), card.recurrent_state_size)
-    options = model.session.get_session_options()
-    assert options.intra_op_num_threads == options.inter_op_num_threads == 1
 
     g1 = _g1()
     sim = agents.route(g1)
@@ -4199,7 +4201,7 @@ def g1_spec(*, duration_s=8.0, mission=None, obstacles=None):
     return SceneSpec(
         domain="robot_terrain",
         terrain=Terrain(kind="flat", roughness=0),
-        robot=Robot(kind="library", robot_id="g1", policy_id="g1_walking"),
+        robot=Robot(kind="library", robot_id="g1", controller_id="g1_stand"),
         mission=mission,
         obstacles=obstacles or [],
         duration_s=duration_s,
@@ -4223,7 +4225,7 @@ def test_g1_stands_for_two_seconds_at_zero_command():
     build = g1_base_build()
     model, data = sim._make(build)
     mujoco.mj_forward(model, data)
-    runner = sim._policy_runner(spec, model, data)
+    runner = sim._controller_runner(spec, model, data)
     command = runner.card.command
     runner.set_command({name: 0.0 for name in command.names})
     root = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "rover")
@@ -4243,37 +4245,12 @@ def test_g1_stands_for_two_seconds_at_zero_command():
     assert tilt < 45, tilt
 
 
-def test_g1_walks_two_metres_in_ten_seconds():
-    spec = g1_spec(duration_s=10.0)
-    sim = MuJoCoSimulator()
-    build = g1_base_build()
-    list(sim.run(spec, build))
-    summary = sim.summary()
-    assert not summary["flipped"] and summary["forward_progress_m"] >= 2.0, summary
-
-
-def test_g1_reaches_diagonal_five_metre_goal():
-    mission = Mission(
-        start_xy=[-3.0, 0.0],
-        start_heading_deg=0.0,
-        goal_xy=[-3.0 + 5.0 / math.sqrt(2), 5.0 / math.sqrt(2)],
-    )
-    spec = g1_spec(duration_s=10.0, mission=mission)
-    sim = MuJoCoSimulator()
-    build = sim.build(spec)
-    start, goal = build.scene["mission"]["start"], build.scene["mission"]["goal"]
-    assert abs(math.dist(start, goal) - 5.0) <= 0.02
-    list(sim.run(spec, build))
-    summary = sim.summary()
-    assert summary["goal_reached"] and summary["outcome"] == "reached", summary
-
-
 def test_two_g1s_share_one_scene():
     import mujoco
 
     from simgate.backends.mujoco_backend import _model_from_xml
 
-    g1 = Robot(kind="library", robot_id="g1", policy_id="g1_walking")
+    g1 = Robot(kind="library", robot_id="g1", controller_id="g1_stand")
     spec = SceneSpec(
         domain="robot_terrain",
         terrain=Terrain(kind="flat", roughness=0),
@@ -4286,10 +4263,10 @@ def test_two_g1s_share_one_scene():
 
 
 def test_g1_lying_on_the_ground_counts_as_fallen():
-    spec = SceneSpec(
+    spec = SceneSpec(   # 5° is past what the standing-only G1 holds: it falls back and lies at ~96°
         domain="robot_terrain",
-        terrain=Terrain(kind="slope", slope_deg=10),
-        robot=Robot(kind="library", robot_id="g1", policy_id="g1_walking"),
+        terrain=Terrain(kind="slope", slope_deg=5),
+        robot=Robot(kind="library", robot_id="g1", controller_id="g1_stand"),
         mission=Mission(start_xy=[-3.0, 0.0], start_heading_deg=0.0,
                         goal_xy=[-3.0 + 5.0 / math.sqrt(2), 5.0 / math.sqrt(2)]),
         duration_s=5.0,
@@ -4302,110 +4279,14 @@ def test_g1_lying_on_the_ground_counts_as_fallen():
     assert summary["fall_started_at_s"] is not None and summary["fall_direction"], summary
 
 
-def test_g1_named_mapping_policy_validation_and_mesh_budget():
-    import json
-    import mujoco
-
-    from simgate.library import LibraryRegistry, PolicyCard
-    from simgate.policy_runtime import PolicyRunner
-
-    spec = g1_spec(
-        duration_s=8.0,
-        mission=Mission(start_xy=[-6.0, 0.0], goal_xy=[6.0, 0.0]),
-        obstacles=[Obstacle(kind="rock", size="small", count=2)],
-    )
-    sim = MuJoCoSimulator()
-    build = sim.build(spec)
-    model, data = sim._make(build)
-    runner = sim._policy_runner(spec, model, data)
-    card = LibraryRegistry().policy("g1_walking")
-    addresses = [
-        int(model.jnt_qposadr[mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, name)])
-        for name in card.joint_order
-    ]
-    assert runner.qpos_addresses.tolist() == addresses
-    assert mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, "goal_zone") >= 0
-    assert mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, "goal_flag") >= 0
-    assert build.scene["course"]
-    head_mesh_id = next(
-        int(geom["mesh_id"])
-        for geom in build.scene["geoms"]
-        if geom["type"] == "mesh" and build.scene["mesh_assets"][str(geom["mesh_id"])]["name"] == "head_link"
-    )
-    head_geom_id = next(
-        geom["id"] for geom in build.scene["geoms"]
-        if geom["type"] == "mesh" and geom["mesh_id"] == head_mesh_id
-    )
-    pelvis_geom_id = next(
-        geom["id"] for geom in build.scene["geoms"]
-        if geom["type"] == "mesh" and build.scene["mesh_assets"][str(geom["mesh_id"])]["name"] == "pelvis"
-    )
-    assert 0.4 < build.scene["poses"][head_geom_id][2] - build.scene["poses"][pelvis_geom_id][2] < 0.6
-    assert "pos" not in build.scene["mesh_assets"][str(head_mesh_id)]
-    assert "quat" not in build.scene["mesh_assets"][str(head_mesh_id)]
-    checks = {check.name: check for check in sim.validate(spec, build)}
-    for name in ("Library policy loads and validates", "Library robot stands for 1 s at zero command"):
-        assert checks[name].passed, checks[name]
-    event = {"type": "scene", "scene": build.scene, "code": build.code, "language": build.language}
-    assert len(json.dumps(event, separators=(",", ":")).encode("utf-8")) < 5 * 1024 * 1024
-
-    payload = card.model_dump()
-    payload["obs_layout"][0]["size"] = 2
-    bad_card = PolicyCard.model_validate(payload)
-
-    class WrongObservationSize:
-        input_size = card.observation_size
-        output_size = len(card.joint_order)
-
-        def run(self, observation):
-            raise AssertionError("dimension validation should happen before inference")
-
-        def reset(self):
-            pass
-
-    try:
-        PolicyRunner(bad_card, model, data, inference_model=WrongObservationSize())
-    except ValueError as exc:
-        assert "expects 47 observations" in str(exc)
-    else:
-        raise AssertionError("a policy/card observation-size mismatch must be rejected")
-
-
-def test_policy_with_out_of_range_targets_is_rejected_on_load():
-    import numpy as np
-
-    from simgate.library import LibraryRegistry
-    from simgate.policy_runtime import PolicyRunner
-
-    card = LibraryRegistry().policy("g1_walking")
-    model, data = MuJoCoSimulator()._make(g1_base_build())
-
-    class FarOutOfRange:
-        input_size = card.observation_size
-        output_size = len(card.joint_order)
-
-        def run(self, observation):
-            return np.full((1, len(card.joint_order)), 40.0)   # 10 rad past every default angle
-
-        def reset(self):
-            pass
-
-    try:
-        PolicyRunner(card, model, data, inference_model=FarOutOfRange())
-    except ValueError as exc:
-        assert "outside the joint range" in str(exc), exc
-    else:
-        raise AssertionError("a policy whose targets leave the joint ranges must be rejected on load")
-
-
 def test_g1_planner_and_library_selection_use_registered_cards():
     import asyncio
 
     from simgate.orchestrator import Session
 
     spec = agents.plan("A G1 humanoid")
-    assert (spec.robot.kind, spec.robot.robot_id, spec.robot.policy_id) == (
-        "library", "g1", "g1_walking"
+    assert (spec.robot.kind, spec.robot.robot_id, spec.robot.controller_id) == (
+        "library", "g1", "g1_stand"
     )
 
     async def select():
@@ -4415,7 +4296,7 @@ def test_g1_planner_and_library_selection_use_registered_cards():
             events.append(event)
 
         session = Session(emit)
-        await session.select_library("g1", "g1_walking", "mars-regolith")
+        await session.select_library("g1", "g1_stand", "mars-regolith")
         selected = agents.plan("a robot on flat terrain")
         session._apply_library_selection(selected)
         assert selected.robot.robot_id == "g1" and selected.environment.body == "mars"
@@ -4434,14 +4315,14 @@ def test_library_selection_builds_and_checks_the_selected_robot():
 
     async def scenario():
         session = Session(emit)
-        await session.select_library("g1", "g1_walking", "earth-rock")   # no scene yet: applies to the next one
+        await session.select_library("g1", "g1_stand", "earth-rock")   # no scene yet: applies to the next one
         await session.handle("a robot on flat ground")
         return session
 
     session = asyncio.run(scenario())
     assert session.spec.robot.robot_id == "g1"
     assert 'name="left_hip_pitch_joint"' in session.build.code, "the built scene must be the selected G1"
-    assert any(check.name == "Library policy loads and validates" and check.passed for check in session.checks)
+    assert any(check.name == "Library controller loads and validates" and check.passed for check in session.checks)
 
 
 def test_library_launch_builds_without_planning_call():
@@ -4457,7 +4338,7 @@ def test_library_launch_builds_without_planning_call():
     agents.plan = lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("library launch called the planner"))
     try:
         session = Session(emit)
-        asyncio.run(session.select_library("g1", "g1_walking", "mars-regolith", start_scene=True,
+        asyncio.run(session.select_library("g1", "g1_stand", "mars-regolith", start_scene=True,
                                            terrain_kind="hills", title="G1 · Mars hills"))
     finally:
         agents.plan = original_plan
@@ -4526,7 +4407,7 @@ def test_library_selection_sets_up_one_scene_only():
     async def scenario():
         session = Session(emit)
         await session.handle("a rover on flat ground")
-        await session.select_library("g1", "g1_walking", "moon-regolith")   # applied to the open scene
+        await session.select_library("g1", "g1_stand", "moon-regolith")   # applied to the open scene
         selected = (session.spec.robot.robot_id, session.spec.environment.body)
         await session.handle("race three rovers on Mars to the far side")
         return selected, session.spec
@@ -4537,30 +4418,31 @@ def test_library_selection_sets_up_one_scene_only():
     assert spec.environment.body == "mars"
 
 
-def test_rules_planner_reads_a_unitree_robot_in_a_race_as_the_g1():
-    from simgate.director import Director
+def test_rules_planner_reads_a_unitree_robot_as_the_g1_and_refuses_racing_it():
+    from simgate.director import STANDING_ONLY, Director
 
     async def emit(event):
         pass
 
-    for text, expected in (("race a unitree robot against a rover", [("g1", None, 1), (None, "rover", 1)]),
-                           ("Unitree G1 humanoid on Mars", [("g1", None, 1)])):
-        plan = Director(emit).plan(text, None)
-        assert [(robot.robot_id, robot.kind, robot.count) for robot in plan.robots] == expected, (text, plan.robots)
+    plan = Director(emit).plan("Unitree G1 humanoid on Mars", None)
+    assert [(robot.robot_id, robot.kind, robot.count) for robot in plan.robots] == [("g1", None, 1)], plan.robots
+    raced = Director(emit).plan("race a unitree robot against a rover", None)   # read as the G1, which only stands
+    assert raced.workflow == "answer" and STANDING_ONLY in raced.reply
 
 
-def test_library_lists_only_each_robots_own_compatible_policies():
+def test_library_lists_only_each_robots_own_compatible_controllers():
     from pathlib import Path
 
     from simgate.library import LibraryRegistry
 
     registry = LibraryRegistry()
-    compatible = {robot.id: [policy.id for policy in registry.compatible_policies(robot.id)] for robot in registry.robots()}
+    compatible = {robot.id: [controller.id for controller in registry.compatible_controllers(robot.id)]
+                  for robot in registry.robots()}
     assert compatible["rover"] == ["rover_wheel_controller"], compatible
     assert compatible["walker"] == ["walker_gait"], compatible
-    assert compatible["g1"] == ["g1_walking"], compatible
+    assert compatible["g1"] == ["g1_stand"], compatible
     page = (Path(__file__).resolve().parent.parent / "static" / "vendor" / "index.html").read_text(encoding="utf-8")
-    assert "policy.joint_order.length > 0 && policy.joint_order.length === robot.joint_names.length" in page
+    assert "controller.joint_order.length > 0 && controller.joint_order.length === robot.joint_names.length" in page
 
 
 MJCF_BODY = b'<mujoco><compiler meshdir="meshes"/><asset><mesh name="base" file="base.stl"/></asset><worldbody><body name="base"/></worldbody></mujoco>'
@@ -4599,8 +4481,8 @@ def test_uploads_reject_unsafe_files():
 
         rejected("robot", [("robot.xml", MJCF_BODY), ("setup.py", b"import os")], r"\.py can't be uploaded")
         rejected("robot", [("robot.xml", MJCF_BODY), ("lib.so", b"\x7fELF")], r"\.so can't be uploaded")
-        rejected("policy", [("policy.pt", b"PK")], "Export the policy to ONNX")
-        rejected("policy", [("policy.pt", b"PK")], r"torch\.onnx\.export")
+        rejected("policy", [("policy.pt", b"PK")], "doesn't run uploaded AI controllers")   # no trained models at all
+        rejected("robot", [("robot.xml", MJCF_BODY), ("walk.onnx", b"onnx")], "doesn't run uploaded AI controllers")
         rejected("robot", [("../robot.xml", MJCF_BODY)], "Unsafe file path")
         rejected("robot", [("robot.zip", _zip({"../../robot.xml": MJCF_BODY}))], "Unsafe file path")
         rejected("robot", [("robot.zip", _zip({"/etc/robot.xml": MJCF_BODY}))], "Unsafe file path")
@@ -4622,11 +4504,11 @@ def test_uploads_reject_unsafe_files():
                  "outside the upload")
         rejected("robot", [("robot.xml", b'<!DOCTYPE m [<!ENTITY a "aaaa">]><mujoco>&a;</mujoco>')], "DOCTYPE")
         rejected("robot", [("robot.xml", MJCF_BODY), ("cfg.yaml", b'!!python/object/apply:os.system ["echo hi"]')],
-                 "isn't valid YAML")
+                 r"\.yaml can't be uploaded")
         rejected("robot", [("robot.xml", MJCF_BODY), ("card.json", b"{not json")], "isn't valid JSON")
         rejected("robot", [("base.stl", b"solid")], "robot upload needs one of")
-        rejected("policy", [("README.md", b"# policy")], "policy upload needs one of")
-        rejected("terrain", [("policy.onnx", b"onnx")], "belong in a policy upload")
+        rejected("policy", [("README.md", b"# policy")], "doesn't run uploaded AI controllers")
+        rejected("terrain", [("policy.onnx", b"onnx")], "doesn't run uploaded AI controllers")
         rejected("robot", [("robot.xml", MJCF_BODY)], "License is required", license="  ")
         rejected("comet", [("robot.xml", MJCF_BODY)], "Upload type must be one of")
         assert not any(Path(root).rglob("*.xml")), "a rejected upload must leave nothing on disk"
@@ -4657,12 +4539,9 @@ def test_uploads_are_stored_and_listed_in_the_registry():
                             uploads_dir=Path(root))
         assert again.id == record.id and len(list((Path(root) / "robot").iterdir())) == 1
 
-        policy = save_upload("policy", [("walk.onnx", b"onnx bytes"), ("notes.md", b"# notes")], "Walk", "Me", "MIT",
-                             uploads_dir=Path(root))
         registry = LibraryRegistry(uploads_dir=Path(root))
         assert [r.id for r in registry.uploads("robot")] == [record.id]
-        assert [(r.id, r.source) for r in registry.uploads("policy")] == [(policy.id, "upload")]
-        assert {r.kind for r in registry.uploads()} == {"robot", "policy"}
+        assert {r.kind for r in registry.uploads()} == {"robot"}   # trained controllers can't be uploaded
 
 
 def test_upload_endpoint_stores_files_and_reports_errors():
@@ -4933,10 +4812,10 @@ def test_uploaded_urdf_cart_is_inspected_checked_and_listed():
         registry = LibraryRegistry()
         upload_id = answer.json()["upload"]["id"]
         assert registry.robot(upload_id).source == "upload"
-        assert [p.id for p in registry.compatible_policies(upload_id)] == [f"{upload_id}-wheels"]
+        assert [p.id for p in registry.compatible_controllers(upload_id)] == [f"{upload_id}-wheels"]
 
         spec = SceneSpec(domain="robot_terrain", terrain=Terrain(kind="flat", roughness=0), duration_s=12,
-                         robot=Robot(kind="library", robot_id=upload_id, policy_id=f"{upload_id}-wheels"),
+                         robot=Robot(kind="library", robot_id=upload_id, controller_id=f"{upload_id}-wheels"),
                          mission=Mission(start_xy=[-3, 0], start_heading_deg=0, goal_xy=[3, 2])).fill_defaults()
         sim = MuJoCoSimulator()
         build = sim.build(spec)
@@ -5006,7 +4885,7 @@ def test_uploaded_mjcf_quadruped_gets_a_baseline_gait():
         assert phases["FL_hip"] == phases["RR_hip"] != phases["FR_hip"] == phases["RL_hip"], phases   # diagonal pairs
         gait = next(c for c in robot["checks"] if c["name"] == "Baseline gait tried")
         assert gait["advisory"] and "may walk badly" in gait["detail"]
-        assert answer.json()["robot"]["policy_card"]["name"] == "Baseline gait"
+        assert answer.json()["robot"]["controller_card"]["name"] == "Baseline gait"
 
 
 def test_inspector_flags_wrong_units():
@@ -5075,8 +4954,8 @@ def test_uploaded_robots_race_with_name_prefixes_and_their_own_defaults():
         for name, files in (("Cart", [("cart.urdf", cart_urdf()), ("meshes/body.stl", MESH.read_bytes())]),
                             ("Dog", [("dog.xml", dog_mjcf())])):
             answer = client.post("/upload", data={**ROBOT_FORM, "name": name}, files=[("files", f) for f in files]).json()
-            robots[name] = Robot(kind="library", robot_id=answer["upload"]["id"], policy_id=answer["robot"]["policy_card"]["id"])
-        robots["G1"] = Robot(kind="library", robot_id="g1", policy_id="g1_walking")
+            robots[name] = Robot(kind="library", robot_id=answer["upload"]["id"], controller_id=answer["robot"]["controller_card"]["id"])
+        robots["G1"] = Robot(kind="library", robot_id="g1", controller_id="g1_stand")
         spec = SceneSpec(domain="robot_terrain", terrain=Terrain(kind="flat", roughness=0), duration_s=6,
                          robots=[RobotEntry(id=f"r{i + 1}", label=label, robot=robot, goal_place="east")
                                  for i, (label, robot) in enumerate(robots.items())]).fill_defaults()
@@ -5091,204 +4970,20 @@ def test_uploaded_robots_race_with_name_prefixes_and_their_own_defaults():
         assert visual and all(model.geom_contype[g] == 0 and model.geom_conaffinity[g] == 0 for g in visual)
         list(sim.run(spec, build))
         progress = {m["label"]: m["progress_toward_goal_m"] for m in sim.summary()["robots"].values()}
-        assert progress["Cart"] > 2 and progress["Dog"] > 0.2 and progress["G1"] > 1, progress
-
-
-G1_DEPLOY = Path(__file__).resolve().parent.parent / "third_party/unitree_rl_gym/deploy"
-G1_POLICY_FILES = [("files", ("motion.onnx", (G1_DEPLOY / "pre_train/g1/motion.onnx").read_bytes())),
-                   ("files", ("g1.yaml", (G1_DEPLOY / "deploy_mujoco/configs/g1.yaml").read_bytes()))]
-POLICY_FORM = {"type": "policy", "name": "My G1 walk", "credit": "Unitree Robotics", "license": "BSD-3-Clause"}
-CARD_FIELDS = ("robot_id", "format", "control_dt", "joint_order", "obs_layout", "action_scale", "default_angles",
-               "kps", "kds", "command", "clock_period_s", "recurrent_state_size")
-
-
-def _same(a, b) -> bool:
-    """Equal field values, numbers within float tolerance."""
-    if isinstance(a, dict) and isinstance(b, dict):
-        return a.keys() == b.keys() and all(_same(a[k], b[k]) for k in a)
-    if isinstance(a, (list, tuple)) and isinstance(b, (list, tuple)):
-        return len(a) == len(b) and all(_same(x, y) for x, y in zip(a, b))
-    if isinstance(a, (int, float)) and isinstance(b, (int, float)) and not isinstance(a, bool):
-        return abs(a - b) <= 1e-9
-    return a == b
-
-
-def test_golden_g1_policy_upload_matches_the_shipped_card_and_walks():
-    """The G1's own ONNX policy and g1.yaml, uploaded as a user would: the Adapter's card must equal the shipped one."""
-    import json
-
-    from simgate.library import LibraryRegistry
-
-    folder, uploads_dir, client = _robot_uploads()
-    with folder, uploads_dir:
-        asked = client.post("/upload", data=POLICY_FORM, files=G1_POLICY_FILES)
-        assert asked.status_code == 422 and asked.json()["questions"][0]["field"] == "robot_id"
-        assert "g1" in asked.json()["questions"][0]["choices"]
-
-        answer = client.post("/upload", data={**POLICY_FORM, "robot_id": "g1"}, files=G1_POLICY_FILES).json()
-        policy = answer["policy"]
-        assert (policy["status"], policy["adapter"]) == ("needs_answers", "rules")
-        assert [q["field"] for q in policy["questions"]] == ["clock_period_s"]   # g1.yaml doesn't say; deploy_mujoco.py does
-        assert policy["facts"]["onnx"]["observation_size"] == 47 and policy["facts"]["onnx"]["recurrent_state_size"] == 64
-
-        answered = client.post(f"/upload/policy/{answer['upload']['id']}/answers", json={"answers": {"clock_period_s": "0.8"}})
-        policy = answered.json()["policy"]
-        assert policy["status"] == "listed", policy["checks"]
-        shipped = LibraryRegistry().policy("g1_walking").model_dump(mode="json")
-        made = policy["policy_card"]
-        for field in CARD_FIELDS:
-            assert _same(json.loads(json.dumps(made[field])), shipped[field]), (field, made[field], shipped[field])
-        checks = {check["name"]: check for check in policy["checks"]}
-        assert checks["Stands for 2 s at command 0"]["passed"]
-        assert checks["Walks forward 0.5 m in 4 s"]["passed"], checks["Walks forward 0.5 m in 4 s"]
-        assert answer["upload"]["id"] in [card.id for card in LibraryRegistry().compatible_policies("g1")]
-
-
-def test_adapter_model_draft_is_checked_against_the_config():
-    import json
-
-    from simgate import config, llm
-    from simgate.library import save_upload
-    from simgate.library.adapter import adapt_policy, check_draft, rules_draft
-
-    folder, uploads_dir, _ = _robot_uploads()
-    original_mock, original_chat = config.MOCK_MODE, llm.chat
-    try:
-        with folder, uploads_dir:
-            record = save_upload("policy", [file for _, file in G1_POLICY_FILES], "Walk", "Me", "MIT")
-            config.MOCK_MODE = True
-            good = adapt_policy(record, "g1")["draft"]
-            wrong = {**good, "observation": [{**good["observation"][0], "scale": 1.0}] + good["observation"][1:]}
-            config.MOCK_MODE = False
-            calls = []
-            replies = iter([json.dumps(wrong), json.dumps(good)])
-            llm.chat = lambda messages, *args, **kwargs: calls.append(messages) or next(replies)
-            policy = adapt_policy(save_upload("policy", [file for _, file in G1_POLICY_FILES], "Walk two", "Me", "MIT"), "g1")
-            assert policy["adapter"] == "model" and len(calls) == 2
-            assert "base_ang_vel scale is 1.0, but the config's ang_vel_scale is 0.25" in calls[1][-1]["content"]
-
-            facts = policy["facts"]
-            scan = rules_draft(facts)
-            scan.observation[-1] = scan.observation[-1].model_copy(update={"name": "height_scan"})
-            assert any("height_scan isn't supported" in error for error in check_draft(scan, facts))
-    finally:
-        config.MOCK_MODE, llm.chat = original_mock, original_chat
-
-
-def test_adapter_checks_explain_a_wrong_observation_order():
-    import json
-
-    from simgate import config, llm
-    from simgate.library import save_upload
-    from simgate.library.adapter import adapt_policy
-
-    folder, uploads_dir, _ = _robot_uploads()
-    original_mock, original_chat = config.MOCK_MODE, llm.chat
-    try:
-        with folder, uploads_dir:
-            config.MOCK_MODE = True
-            draft = adapt_policy(save_upload("policy", [file for _, file in G1_POLICY_FILES], "Walk", "Me", "MIT"), "g1")["draft"]
-            blocks = draft["observation"]
-            swapped = {**draft, "clock_period_s": 0.8, "questions": [],   # joint velocities read where positions belong
-                       "observation": blocks[:3] + [blocks[4], blocks[3]] + blocks[5:]}
-            config.MOCK_MODE = False
-            llm.chat = lambda *args, **kwargs: json.dumps(swapped)
-            policy = adapt_policy(save_upload("policy", [file for _, file in G1_POLICY_FILES], "Swapped", "Me", "MIT"), "g1")
-            assert policy["adapter"] == "model" and policy["status"] == "checks_failed", policy["status"]
-            failed = [check for check in policy["checks"] if not check["passed"]]
-            assert failed and all("Likely wrong:" in check["detail"] for check in failed), failed
-            assert not (Path(folder.name) / "policy" / policy["upload_id"] / "policy_card.json").exists()
-    finally:
-        config.MOCK_MODE, llm.chat = original_mock, original_chat
-
-
-def _g1_config(**changes):
-    """g1.yaml with some keys changed (None removes a key), as uploaded bytes."""
-    import yaml
-
-    config = yaml.safe_load((G1_DEPLOY / "deploy_mujoco/configs/g1.yaml").read_text(encoding="utf-8"))
-    for key, value in changes.items():
-        if value is None:
-            config.pop(key)
-        else:
-            config[key] = value
-    return yaml.safe_dump(config).encode()
-
-
-def test_policy_without_default_angles_asks_for_them():
-    folder, uploads_dir, client = _robot_uploads()
-    with folder, uploads_dir:
-        files = [G1_POLICY_FILES[0], ("files", ("g1.yaml", _g1_config(default_angles=None)))]
-        answer = client.post("/upload", data={**POLICY_FORM, "robot_id": "g1"}, files=files).json()
-        policy = answer["policy"]
-        asked = {q["field"]: q for q in policy["questions"]}
-        assert policy["status"] == "needs_answers" and set(asked) == {"default_angles", "clock_period_s"}
-        assert asked["default_angles"]["choices"] == ["robot pose", "zeros"]
-        url = f"/upload/policy/{answer['upload']['id']}/answers"
-        assert client.post(url, json={"answers": {"default_angles": "crouch"}}).status_code == 400
-        answered = client.post(url, json={"answers": {"default_angles": "robot pose", "clock_period_s": 0.8}}).json()["policy"]
-        pose = answered["facts"]["robot"]["default_pose"]
-        assert answered["questions"] == [] and answered["status"] in ("listed", "checks_failed")
-        assert answered["draft"]["default_angles"] == [pose[name] for name in answered["draft"]["joint_order"]]
-        assert answered["answers"]["default_angles"] == "robot pose"
-
-
-def test_policy_whose_onnx_sizes_dont_fit_is_refused_with_the_numbers():
-    folder, uploads_dir, client = _robot_uploads()
-    with folder, uploads_dir:
-        # the config describes 2 command values, so its blocks add up to 44 (no clock fits): the ONNX input has 47
-        files = [G1_POLICY_FILES[0], ("files", ("g1.yaml", _g1_config(cmd_scale=[2.0, 2.0], cmd_init=[0.5, 0.0])))]
-        policy = client.post("/upload", data={**POLICY_FORM, "robot_id": "g1"}, files=files).json()["policy"]
-        assert policy["status"] == "unusable"
-        assert "observation block sizes add up to 44, but the ONNX input has 47 values" in " ".join(policy["errors"])
-
-        cart = client.post("/upload", data={**ROBOT_FORM, "name": "Cart"}, files=[("files", ("cart.urdf", cart_urdf(mesh=False)))]).json()
-        policy = client.post("/upload", data={**POLICY_FORM, "name": "G1 walk on a cart", "robot_id": cart["upload"]["id"]},
-                             files=G1_POLICY_FILES).json()["policy"]
-        assert policy["status"] == "unusable"
-        assert "joint_order has 4 joints, but the ONNX output has 12 actions" in " ".join(policy["errors"])
-        states = {upload["name"]: upload for upload in client.get("/library").json()["uploads"]}
-        assert states["G1 walk on a cart"]["status"] == "not ready"
-        assert any("12 actions" in reason for reason in states["G1 walk on a cart"]["reasons"])
-
-
-def test_policy_runtime_reads_base_linear_velocity_in_the_body_frame():
-    import mujoco
-    import numpy as np
-
-    from simgate.library import LibraryRegistry, PolicyCard
-    from simgate.policy_runtime import PolicyRunner
-
-    shipped = LibraryRegistry().policy("g1_walking").model_dump()
-    card = PolicyCard.model_validate({**shipped, "obs_layout": [{"name": "lin_vel", "size": 3, "scale": 2.0}],
-                                      "recurrent_state_size": None})
-
-    class Still:
-        input_size, output_size = 3, 12
-
-        def run(self, observation):
-            return np.zeros((1, 12))
-
-        def reset(self):
-            pass
-
-    model, data = MuJoCoSimulator()._make(g1_base_build())
-    runner = PolicyRunner(card, model, data, inference_model=Still())
-    root = runner.root_qpos_address
-    data.qpos[root + 3:root + 7] = [math.cos(math.pi / 4), 0, 0, math.sin(math.pi / 4)]   # facing +y
-    data.qvel[runner.root_dof_address:runner.root_dof_address + 3] = [0.0, 1.0, 0.0]      # moving north = forward
-    mujoco.mj_forward(model, data)
-    assert np.allclose(runner.observation(0.0), [2.0, 0.0, 0.0], atol=1e-6)
+        assert progress["Cart"] > 2 and progress["Dog"] > 0.2, progress
+        g1 = next(m for m in sim.summary()["robots"].values() if m["label"] == "G1")   # it only stands, and stays up
+        assert abs(progress["G1"]) < 0.3 and not g1["flipped"], g1
 
 
 def test_library_page_offers_uploads():
     page = (Path(__file__).resolve().parent.parent / "static" / "vendor" / "index.html").read_text(encoding="utf-8")
     assert "placeholders" not in page, "the Upload buttons work now"
+    assert 'id="uploadRobotId"' not in page and 'value="policy"' not in page   # no AI controller uploads
     for needed in ('id="uploadForm"', 'id="dropzone"', 'type="file" id="uploadFiles" multiple',
                    '<input id="uploadName" required', '<input id="uploadCredit" required', '<input id="uploadLicense" required',
-                   'id="uploadRobotId"', 'data-for="terrain"', 'fetch("/upload", { method: "POST", body: form })',
+                   'data-for="terrain"', 'fetch("/upload", { method: "POST", body: form })',
                    "fetch(`/upload/${kind}/${uploadId}/answers`", 'fetch("/library")', 'agent: "Upload"',
-                   'agent: kind === "policy" ? "Adapter" : "Inspector"', 'agent: "Checker"', 'tag uploaded', '"not ready"',
+                   'agent: "Inspector"', 'agent: "Checker"', 'tag uploaded', '"not ready"',
                    'use.textContent = "Use"', "answerChips(row, kind, upload.id, question)", "ondrop",
                    '<dialog id="uploadDialog"', 'showModal()', 'id="uploadQuestions"', "showFormQuestions(body.questions)",
                    "showFormError(body.error)"):
@@ -5321,7 +5016,7 @@ def test_library_endpoint_shows_uploads_with_their_state():
         assert state[plain["upload"]["id"]]["questions"][0]["field"] == "forward_axis"
         assert state[chip["upload"]["id"]]["status"] == "not ready"
         assert any("Mass and size are plausible" in reason for reason in state[chip["upload"]["id"]]["reasons"])
-        assert {policy["id"] for policy in library["policies"]} >= {f"{cart['upload']['id']}-wheels", "g1_walking"}
+        assert {policy["id"] for policy in library["controllers"]} >= {f"{cart['upload']['id']}-wheels", "g1_stand"}
 
 
 def test_an_uploaded_robot_is_usable_everywhere():
@@ -5351,18 +5046,32 @@ def test_an_uploaded_robot_is_usable_everywhere():
         assert diagnosis["reproduced"] and any(h["cause"] == "obstacle" for h in diagnosis["hypotheses"])
         redesign = next(e for e in fix if e["type"] == "redesign")["report"]
         tried = {knob for round_ in redesign["rounds"] for candidate in round_["candidates"] for knob in candidate["changes"]}
-        assert tried and tried <= {"command_speed_m_s", "policy_id"}, tried   # its body is never edited
+        assert tried and tried <= {"command_speed_m_s", "controller_id"}, tried   # its body is never edited
         assert "body is never edited" in " ".join(redesign["notes"])
         rows = next(e for e in stress if e["type"] == "report")["rows"]
         assert len(rows) > 3 and not any("crashed" in str(row["reason"]) or "Unknown robot" in str(row["reason"]) for row in rows), rows
 
 
 def _run_one(name, fn) -> str:
-    """Run one test for the plain-script runner and return its report line."""
+    """Run one test for the plain-script runner and return its report line. A test that takes pytest's
+    ``monkeypatch`` or ``tmp_path`` gets them here too, undone and removed afterwards."""
+    import inspect
+
+    import pytest
+
+    wanted = inspect.signature(fn).parameters
+    patch = pytest.MonkeyPatch() if "monkeypatch" in wanted else None
+    folder = tempfile.TemporaryDirectory() if "tmp_path" in wanted else None
+    kwargs = {**({"monkeypatch": patch} if patch else {}), **({"tmp_path": Path(folder.name)} if folder else {})}
     try:
-        fn()
-    except unittest.SkipTest as reason:
+        fn(**kwargs)
+    except (unittest.SkipTest, pytest.skip.Exception) as reason:
         return f"skip {name} ({reason})"
+    finally:
+        if patch:
+            patch.undo()
+        if folder:
+            folder.cleanup()
     return f"ok  {name}"
 
 
@@ -5372,6 +5081,17 @@ def test_script_runner_reports_skips():
 
     assert _run_one("test_x", skipped) == "skip test_x (needs a library)"
     assert _run_one("test_y", lambda: None) == "ok  test_y"
+
+
+def test_script_runner_gives_tests_monkeypatch_and_tmp_path():
+    seen = {}
+
+    def uses_fixtures(monkeypatch, tmp_path):
+        monkeypatch.setattr(math, "pi", 3)
+        seen.update(pi=math.pi, folder=tmp_path, existed=tmp_path.is_dir())
+
+    assert _run_one("test_z", uses_fixtures) == "ok  test_z"
+    assert seen["pi"] == 3 and math.pi != 3 and seen["existed"] and not seen["folder"].exists()
 
 
 if __name__ == "__main__":

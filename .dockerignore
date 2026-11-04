@@ -9,3 +9,9 @@ unitree_rl_gym/
 tests/
 MUJOCO_LOG.TXT
 simgate/library/uploads/
+reports/
+docs/
+*.onnx
+*.pt
+# raw terrain data and local copies of downloaded assets never go into the image (fetch_assets.py runs there)
+assets/

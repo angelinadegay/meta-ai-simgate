@@ -44,7 +44,7 @@ class SpawnRobotArgs(ToolArgs):
         default=None,
         description="Registered robot library ID. Use instead of kind, not together with it.",
     )
-    policy_id: str | None = None
+    controller_id: str | None = None
     label: str | None = Field(default=None, min_length=1, max_length=80)
     legs: Literal[4, 6] | None = None
     wheels: Literal[4, 6] | None = None
@@ -56,8 +56,8 @@ class SpawnRobotArgs(ToolArgs):
     def validate_choice(self) -> "SpawnRobotArgs":
         if (self.kind is None) == (self.robot_id is None):
             raise ValueError("Provide exactly one of kind or robot_id.")
-        if self.policy_id is not None and self.robot_id is None:
-            raise ValueError("policy_id applies only to a library robot_id.")
+        if self.controller_id is not None and self.robot_id is None:
+            raise ValueError("controller_id applies only to a library robot_id.")
         if any(value is not None and isinstance(value, list) and len(value) != 2 for value in (self.start, self.goal)):
             raise ValueError("Start and goal coordinates must contain exactly two values.")
         return self
@@ -193,7 +193,7 @@ def set_world(world: World, args: dict[str, Any]) -> ToolResult:
             raise ValueError(f"Unknown body {parsed.body!r}; choose a registered world.")
         spec.environment.body = parsed.body
         spec.environment.gravity = presets.gravity_for(parsed.body)
-    if parsed.surface is not None:
+    if parsed.surface is not None and (parsed.terrain_kind or spec.terrain.kind) != "indoor":   # indoors: the floors
         spec.environment.surface = parsed.surface
         spec.environment.friction = presets.friction_for(parsed.surface)
     if parsed.terrain_kind is not None:
@@ -238,11 +238,11 @@ def spawn_robot(world: World, args: dict[str, Any]) -> ToolResult:
         if card.source == "builtin":
             robot = Robot(kind="walker" if card.kind == "legged" else "rover", mass_kg=card.mass_kg)
         else:
-            policies = registry.compatible_policies(card.id)
-            policy_id = parsed.policy_id or (policies[0].id if policies else None)
-            if policy_id is None or policy_id not in {policy.id for policy in policies}:
-                raise ValueError(f"Robot {card.id!r} has no compatible selected policy.")
-            robot = Robot(kind="library", robot_id=card.id, policy_id=policy_id, mass_kg=card.mass_kg)
+            controllers = registry.compatible_controllers(card.id)
+            controller_id = parsed.controller_id or (controllers[0].id if controllers else None)
+            if controller_id is None or controller_id not in {controller.id for controller in controllers}:
+                raise ValueError(f"Robot {card.id!r} has no compatible selected controller.")
+            robot = Robot(kind="library", robot_id=card.id, controller_id=controller_id, mass_kg=card.mass_kg)
         default_label = card.name
     else:
         robot = Robot(
@@ -288,11 +288,11 @@ def list_library(world: World, args: dict[str, Any] | None = None) -> ToolResult
     registry = LibraryRegistry()
     data = {
         "robots": [card.model_dump(mode="json") for card in registry.robots()],
-        "policies": [card.model_dump(mode="json") for card in registry.policies()],
+        "controllers": [card.model_dump(mode="json") for card in registry.controllers()],
         "worlds": [card.model_dump(mode="json") for card in registry.worlds()],
     }
     return _result(
-        f"Library has {len(data['robots'])} robots, {len(data['policies'])} policies, and {len(data['worlds'])} worlds.",
+        f"Library has {len(data['robots'])} robots, {len(data['controllers'])} controllers, and {len(data['worlds'])} worlds.",
         **data,
     )
 
@@ -530,7 +530,10 @@ def build_custom(world: World, args: dict[str, Any]) -> ToolResult:
     else:
         fragment = ""
         for attempt in range(1, retries + 1):
-            reply = llm.chat(messages, model=config.BUILDER_MODEL)
+            try:
+                reply = llm.chat(messages, model=config.BUILDER_MODEL)
+            except llm.ModelUnavailable:   # the API failed: the same path as mock mode
+                break
             messages.append({"role": "assistant", "content": reply})
             try:
                 fragment = llm.extract_code(reply, "xml").strip()

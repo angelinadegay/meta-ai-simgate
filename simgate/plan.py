@@ -25,7 +25,7 @@ PlanPlace = Annotated[Place, BeforeValidator(_far_side_to_place)]
 
 Workflow = Literal["build", "race", "compare", "stress_test", "edit", "custom", "answer", "diagnose", "redesign",
                    "find_failures", "traversability", "evolve"]
-FinderKnob = Literal["slope_deg", "friction", "gravity", "push_n", "payload", "obstacle_scale", "roughness", "speed"]
+FinderKnob = Literal["slope_deg", "tilt_deg", "friction", "gravity", "push_n", "payload", "obstacle_scale", "roughness", "speed"]
 FollowUp = Literal["find_failures", "stress_test", "diagnose"]   # analyses a build can be followed by
 TerrainKind = Literal["flat", "hills", "rocky", "slope", "craters", "real", "indoor"]
 Surface = Literal["rock", "regolith", "gravel", "sand", "mud", "ice"]
@@ -81,7 +81,7 @@ class RobotPlan(BaseModel):
     label: str | None = Field(default=None, min_length=1, max_length=80)
     kind: RobotKind | None = None
     robot_id: str | None = None
-    policy_id: str | None = None
+    controller_id: str | None = None
     count: int = Field(default=1, ge=1, le=6)
     legs: Literal[4, 6] | None = None
     wheels: Literal[4, 6] | None = None
@@ -118,36 +118,36 @@ class RobotPlan(BaseModel):
         if (self.kind is None) == (self.robot_id is None):
             raise ValueError(f"Provide exactly one of kind or robot_id. {_robot_choices()}")
         if self.robot_id is None:
-            if self.policy_id is not None:
-                raise ValueError("policy_id requires robot_id.")
+            if self.controller_id is not None:
+                raise ValueError("controller_id requires robot_id.")
             return self
         registry = LibraryRegistry()
         try:
             robot = registry.robot(self.robot_id)
         except ValueError as exc:
             raise ValueError(f"robot_id {self.robot_id!r} doesn't exist. {_robot_choices()}") from exc
-        compatible = registry.compatible_policies(robot.id)
-        if self.policy_id is None:   # the robot's default policy, as spawn_robot would pick
+        compatible = registry.compatible_controllers(robot.id)
+        if self.controller_id is None:   # the robot's default controller, as spawn_robot would pick
             if not compatible:
-                raise ValueError(f"robot_id {robot.id!r} has no compatible policy installed.")
-            self.policy_id = compatible[0].id
+                raise ValueError(f"robot_id {robot.id!r} has no compatible controller installed.")
+            self.controller_id = compatible[0].id
         else:
             try:
-                policy = registry.policy(self.policy_id)
+                controller = registry.controller(self.controller_id)
             except ValueError as exc:
                 if len(compatible) == 1:
-                    self._notes.append(f"There is no policy {self.policy_id!r}, so {robot.id} uses its only "
-                                       f"policy, {compatible[0].id}.")
-                    self.policy_id = compatible[0].id
+                    self._notes.append(f"There is no controller {self.controller_id!r}, so {robot.id} uses its only "
+                                       f"controller, {compatible[0].id}.")
+                    self.controller_id = compatible[0].id
                     return self
                 available = ", ".join(card.id for card in compatible)
                 raise ValueError(
-                    f"policy_id {self.policy_id!r} doesn't exist for robot {robot.id!r}; available: {available}"
+                    f"controller_id {self.controller_id!r} doesn't exist for robot {robot.id!r}; available: {available}"
                 ) from exc
-            if policy not in registry.compatible_policies(robot.id):
-                available = ", ".join(card.id for card in registry.compatible_policies(robot.id))
+            if controller not in registry.compatible_controllers(robot.id):
+                available = ", ".join(card.id for card in registry.compatible_controllers(robot.id))
                 raise ValueError(
-                    f"policy_id {self.policy_id!r} is incompatible with {robot.id!r}; available: {available}"
+                    f"controller_id {self.controller_id!r} is incompatible with {robot.id!r}; available: {available}"
                 )
         return self
 

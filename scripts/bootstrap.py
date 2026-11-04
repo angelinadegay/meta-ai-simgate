@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fetch missing G1 source assets and import the shipped Mars terrain presets."""
+"""Fetch missing G1 robot-model assets (MJCF and meshes, no trained policy) and import the Mars terrain presets."""
 from __future__ import annotations
 
 import argparse
@@ -15,15 +15,10 @@ UNITREE_REPOSITORY = "https://github.com/unitreerobotics/unitree_rl_gym.git"
 UNITREE_SOURCE_ASSETS = (
     "resources/robots/g1_description/g1_12dof.xml",
     "resources/robots/g1_description/meshes/pelvis.STL",
-    "deploy/deploy_mujoco/configs/g1.yaml",
     "LICENSE",
 )
-SIMGATE_POLICY_ASSET = "deploy/pre_train/g1/motion.onnx"
-UNITREE_COPY_PATHS = (
+UNITREE_COPY_PATHS = (   # the robot model only: SimGate never copies or runs Unitree's trained policies
     "resources/robots/g1_description",
-    "deploy/pre_train/g1",
-    "deploy/deploy_mujoco/configs/g1.yaml",
-    "deploy/deploy_mujoco/deploy_mujoco.py",
     "LICENSE",
 )
 MARS_TERRAIN_SOURCES = {
@@ -63,7 +58,7 @@ def ensure_unitree_assets(root: Path = ROOT) -> None:
     destination = root / "third_party" / "unitree_rl_gym"
     missing = [path for path in UNITREE_SOURCE_ASSETS if not (destination / path).is_file()]
     if missing:
-        print("Cloning Unitree assets required by the G1 robot...")
+        print("Cloning the Unitree G1 robot model (MJCF and meshes)...")
         try:
             with tempfile.TemporaryDirectory(prefix="simgate-unitree-") as temporary:
                 checkout = Path(temporary) / "unitree_rl_gym"
@@ -78,13 +73,8 @@ def ensure_unitree_assets(root: Path = ROOT) -> None:
 
     missing = [path for path in UNITREE_SOURCE_ASSETS if not (destination / path).is_file()]
     if missing:
-        raise RuntimeError("The Unitree checkout is missing required G1 source files: " + ", ".join(missing))
-    if not (destination / SIMGATE_POLICY_ASSET).is_file():
-        raise RuntimeError(
-            f"Missing SimGate-converted G1 policy: {destination / SIMGATE_POLICY_ASSET}. "
-            "The upstream Unitree repository provides motion.pt, not this ONNX runtime file."
-        )
-    print("Unitree G1 source assets are ready.")
+        raise RuntimeError("The Unitree checkout is missing required G1 model files: " + ", ".join(missing))
+    print("Unitree G1 robot model is ready.")
 
 
 def ensure_terrain(root: Path, name: str, refresh: bool = False) -> None:

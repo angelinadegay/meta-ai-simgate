@@ -30,6 +30,7 @@ StepCallback = Callable[[dict], None]
 # World conditions only: the scene's own value is where each search starts, "harsh" is where it ends.
 KNOBS: dict[str, dict[str, Any]] = {
     "slope_deg": {"name": "slope", "harsh": 30.0},
+    "tilt_deg": {"name": "ground tilt", "harsh": 30.0},       # the whole ground tilted (any terrain): standing robots
     "friction": {"name": "friction", "harsh": 0.1},
     "height_scale": {"name": "terrain height scale", "harsh": 2.0},
     "gravity": {"name": "gravity", "harsh": 1.62},
@@ -41,7 +42,9 @@ KNOBS: dict[str, dict[str, Any]] = {
     # legged and library robots are also searched slower (-50%): a second half-search of the same condition
     "speed_slower": {"name": "slower commanded speed", "harsh": 0.5},
 }
-RULE_ORDER = ["slope_deg", "obstacle_scale", "friction", "roughness", "push_n", "payload", "gravity", "speed"]
+RULE_ORDER = ["slope_deg", "tilt_deg", "obstacle_scale", "friction", "roughness", "push_n", "payload", "gravity", "speed"]
+STANDING_PRESET = ["tilt_deg", "push_n"]
+INDOOR_SLOPE_BEYOND = 1.5   # an indoor scan searches slopes up to 1.5x the steepest ramp (6° -> 9°)   # a standing-only robot: standing on a tilted ground and under a sideways push
 BOTH_WAYS = ("walker", "library")   # robots whose speed is searched in both directions
 # every phase gets a share of the budget; what a phase leaves unused rolls forward to the next one
 SHARES = {"quick": {"search": 14, "map": 6, "hunt": 5, "confirm": 15},
@@ -62,7 +65,7 @@ def show(knob: str, value: float | None) -> str:
     """A condition's value as the card and the Explainer write it."""
     if value is None:
         return "–"
-    if knob == "slope_deg":
+    if knob in ("slope_deg", "tilt_deg"):
         return f"{value:.1f}°"
     if knob in ("friction", "roughness"):
         return f"{value:.2f}"
@@ -103,6 +106,12 @@ def _obstacle_context(spec: SceneSpec, robot) -> tuple[float, float] | None:
     return (max(heights), climb) if climb > 0 else None
 
 
+def stands_only(robot) -> bool:
+    from .backends.mujoco_backend import stands_only as standing
+
+    return standing(robot)
+
+
 def scene_knobs(spec: SceneSpec, robot, gravity_asked: bool = False) -> tuple[dict[str, float], dict[str, str]]:
     """The conditions that fit this scene with the scene's own value of each, and why the others don't. Gravity is
     searched on Earth, or on any world when the request asks about it."""
@@ -132,7 +141,7 @@ def scene_knobs(spec: SceneSpec, robot, gravity_asked: bool = False) -> tuple[di
     if robot.kind != "library":
         fits["payload"] = 0.0
     else:
-        skipped["payload"] = "a library robot's trained policy expects its exact body"
+        skipped["payload"] = "a library robot's body comes from its model file"
     if (context := _obstacle_context(spec, robot)) is not None:
         tallest, climb = context
         if tallest / climb < 2.0:
@@ -145,8 +154,14 @@ def scene_knobs(spec: SceneSpec, robot, gravity_asked: bool = False) -> tuple[di
         fits["roughness"] = terrain.roughness
     else:
         skipped["roughness"] = "flat ground has no bumps to roughen"
+    if stands_only(robot):   # it never moves: tilt its ground instead of a slope it would walk, and no speed
+        fits.pop("slope_deg", None)
+        skipped.pop("slope_deg", None)
+        if env.ground_tilt_deg < KNOBS["tilt_deg"]["harsh"]:
+            fits["tilt_deg"] = env.ground_tilt_deg
+        return fits, skipped
     fits["speed"] = 1.0
-    if robot.kind in BOTH_WAYS:   # a gait or a policy can fail too slow as well as too fast; a rover only too fast
+    if robot.kind in BOTH_WAYS:   # a gait or a library controller can fail too slow as well as too fast; a rover only too fast
         fits["speed_slower"] = 1.0
     return fits, skipped
 
@@ -185,6 +200,8 @@ def change(knob: str, value: float, context: dict) -> dict:
         return {}
     if knob == "slope_deg":
         return {"slope_deg": round(value, 3)}
+    if knob == "tilt_deg":
+        return {"ground_tilt_deg": round(value, 3)} if value > 0 else {}
     if knob == "friction":
         return {"friction": round(value, 4)}
     if knob == "height_scale":
@@ -461,7 +478,7 @@ HUNT_FIRST, HUNT_MORE = 6, 4          # combinations in the first round, and in 
 HUNT_LOW, HUNT_HIGH = 0.7, 0.9        # each condition at 70–90% of its own single limit
 NEVER_HIGH = 0.9                      # a condition that never broke: up to 90% of its range
 HUNT_TOLERANCE = 0.01                 # in harshness, for values the model rounded
-UNITS = {"slope_deg": "degrees", "friction": "friction coefficient", "height_scale": "terrain height multiplier",
+UNITS = {"slope_deg": "degrees", "tilt_deg": "degrees of ground tilt", "friction": "friction coefficient", "height_scale": "terrain height multiplier",
          "gravity": "m/s²", "push_n": "newtons sideways",
          "payload": "share of the robot's mass", "obstacle_scale": "times its climb limit", "roughness": "0 to 1",
          "speed": "times the scene's speed", "speed_slower": "times the scene's speed"}
@@ -797,7 +814,7 @@ def _ask_hunter(messages: list[dict], ranges: dict, most: int, evidence: list[fl
 
 def _hunt_round(runner: Runner, combos: list[dict], context: dict, number: int, on_step: StepCallback | None) -> list[dict]:
     if combos:
-        short_names = {"slope_deg": "slope", "push_n": "push", "obstacle_scale": "obstacle size",
+        short_names = {"slope_deg": "slope", "tilt_deg": "tilt", "push_n": "push", "obstacle_scale": "obstacle size",
                        "speed_slower": "slower speed"}
         condition_sets = {}
         for combo in combos:
@@ -1275,6 +1292,8 @@ def _headline_limit(limit: dict) -> str:
     value = reliable["shown"] if reliable is not None else limit["shown"]["last_ok"]
     if knob == "slope_deg":
         okay = f"reliably OK on slopes up to {value}" if reliable else f"OK on slopes up to {value}"
+    elif knob == "tilt_deg":
+        okay = f"reliably stands on ground tilted up to {value}" if reliable else f"stands on ground tilted up to {value}"
     elif knob == "push_n":
         okay = f"sideways push OK up to {value}"
     else:
@@ -1467,7 +1486,11 @@ def explain(report: dict, calls: list[dict]) -> str:
     messages = [{"role": "system", "content": EXPLAINER_SYSTEM}, {"role": "user", "content": facts_text(report)}]
     attempts = []
     for attempt in range(2):
-        text = llm.chat(messages, temperature=0.3).strip()
+        try:
+            text = llm.chat(messages, temperature=0.3).strip()
+        except llm.ModelUnavailable as exc:   # the API failed: the rules' interpretation
+            attempts.append({"attempt": attempt + 1, "valid": False, "problems": [f"model unavailable: {exc}"]})
+            break
         issues = number_problems(text, report)
         attempts.append({"attempt": attempt + 1, "valid": not issues, "problems": issues})
         if not issues:
@@ -1545,8 +1568,13 @@ def scan_map_limits(
     source = spec.model_copy(deep=True).fill_defaults()
     source_entry = _entry(source, entry.id)
     indoor = source.terrain is not None and source.terrain.kind == "indoor"
-    if indoor:
-        available = ("step", "friction")
+    harsh_values = {}
+    if indoor:   # slope too, up to a bit beyond the steepest ramp, so a ramp is judged on evidence
+        from .indoor import get_layout
+
+        ramp_deg = max((abs(geom["pitch_deg"]) for geom in get_layout(source.terrain.preset)["geoms"]), default=0.0)
+        available = ("slope_deg", "step", "friction") if ramp_deg > 0 else ("step", "friction")
+        harsh_values["slope_deg"] = round(max(ramp_deg * INDOOR_SLOPE_BEYOND, 1.0), 1)
     else:
         available = ("slope_deg", "roughness", "step", "friction")
     plans = tuple(knob for knob in available if missing is None or knob in missing)
@@ -1622,7 +1650,7 @@ def scan_map_limits(
                 baselines.append(evidence)
         if baseline and baseline[0]["broke"] is False:
             runner.phase(run_budget - 1)
-            measured = search(runner, [knob_key], context, on_step)
+            measured = search(runner, [knob_key], context, on_step, harsh_values)
             limits.extend(measured)
             scans.append({"knob": knob, "runs": len(runner.evidence), "status": "measured"})
             errors = [row["error"] for row in runner.evidence if row.get("error")]
@@ -1687,6 +1715,9 @@ def _find(spec: SceneSpec, robot_id: str | None, failure: str, budget: str, name
     if spec.domain != "robot_terrain" or not spec.robots:
         raise ValueError("Finding where it breaks needs a robot scene.")
     entry = _entry(spec, robot_id)
+    if stands_only(entry.robot):   # the standing preset: does it stay up on a tilted ground and under a push?
+        failure = "safety"
+        named = list(dict.fromkeys("tilt_deg" if knob == "slope_deg" else knob for knob in named or STANDING_PRESET))
     # a named "gravity" comes from the user's own words (the Director drops it otherwise), so any world may search it
     fits, skipped = scene_knobs(spec, entry.robot, gravity_asked="gravity" in (named or []))
     chosen, notes = choose_knobs(fits, budget, named)

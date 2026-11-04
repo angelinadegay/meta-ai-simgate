@@ -16,12 +16,12 @@ def gale_g1() -> SceneSpec:
     return SceneSpec(
         domain="robot_terrain",
         terrain=Terrain(kind="real", preset="gale"),
-        robot=Robot(kind="library", robot_id="g1", policy_id="g1_walking"),
+        robot=Robot(kind="library", robot_id="g1", controller_id="g1_stand"),
         mission=Mission(start_place="highest", goal_place="lowest"),
     ).fill_defaults()
 
 
-def test_g1_on_gale_gets_flatter_start_and_stands():
+def test_g1_on_gale_gets_flatter_start_and_its_stand_check_reports_the_slope():
     spec = gale_g1()
     requested_start = resolve_mission(spec, make_heights(spec)[0])["start"]
     simulator = MuJoCoSimulator()
@@ -30,7 +30,9 @@ def test_g1_on_gale_gets_flatter_start_and_stands():
 
     assert math.dist(requested_start, simulator.mission["start"]) <= 5.0
     assert any("Moved the start" in note and "flatter ground" in note for note in spec.assumptions)
-    assert next(check.passed for check in checks if check.name == "Library robot stands for 1 s at zero command")
+    # the standing-only G1 holds a couple of degrees; Gale's flattest nearby ground is still ~14°, and the check says so
+    stand = next(check for check in checks if check.name == "Library robot stands for 1 s at zero command")
+    assert not stand.passed and "Starting footprint ground slope" in stand.detail
 
 
 def test_explicit_flatter_start_uses_fifteen_metre_radius():

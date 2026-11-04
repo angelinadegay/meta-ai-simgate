@@ -7,7 +7,7 @@ import re
 import uuid
 from typing import Awaitable, Callable
 
-from . import agents, cost
+from . import agents, cost, demos
 from .backends.base import BuildResult, Check, Simulator, blocking_failures
 from .batch import crash_report, measured
 from .director import FOLLOW_UP_WORDS, Director, follow_up_plan, real_terrain_body_change
@@ -39,6 +39,7 @@ class Session:
         self._finder_source_spec: SceneSpec | None = None
         self._view_shows_other_scene = False   # set after "Show runs" loads the winning design's scene
         self.pending_real_terrain_change: dict[str, str] | None = None
+        self.demo_route_runs: dict[str, list[dict]] = {}   # a saved demo's recorded route runs, replayed as recorded
 
     async def agent(self, name: str, status: str, message: str) -> None:
         await self.emit({"type": "agent", "agent": name, "status": status, "message": message})
@@ -47,7 +48,7 @@ class Session:
         """One chat request, with what it cost (runs, wall time, model calls) sent after its result."""
         with cost.track() as spent:
             await self._handle(text)
-            if spent.runs or spent.model_calls:
+            if spent.runs or spent.model_calls or spent.model_failures:
                 await self.emit({"type": "cost", "cost": spent.snapshot()})
 
     async def _handle(self, text: str) -> None:
@@ -496,8 +497,34 @@ class Session:
         except Exception as error:  # noqa: BLE001
             await self.emit({"type": "error", "message": f"Could not replay the weakest spot: {error}"})
 
+    async def play_demo(self, demo_id: str) -> None:
+        """Replay a saved demo run from its recorded events: zero simulations, zero model calls, in either mode."""
+        try:
+            demo = demos.load_demo(demo_id)
+            if demo["kind"] != "traversability":
+                raise ValueError(f"The {demo['title']} demo replays in the browser.")
+            self._forget_runs()
+            self.demo_route_runs = demo.get("route_runs") or {}
+            for event in demo["events"]:
+                if event["type"] == "traversability":
+                    self.last_map_report = event["report"]
+                await self.emit(event)
+            recorded = demo.get("recorded") or {}
+            await self.emit({"type": "explanation", "message": (
+                f"Replayed the saved demo \"{demo['prompt']}\", recorded with "
+                f"{recorded.get('planner_model', 'the Meta models')} · {recorded.get('builder_model', '')}: "
+                "nothing was simulated and no model was called now. Type a request to run it live.")})
+            await self.emit({"type": "cost", "cost": demos.replay_cost(recorded.get("cost"))})
+        except Exception as error:
+            await self.emit({"type": "error", "message": f"Could not replay the demo: {error}"})
+
     async def replay_map_run(self, run_id: str) -> None:
         """Replay the exact map evidence recipe without replacing the session's source scene."""
+        if run_id in self.demo_route_runs:   # a saved demo's route run: its recorded scene and frames, no simulation
+            for event in self.demo_route_runs[run_id]:
+                await self.emit(event)
+            await self.emit({"type": "cost", "cost": demos.replay_cost(None)})
+            return
         try:
             from .batch import _validate_variation
 
@@ -576,6 +603,7 @@ class Session:
         return metrics
 
     def _forget_runs(self) -> None:
+        self.demo_route_runs = {}
         self.last_summary = self.last_diagnosis = self.last_redesign = None
         self.last_finder_report = None
         self.last_map_report = None
@@ -587,15 +615,15 @@ class Session:
         from .spec import Robot, Terrain
 
         assert self.library_selection is not None
-        robot_id, policy_id, world_id = self.library_selection
+        robot_id, controller_id, world_id = self.library_selection
         registry = LibraryRegistry()
         robot_card = registry.robot(robot_id)
-        policy = registry.policy(policy_id)
+        controller = registry.controller(controller_id)
         world = next((item for item in registry.worlds() if item.id == world_id), None)
         if world is None:
             raise ValueError(f"Unknown world library id: {world_id}")
-        if policy not in registry.compatible_policies(robot_id):
-            raise ValueError(f"Policy {policy_id!r} is not compatible with robot {robot_id!r}.")
+        if controller not in registry.compatible_controllers(robot_id):
+            raise ValueError(f"Controller {controller_id!r} is not compatible with robot {robot_id!r}.")
 
         if robot_card.source == "builtin":
             kind = "rover" if robot_card.id == "rover" else "walker"
@@ -604,7 +632,7 @@ class Session:
             spec.robot = Robot(
                 kind="library",
                 robot_id=robot_card.id,
-                policy_id=policy.id,
+                controller_id=controller.id,
                 mass_kg=robot_card.mass_kg,
             )
         if spec.robots:
@@ -618,19 +646,19 @@ class Session:
         spec.title = f"{robot_card.name} on {spec.terrain.kind if spec.terrain else 'generated'} terrain, {world.body.title()}"
         spec.fill_defaults()
 
-    async def select_library(self, robot_id: str, policy_id: str, world_id: str, *, start_scene: bool = False,
+    async def select_library(self, robot_id: str, controller_id: str, world_id: str, *, start_scene: bool = False,
                              terrain_kind: str = "hills", title: str = "", obstacles: list[dict] | None = None,
                              scene_spec: dict | None = None, robot_settings: dict | None = None) -> None:
         from .library import LibraryRegistry
 
         registry = LibraryRegistry()
         robot = registry.robot(robot_id)
-        policy = registry.policy(policy_id)
+        controller = registry.controller(controller_id)
         world = next((item for item in registry.worlds() if item.id == world_id), None)
         if world is None:
             raise ValueError(f"Unknown world library id: {world_id}")
-        if policy not in registry.compatible_policies(robot_id):
-            raise ValueError(f"Policy {policy_id!r} is not compatible with robot {robot_id!r}.")
+        if controller not in registry.compatible_controllers(robot_id):
+            raise ValueError(f"Controller {controller_id!r} is not compatible with robot {robot_id!r}.")
         if start_scene and self.spec is None:
             from .spec import Environment, Mission, Obstacle, Robot, SceneSpec, Terrain
 
@@ -658,7 +686,7 @@ class Session:
                     if kind == "indoor" else Mission(goal_place=goal),
                 obstacles=[Obstacle.model_validate(item) for item in (obstacles or [])],
             )
-            self.library_selection = (robot.id, policy.id, world.id)
+            self.library_selection = (robot.id, controller.id, world.id)
             self._apply_library_selection(spec)
             if robot.source == "builtin" and robot_settings:
                 allowed = {"wheels"} if robot.id == "rover" else {"legs"} if robot.id == "walker" else set()
@@ -674,11 +702,11 @@ class Session:
             await self.agent("Director", "done", f"Using the selected {robot.name} and {world.name}; no planning call needed.")
             await self.build_and_check(spec)
             return
-        self.library_selection = (robot.id, policy.id, world.id)
+        self.library_selection = (robot.id, controller.id, world.id)
         await self.emit({
             "type": "library_selected",
             "robot": robot.name,
-            "policy": policy.name,
+            "controller": controller.name,
             "world": world.name,
         })
         if self.spec is not None and self.spec.domain == "robot_terrain":

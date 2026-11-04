@@ -222,6 +222,10 @@
   .nav button:hover, .nav button[aria-current="page"] { color: var(--violet); }
   .avatar { width: 32px; height: 32px; display: grid; place-items: center; border-radius: 50%; background: #e9e3f9; color: #6b57b6; font-weight: 700; }
   .mode { margin: 0; padding: 7px 10px; border: 1px solid #dceee2; border-radius: 99px; background: var(--ok-bg); color: var(--ok); font-size: 11px; white-space: nowrap; }
+  .demo-runs { align-items: center; } .demo-runs-label { color: var(--muted); font-size: 12.5px; margin-right: 4px; }
+  #demoRunList { display: contents; }
+  .mode.mock { border-color: #f1e2bd; background: #fdf6e6; color: #8a6414; }
+  @media (max-width: 860px) { .top .mode { display: inline-block; padding: 4px 8px; font-size: 10px; max-width: 42vw; overflow: hidden; text-overflow: ellipsis; } }   /* the mode is always on show */
   .reconnect { cursor: pointer; }
   .reconnect:hover { border-color: var(--bad); }
   .home { height: calc(100dvh - 72px); max-width: 1240px; margin: 0 auto; padding: 66px 30px 60px; overflow: auto; }
@@ -371,6 +375,8 @@
   .detail-body { flex: 1; min-height: 0; overflow: auto; padding: 12px; }
   .detail-body .card { margin-bottom: 8px; border-radius: 11px; box-shadow: none; }
   .details-only { display: none; }
+  .map-headline { font-size: 15px; line-height: 1.45; margin: 6px 0 10px; }
+  #mapDetails > summary { cursor: pointer; color: var(--muted); margin-bottom: 6px; }
   .show-details .details-only { display: block; }
   .scene-facts { display: grid; gap: 7px; color: #777486; font-size: 11px; }
   .scene-facts strong { color: var(--ink); font-size: 12px; }
@@ -506,6 +512,7 @@
         <button class="chip primary" id="designRobotHome" type="button">Design a robot for this place</button>
         <button class="chip" id="replayEvolutionHome" type="button" hidden>Replay saved evolution</button>
       </div>
+      <div class="hints demo-runs" id="demoRuns" hidden><span class="demo-runs-label">Demo runs: replay instantly (no key needed)</span><span id="demoRunList"></span></div>
     </section>
     <div id="homeExplore">
       <section class="section">
@@ -535,7 +542,7 @@
       <summary>Library</summary>
       <div class="library-tabs" id="libraryTabs">
         <button type="button" class="chip selected" data-library-tab="robots">Robots</button>
-        <button type="button" class="chip" data-library-tab="policies">Policies</button>
+        <button type="button" class="chip" data-library-tab="controllers">Controllers</button>
         <button type="button" class="chip" data-library-tab="worlds">Worlds</button>
       </div>
     </details>
@@ -553,13 +560,12 @@
         <div class="dialog-head"><h2 id="uploadTitle">Upload</h2><button type="button" class="close" id="uploadClose" aria-label="Close">×</button></div>
         <div class="upload-kind-tabs" role="group" aria-label="Upload type">
           <button type="button" class="chip" data-upload-kind="robot" aria-pressed="true">Robot</button>
-          <button type="button" class="chip" data-upload-kind="policy" aria-pressed="false">Policy</button>
           <button type="button" class="chip" data-upload-kind="terrain" aria-pressed="false">World</button>
         </div>
         <div class="upload-questions" id="uploadQuestions" hidden></div>
         <div class="dropzone" id="dropzone">Drop files or one .zip here, or <label for="uploadFiles">choose files</label>
           <input type="file" id="uploadFiles" multiple hidden
-            accept=".zip,.xml,.urdf,.mjcf,.stl,.obj,.msh,.png,.jpg,.tif,.tiff,.onnx,.yaml,.yml,.json,.md,.txt">
+            accept=".zip,.xml,.urdf,.mjcf,.stl,.obj,.msh,.png,.jpg,.tif,.tiff,.json,.md,.txt">
           <div class="file-list" id="uploadFileList">No files yet.</div>
         </div>
         <label>Name <input id="uploadName" required maxlength="200"></label>
@@ -567,7 +573,6 @@
           <label>Credit <input id="uploadCredit" required maxlength="200" placeholder="Who made it"></label>
           <label>License <input id="uploadLicense" required maxlength="200" placeholder="e.g. MIT, BSD-3-Clause"></label>
         </div>
-        <label data-for="policy">Robot it drives <select id="uploadRobotId"></select></label>
         <div class="pair" data-for="terrain">
           <label>World <select id="uploadBody"></select></label>
           <label>Ground <select id="uploadSurface"></select></label>
@@ -634,10 +639,12 @@
       <div class="card" id="reportCard" hidden><h3>Report card</h3><div id="reportCounts"></div><div id="reportRows"></div><div id="stressExplanation"></div><div class="cost-line" id="reportCost"></div></div>
       </section>
       <section class="panel-section" data-panel-section="analysis" hidden>
-      <div class="card" id="mapCard" hidden><h3>Where can it go?</h3><div id="mapLegend"></div>
+      <div class="card" id="mapCard" hidden><h3>Where can it go?</h3><p id="mapHeadline" class="map-headline"></p>
+        <div id="mapRouteRuns" class="card-actions"></div>
+        <details id="mapDetails"><summary>Show details</summary><div id="mapLegend"></div>
         <div id="mapLimits"></div><p id="mapAgreement"></p><p id="mapComparison"></p>
         <div id="mapReplays" class="card-actions"></div><p id="mapHonesty" class="honesty"></p>
-        <p id="mapScope" class="honesty"></p><div id="mapCost" class="cost-line"></div></div>
+        <p id="mapScope" class="honesty"></p><div id="mapCost" class="cost-line"></div></details></div>
       <div class="card" id="envelopeCard" hidden><h3>Envelope</h3><div id="envelopeBody"></div><div class="honesty" id="envelopeHonesty"></div><div class="cost-line" id="envelopeCost"></div></div>
       <div class="card" id="diagnosisCard" hidden><h3>Diagnosis</h3><div id="diagnosisRows"></div><div class="analysis-lines" id="diagnosisDecisions"></div><div class="analysis-text" id="diagnosisConclusion"></div><div class="cost-line" id="diagnosisCost"></div></div>
       <div class="card" id="redesignCard" hidden><h3>Redesign</h3><div id="redesignBody"></div>
@@ -655,14 +662,13 @@
           <summary>Library</summary>
           <div class="library-tabs" id="libraryTabs">
             <button type="button" class="chip selected" data-library-tab="robots">Robots</button>
-            <button type="button" class="chip" data-library-tab="policies">Policies</button>
+            <button type="button" class="chip" data-library-tab="controllers">Controllers</button>
             <button type="button" class="chip" data-library-tab="worlds">Worlds</button>
           </div>
           <div id="libraryItems"></div>
           <div class="library-actions">
             <button type="button" class="chip primary" id="applyLibrary" disabled>Use selected setup</button>
             <button type="button" class="chip" id="uploadRobot">Upload robot</button>
-            <button type="button" class="chip" id="uploadPolicy">Upload policy</button>
             <button type="button" class="chip" id="uploadWorld">Upload world</button>
           </div>
           <div class="library-status" id="libraryStatus">Connect to load library cards.</div>
@@ -718,10 +724,10 @@ const HOME_WORLD_TEMPLATES = [
 const batchResults = new Map();
 let batchDecodeTasks = [];
 let batchIsActive = false;
-let libraryData = { robots: [], policies: [], worlds: [] };
+let libraryData = { robots: [], controllers: [], worlds: [] };
 let libraryTab = "robots";
 let selectedRobotId = "";
-let selectedPolicyId = "";
+let selectedControllerId = "";
 let selectedWorldId = "";
 let selectedHomeWorld = null;
 let selectedHomeRobot = null;
@@ -742,6 +748,7 @@ let agentActivity = new Map();
 let agentStepHistory = new Map();
 let savedWorlds = readSavedWorlds();
 let savedEvolution = null;
+let shownModeStatus = false;
 let currentEvolution = null;
 let evolutionAnimation = null;
 let evolutionRaceScene = null;
@@ -824,6 +831,8 @@ const AGENT_DESCRIPTIONS = {
   "Batch runner": "Runs bounded comparisons and replays measured outcomes.",
   "Stress planner": "Chooses compatible conditions for a stress test.",
 };
+// A rule-based fallback is code, not a model: say so wherever a step names who did it.
+function modelLabel(model) { return !model || model === "rules" || model === "template" ? "rules (no model)" : model; }
 function updateAgent(name, status, model, message) {
   const current = agentActivity.get(name) || {};
   agentActivity.set(name, { ...current, status: status || current.status || "ready", model: model || current.model || "rules", message: message || current.message || "Ready" });
@@ -849,7 +858,7 @@ function renderAgentBar() {
 }
 function showAgentDetail(name) {
   const activity = agentActivity.get(name) || {};
-  $("agentName").textContent = `${AGENT_ICONS[name] || "✳"}  ${name} · ${activity.model || "rules"}`;
+  $("agentName").textContent = `${AGENT_ICONS[name] || "✳"}  ${name} · ${modelLabel(activity.model)}`;
   $("agentDesc").textContent = AGENT_DESCRIPTIONS[name] || "A SimGate simulation specialist.";
   const recent = $("agentRecent"); recent.replaceChildren();
   for (const step of (agentStepHistory.get(name) || []).slice(-3).reverse()) recent.appendChild(textEl("p", `${step.thought}${step.result ? ` · ${step.result}` : ""}`));
@@ -950,7 +959,7 @@ function renderStep(ev) {
     entry.thought ? `Step: ${entry.thought}` : "",
     entry.args && Object.keys(entry.args).length ? `Args: ${JSON.stringify(entry.args)}` : "",
     entry.result ? `Result: ${entry.result}` : "",
-    entry.model ? `Model: ${entry.model}` : "",
+    entry.model ? `Model: ${modelLabel(entry.model)}` : "",
     entry.ms ? `${entry.ms} ms` : "",
   ].filter(Boolean).join("\n")).join("\n\n");
   const node = agentNodes.get(ev.agent);
@@ -961,7 +970,7 @@ function renderStep(ev) {
       const current = Number(node.status.dataset.count || 0) + 1;
       node.status.dataset.count = String(current);
     }
-    node.status.textContent = `${ev.model || "rules"} · ${node.status.dataset.count || "0"}`;
+    node.status.textContent = `${modelLabel(ev.model)} · ${node.status.dataset.count || "0"}`;
     node.group.classList.toggle("active", ev.status === "working");
     const edge = $("agentGraph").querySelector(`.agent-edge[data-to="${CSS.escape(ev.agent)}"]`);
     if (edge) edge.classList.toggle("active", ev.status === "working");
@@ -998,7 +1007,7 @@ function chips(container, items, primary) {
       } else if (option.action?.type === "workflow_action") {
         sendWorkflowAction(option.action.workflow, option.action.robot_id, option.label);
       } else if (option.action?.type === "open_upload") {
-        showWorkbench(); openUpload(option.action.kind || "policy");
+        showWorkbench(); openUpload(option.action.kind || "robot");
       } else if (option.action?.type === "replay_weakest_spot") {
         sendWorkflowAction("replay_weakest_spot", option.action.robot_id, option.label);
       } else send(option.message || option.label);
@@ -1156,7 +1165,8 @@ function updateSceneContext(spec = currentSpec) {
     sceneDetails.appendChild(textEl("span", `${kind}${robot.mass_kg ? ` · ${robot.mass_kg} kg` : ""}${dimensions ? ` · ${dimensions}` : ""}`));
   }
   if (selectedRobotCard) sceneDetails.append(textEl("span", `Credit: ${selectedRobotCard.credit}`), textEl("span", `License: ${selectedRobotCard.license}`));
-  if (robot?.policy_id) sceneDetails.appendChild(textEl("span", `Policy: ${libraryData.policies.find((item) => item.id === robot.policy_id)?.name || robot.policy_id}`));
+  if (robot?.controller_id) sceneDetails.appendChild(textEl("span", `Controller: ${libraryData.controllers.find((item) => item.id === robot.controller_id)?.name || robot.controller_id}`));
+  if (selectedRobotCard?.controller === "stand") sceneDetails.appendChild(textEl("span", STANDING_ONLY));
   sceneDetails.appendChild(textEl("strong", worldCard?.name || `${body.replace(/^\w/, (letter) => letter.toUpperCase())} · ${surface}`));
   if (worldCard) sceneDetails.append(textEl("span", `Credit: ${worldCard.credit}`), textEl("span", `License: ${worldCard.license}`));
   else sceneDetails.appendChild(textEl("span", `Reference values · ${gravity} m/s² · friction ${spec.environment?.friction ?? "—"}`));
@@ -1246,17 +1256,17 @@ function renderHomeRobots() {
       ? [{ robot, label: "4-legged Walker", settings: { legs: 4 } }, { robot, label: "6-legged Walker", settings: { legs: 6 } }]
       : [{ robot, label: robot.name, settings: {} }]);
   for (const { robot, label: displayName, settings } of cards) {
-    const policy = compatiblePolicies(robot)[0];
-    const label = robot.source === "upload" ? "Uploaded" : robot.id === "g1" ? "Trained policy" : "Simple gait";
+    const controller = compatibleControllers(robot)[0];
+    const label = robot.source === "upload" ? "Uploaded" : robot.controller === "stand" ? "Standing only" : "Simple gait";
     const button = document.createElement("button"); button.type = "button";
     button.className = `tile robot-card${selectedHomeRobot?.id === robot.id ? " selected" : ""}`;
     const thumb = document.createElement("div"); thumb.className = "thumb";
     const art = document.createElement("div"); art.className = "thumb-motion"; art.innerHTML = robotIllustration(robot); thumb.appendChild(art);
     const info = document.createElement("div"); info.className = "tile-info";
     const badge = textEl("span", label, "badge");
-    const title = textEl("h3", displayName); const detail = textEl("p", `${robot.kind} · ${robot.mass_kg} kg${policy ? ` · ${policy.name}` : ""}`);
+    const title = textEl("h3", displayName); const detail = textEl("p", robot.controller === "stand" ? STANDING_ONLY : `${robot.kind} · ${robot.mass_kg} kg${controller ? ` · ${controller.name}` : ""}`);
     info.append(badge, title, detail); button.append(thumb, info);
-    button.onclick = () => { selectedHomeRobot = { ...robot, name: displayName, settings }; selectedRobotId = robot.id; selectedPolicyId = policy?.id || ""; renderHome(); };
+    button.onclick = () => { selectedHomeRobot = { ...robot, name: displayName, settings }; selectedRobotId = robot.id; selectedControllerId = controller?.id || ""; renderHome(); };
     container.appendChild(button);
   }
   const own = document.createElement("button"); own.type = "button"; own.className = "tile robot-card";
@@ -1288,15 +1298,15 @@ function renderSavedWorlds() {
 }
 function launchHomeSelection() {
   const world = selectedHomeWorld || homeWorldOptions().find((item) => item.key === "mars-hills");
-  const robot = selectedHomeRobot || libraryData.robots.find((item) => item.id === "g1") || libraryData.robots[0];
+  const robot = selectedHomeRobot || libraryData.robots.find((item) => item.id === "rover") || libraryData.robots[0];
   if (!world || !robot) { addMsg("The Library is still loading. Try again in a moment.", "err"); return; }
-  const policy = compatiblePolicies(robot)[0];
-  if (!policy) { addMsg(`No compatible policy is available for ${robot.name}.`, "err"); return; }
+  const controller = compatibleControllers(robot)[0];
+  if (!controller) { addMsg(`No controller is available for ${robot.name}.`, "err"); return; }
   const title = `${robot.name} · ${world.title}`;
   showWorkbench(); lastRequestText = title; preserveLaunchMessage = true;
   if (!sendEvent({ type: "reset" })) return;
   addMsg(title, "user");
-  sendEvent({ type: "library_select", robot_id: robot.id, policy_id: policy.id, world_id: world.worldId,
+  sendEvent({ type: "library_select", robot_id: robot.id, controller_id: controller.id, world_id: world.worldId,
     start_scene: true, terrain_kind: world.terrain, title, obstacles: world.obstacles || [], robot_settings: robot.settings || {} });
 }
 function launchSavedWorld(entry) {
@@ -1332,9 +1342,10 @@ document.addEventListener("keydown", (event) => {
   if (event.key.toLowerCase() === "p" && !event.repeat && !/^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement?.tagName || "")) setPresentation();
 });
 
-function compatiblePolicies(robot) {
-  return libraryData.policies.filter((policy) => policy.robot_id === robot.id ||
-    (policy.joint_order.length > 0 && policy.joint_order.length === robot.joint_names.length && policy.joint_order.every((name) => robot.joint_names.includes(name))));
+const STANDING_ONLY = "Humanoid (standing only). Walking needs a trained policy, which is not included.";
+function compatibleControllers(robot) {
+  return libraryData.controllers.filter((controller) => controller.robot_id === robot.id ||
+    (controller.joint_order.length > 0 && controller.joint_order.length === robot.joint_names.length && controller.joint_order.every((name) => robot.joint_names.includes(name))));
 }
 function libraryCard(title, detail, license, credit, selected, onClick, onUse) {
   const entry = document.createElement("div"); entry.className = "library-entry";
@@ -1374,9 +1385,9 @@ function pendingCard(upload) {
   }
   return card;
 }
-function useSetup(robotId, policyId, worldId) {
-  selectedRobotId = robotId; selectedPolicyId = policyId; selectedWorldId = worldId || selectedWorldId; renderLibrary();
-  sendEvent({ type: "library_select", robot_id: selectedRobotId, policy_id: selectedPolicyId, world_id: selectedWorldId });
+function useSetup(robotId, controllerId, worldId) {
+  selectedRobotId = robotId; selectedControllerId = controllerId; selectedWorldId = worldId || selectedWorldId; renderLibrary();
+  sendEvent({ type: "library_select", robot_id: selectedRobotId, controller_id: selectedControllerId, world_id: selectedWorldId });
 }
 function renderLibrary() {
   const container = $("libraryItems"); container.replaceChildren();
@@ -1390,20 +1401,22 @@ function renderLibrary() {
   }
   if (libraryTab === "robots") {
     for (const robot of libraryData.robots) {
-      container.appendChild(libraryCard(robot.name, `${robot.kind} · ${robot.mass_kg} kg · ${robot.actuator_type}`,
+      const detail = robot.controller === "stand" ? STANDING_ONLY : `${robot.kind} · ${robot.mass_kg} kg · ${robot.actuator_type}`;
+      container.appendChild(libraryCard(robot.name, detail,
         robot.license, robot.credit, robot.id === selectedRobotId, () => {
           selectedRobotId = robot.id;
-          selectedPolicyId = compatiblePolicies(robot)[0]?.id || "";
+          selectedControllerId = compatibleControllers(robot)[0]?.id || "";
           renderLibrary();
-        }, robot.source === "upload" ? () => useSetup(robot.id, compatiblePolicies(robot)[0]?.id || "") : null));
+        }, robot.source === "upload" ? () => useSetup(robot.id, compatibleControllers(robot)[0]?.id || "") : null));
     }
-  } else if (libraryTab === "policies") {
+  } else if (libraryTab === "controllers") {
     const robot = libraryData.robots.find((item) => item.id === selectedRobotId);
-    for (const policy of robot ? compatiblePolicies(robot) : []) {
-      container.appendChild(libraryCard(policy.name, `${policy.format} · ${policy.control_dt} s · ${policy.robot_id} · joints: ${policy.joint_order.join(", ")}`,
-        policy.license, policy.credit, policy.id === selectedPolicyId, () => {
-          selectedPolicyId = policy.id; renderLibrary();
-        }, isUploaded(policy) ? () => useSetup(policy.robot_id, policy.id) : null));
+    for (const controller of robot ? compatibleControllers(robot) : []) {
+      const joints = controller.joint_order.length ? ` · joints: ${controller.joint_order.join(", ")}` : "";
+      container.appendChild(libraryCard(controller.name, `plain code (no model) · ${controller.control_dt} s · ${controller.robot_id}${joints}`,
+        controller.license, controller.credit, controller.id === selectedControllerId, () => {
+          selectedControllerId = controller.id; renderLibrary();
+        }, null));
     }
   } else {
     for (const world of libraryData.worlds) {
@@ -1411,47 +1424,42 @@ function renderLibrary() {
       container.appendChild(libraryCard(world.name, `${terrain} · ${world.gravity_m_s2} m/s² · ${world.surface} · friction ${world.friction}`,
         world.license, world.credit, world.id === selectedWorldId, () => {
           selectedWorldId = world.id; renderLibrary();
-        }, world.source === "upload" ? () => useSetup(selectedRobotId, selectedPolicyId, world.id) : null));
+        }, world.source === "upload" ? () => useSetup(selectedRobotId, selectedControllerId, world.id) : null));
     }
   }
-  const kind = { robots: "robot", policies: "policy", worlds: "terrain" }[libraryTab];
+  const kind = { robots: "robot", worlds: "terrain" }[libraryTab];
   for (const upload of (libraryData.uploads || []).filter((item) => item.kind === kind && item.status !== "listed")) {
     container.appendChild(pendingCard(upload));
   }
-  const ready = selectedRobotId && selectedPolicyId && selectedWorldId;
+  const ready = selectedRobotId && selectedControllerId && selectedWorldId;
   $("applyLibrary").disabled = !ready;
   $("libraryStatus").textContent = ready
-    ? "Choose a robot, compatible policy, and world, then apply the setup."
-    : "Select a robot, one of its compatible policies, and a world.";
+    ? "Choose a robot and a world, then apply the setup."
+    : "Select a robot and a world.";
 }
 document.querySelectorAll("[data-library-tab]").forEach((button) => {
   button.onclick = () => { libraryTab = button.dataset.libraryTab; renderLibrary(); };
 });
 $("applyLibrary").onclick = () => {
   if (!$("applyLibrary").disabled) sendEvent({
-    type: "library_select", robot_id: selectedRobotId, policy_id: selectedPolicyId, world_id: selectedWorldId
+    type: "library_select", robot_id: selectedRobotId, controller_id: selectedControllerId, world_id: selectedWorldId
   });
 };
-function isUploaded(policy) {
-  return (libraryData.uploads || []).some((upload) => upload.id === policy.id && upload.status === "listed");
-}
 
-// ── Uploads: Upload → Inspector/Adapter → Checker, shown as agent steps ──────
+// ── Uploads: Upload → Inspector → Checker, shown as agent steps ──────
 let uploadKind = null, uploadFiles = [], uploadCount = 0;
-const UPLOAD_NOUN = { robot: "robot", policy: "policy", terrain: "world" };
-const UPLOAD_TAB = { robot: "Robots", policy: "Policies", terrain: "Worlds" };
-const FORM_FIELDS = { robot_id: "uploadRobotId", body: "uploadBody", surface: "uploadSurface", size_m: "uploadSize", height_range_m: "uploadHeight" };
+const UPLOAD_NOUN = { robot: "robot", terrain: "world" };
+const UPLOAD_TAB = { robot: "Robots", terrain: "Worlds" };
+const FORM_FIELDS = { body: "uploadBody", surface: "uploadSurface", size_m: "uploadSize", height_range_m: "uploadHeight" };
 function openUpload(kind) {
   uploadKind = kind; uploadFiles = [];
   document.querySelectorAll("[data-upload-kind]").forEach((button) => {
     button.setAttribute("aria-pressed", String(button.dataset.uploadKind === kind));
   });
-  libraryTab = { robot: "robots", policy: "policies", terrain: "worlds" }[kind];
+  libraryTab = { robot: "robots", terrain: "worlds" }[kind];
   $("libraryPanel").open = true; renderLibrary();
   $("uploadTitle").textContent = `Upload ${UPLOAD_NOUN[kind]}`; showFormQuestions([]);
   for (const field of $("uploadForm").querySelectorAll("[data-for]")) field.hidden = field.dataset.for !== kind;
-  $("uploadRobotId").replaceChildren(...libraryData.robots.filter((robot) => robot.joint_names.length)
-    .map((robot) => new Option(robot.name, robot.id)));
   const bodies = [...new Set(libraryData.worlds.map((world) => world.body))];
   const surfaces = [...new Set(libraryData.worlds.map((world) => world.surface))];
   $("uploadBody").replaceChildren(new Option("Ask me", ""), ...bodies.map((body) => new Option(body, body)));
@@ -1493,7 +1501,6 @@ function renderUploadFiles() {
 }
 function addFiles(list) { uploadFiles.push(...list); renderUploadFiles(); }
 $("uploadRobot").onclick = () => openUpload("robot");
-$("uploadPolicy").onclick = () => openUpload("policy");
 $("uploadWorld").onclick = () => openUpload("terrain");
 document.querySelectorAll("[data-upload-kind]").forEach((button) => { button.onclick = () => openUpload(button.dataset.uploadKind); });
 $("uploadCancel").onclick = closeUpload;
@@ -1512,7 +1519,6 @@ async function submitUpload() {
   const kind = uploadKind, step = `upload-${++uploadCount}`, form = new FormData();
   form.append("type", kind);
   for (const [field, input] of [["name", "uploadName"], ["credit", "uploadCredit"], ["license", "uploadLicense"]]) form.append(field, $(input).value);
-  if (kind === "policy") form.append("robot_id", $("uploadRobotId").value);
   if (kind === "terrain") {
     for (const [field, input] of [["body", "uploadBody"], ["surface", "uploadSurface"], ["size_m", "uploadSize"], ["height_range_m", "uploadHeight"]]) {
       form.append(field, $(input).value);
@@ -1562,13 +1568,13 @@ function showUploadResult(step, kind, status, body) {
     showFormQuestions(body.questions);
     return;
   }
-  const upload = body.upload, state = body.robot || body.policy, terrain = body.terrain;
+  const upload = body.upload, state = body.robot, terrain = body.terrain;
   renderStep(body.answered
     ? { id: `${step}-upload`, agent: "Upload", status: "done", thought: "Answer applied; no re-upload needed." }
     : { id: `${step}-upload`, agent: "Upload", status: "done", thought: `Stored ${upload.files.length} file(s) safely.`,
         result: `${upload.id}: ${upload.files.join(", ")}` });
   const facts = factsSummary(kind, state, terrain);
-  renderStep({ id: `${step}-agent`, agent: kind === "policy" ? "Adapter" : "Inspector", model: state?.inspector || state?.adapter || "rules",
+  renderStep({ id: `${step}-agent`, agent: "Inspector", model: modelLabel(state?.inspector),
     status: "done", thought: facts.title, result: facts.detail });
   const checks = state?.checks || [], warnings = terrain?.inspection?.warnings || [];
   if (checks.length || terrain) {
@@ -1585,11 +1591,11 @@ function showUploadResult(step, kind, status, body) {
     message.appendChild(row); answerChips(row, kind, upload.id, question);
   }
   if (terrain || state?.status === "listed") {
-    const name = terrain ? terrain.label : state.robot_card?.name || state.policy_card?.name || upload.name;
+    const name = terrain ? terrain.label : state.robot_card?.name || upload.name;
     const message = addMsg(`${name} is in the Library.`), actions = document.createElement("div"); actions.className = "card-actions";
     const use = document.createElement("button"); use.type = "button"; use.className = "chip primary"; use.textContent = "Use it";
     use.onclick = () => {
-      closeUpload(); showWorkbench(); libraryTab = { robot: "robots", policy: "policies", terrain: "worlds" }[kind]; showPanel("library"); renderLibrary();
+      closeUpload(); showWorkbench(); libraryTab = { robot: "robots", terrain: "worlds" }[kind]; showPanel("library"); renderLibrary();
     };
     actions.appendChild(use); message.appendChild(actions);
   } else if (!questions.length) {
@@ -1606,18 +1612,14 @@ function factsSummary(kind, state, terrain) {
   }
   if (kind === "robot") {
     const f = state.facts, card = state.robot_card || {};
-    return { title: `${state.draft.kind}, ${f.total_mass_kg} kg, ${f.height_m} m tall; ${state.policy_card?.name || "no controller"}.`,
+    return { title: `${state.draft.kind}, ${f.total_mass_kg} kg, ${f.height_m} m tall; ${state.controller_card?.name || "no controller"}.`,
       detail: [`FACTS: ${f.joints.length} joints, ${f.actuators.length} actuators, ${f.mesh_files} mesh file(s), `
         + `${f.candidate_wheels.length} wheel candidate(s), feet: ${f.candidate_feet.join(", ") || "none"}.`,
         f.units_warning, ...(state.conversion_notes || []),
         `Draft card: forward ${state.draft.forward_axis}; wheels ${card.wheels?.map((w) => `${w.joint} (${w.side})`).join(", ") || "none"}; `
         + `legs ${card.legs?.map((leg) => `${leg.hip}/${leg.knee || "-"}`).join(", ") || "none"}.`].filter(Boolean).join("\n") };
   }
-  const onnx = state.facts.onnx, draft = state.draft;
-  return { title: `ONNX: ${onnx.observation_size} observations → ${onnx.action_size} actions${onnx.recurrent_state_size ? `, LSTM state ${onnx.recurrent_state_size}` : ""}.`,
-    detail: [`Config keys: ${Object.values(state.facts.config.configs).flatMap((config) => Object.keys(config || {})).join(", ") || "none"}.`,
-      `Draft card: ${draft.observation.map((block) => `${block.name} ${block.size}`).join(" + ")}; control every ${draft.control_dt ?? "?"} s; `
-      + `${draft.joint_order.length} joints; action scale ${draft.action_scale}.`, draft.notes, ...(state.errors || [])].filter(Boolean).join("\n") };
+  return { title: "Stored.", detail: "" };
 }
 async function refreshLibrary() {
   try {
@@ -1631,10 +1633,13 @@ ws.onmessage = (m) => {
   const ev = JSON.parse(m.data);
   switch (ev.type) {
     case "hello":
-      $("mode").textContent = ev.mock_mode ? "Mock mode · no model configured" : `Model · ${ev.model}`;
+      $("mode").textContent = ev.mode || (ev.mock_mode ? "Mock mode: rules, no model" : `Meta models: ${ev.model}`);
+      $("mode").title = ev.mode_status || ""; $("mode").classList.toggle("mock", !!ev.mock_mode);
+      if (ev.mode_status?.startsWith("Key missing/invalid") && !shownModeStatus) { addMsg(ev.mode_status); shownModeStatus = true; }
+      demoRuns = ev.demos || []; renderDemoRuns();
       libraryData = ev.library || libraryData;
       selectedRobotId = libraryData.robots[0]?.id || "";
-      selectedPolicyId = selectedRobotId ? compatiblePolicies(libraryData.robots[0])[0]?.id || "" : "";
+      selectedControllerId = selectedRobotId ? compatibleControllers(libraryData.robots[0])[0]?.id || "" : "";
       selectedWorldId = libraryData.worlds.find((world) => world.id === "earth-rock")?.id || libraryData.worlds[0]?.id || "";
       renderLibrary(); renderHome(); renderHomeExamples();
       break;
@@ -1752,6 +1757,7 @@ ws.onmessage = (m) => {
       if (costLine) { costLine.textContent = ev.cost.text; costLine = null; }
       const last = [...log.querySelectorAll(".msg.bot")].pop();
       if (last) last.appendChild(textEl("span", ev.cost.text, "cost-note"));
+      if (ev.cost.model_failures) addMsg(`The Meta Model API didn't answer ${ev.cost.model_failures === 1 ? "once" : `${ev.cost.model_failures} times`}; those steps used rules (no model) and the run continued.`);
       break;
     }
     case "reset":
@@ -1765,8 +1771,8 @@ ws.onmessage = (m) => {
       $("evolutionCard").hidden = true;
       break;
     case "library_selected":
-      $("libraryStatus").textContent = `Selected ${ev.robot} · ${ev.policy} · ${ev.world}.`;
-      addMsg(`Library setup selected: ${ev.robot}, ${ev.policy}, ${ev.world}.`);
+      $("libraryStatus").textContent = `Selected ${ev.robot} · ${ev.controller} · ${ev.world}.`;
+      addMsg(`Library setup selected: ${ev.robot}, ${ev.controller}, ${ev.world}.`);
       showPanel("library");
       break;
   }
@@ -1812,6 +1818,7 @@ function renderTraversability(report) {
   followCam = false; followTransitionRemaining = 0; controls.update();
   $("mapToggle").hidden = false; $("mapToggle").setAttribute("aria-pressed", "true");
   $("mapToggle").classList.add("on"); $("mapCard").hidden = false;
+  $("mapHeadline").textContent = report.headline || report.comparison.text; $("mapDetails").open = false;
   $("mapLegend").replaceChildren();
   for (const [color, description] of [["green", "reliable limits"], ["amber", "uncertain / unmeasured"], ["red", "fails / too narrow"], ["grey", "blocked"]]) {
     const swatch = textEl("div", `${color === "grey" ? "" : `${report.percentages[color]}% `}${color} · ${description}`);
@@ -1830,8 +1837,16 @@ function renderTraversability(report) {
   $("mapComparison").textContent = report.comparison.text;
   $("mapHonesty").textContent = report.honesty;
   $("mapScope").textContent = `${report.limits_scope} ${report.scan_note}`;
+  $("mapRouteRuns").replaceChildren();   // the route runs stay visible above the fold
+  const straight = run => /straight/i.test(run.label || "");
+  for (const run of [...report.comparison.runs.filter(run => !straight(run)), ...report.comparison.runs.filter(straight)]) {
+    const result = run.summary?.goal_reached ? "reached" : run.summary?.outcome || "ran";
+    const button = textEl("button", `▶ Watch ${(run.label || run.id).toLowerCase()} (${result})`,
+                          run.summary?.goal_reached ? "chip primary" : "chip");
+    button.type = "button"; button.onclick = () => replay(run.id); $("mapRouteRuns").appendChild(button);
+  }
   $("mapReplays").replaceChildren();
-  for (const run of [...report.spot_checks, ...report.comparison.runs]) {
+  for (const run of report.spot_checks) {
     const button = textEl("button", `${run.passed === null ? "?" : run.passed ? "✓" : "✕"} ${run.label || run.id}`, "chip");
     button.type = "button"; button.onclick = () => replay(run.id); $("mapReplays").appendChild(button);
   }
@@ -2061,12 +2076,14 @@ function renderEvolution(report, replay = false) {
     addMsg(`Could not replay the final evolution race: ${error.message}`, "err"));
 }
 async function replaySavedEvolution() {
-  const report = savedEvolution || await readSavedEvolution();
+  replayEvolutionReport(savedEvolution || await readSavedEvolution(), "Replay saved evolution");
+}
+function replayEvolutionReport(report, request, recorded = null) {
   if (!report) { addMsg("There is no saved evolution to replay yet."); return; }
   if (!report.challenge_scene || !report.challenge_spec) {
     addMsg("The saved evolution is incomplete and cannot be replayed.", "err"); return;
   }
-  showWorkbench(); addMsg("Replay saved evolution", "user");
+  showWorkbench(); addMsg(request, "user");
   currentSpec = report.challenge_spec; updateSceneContext(report.challenge_spec);
   evolutionRaceScene = report.race_scene || null;
   loadScene(report.challenge_scene);
@@ -2074,6 +2091,27 @@ async function replaySavedEvolution() {
   $("codeBtn").hidden = !detailsMode;
   renderEvolution(report, true); setStatus("Saved replay"); showPanel("analysis");
   addMsg("Replayed saved evolution from recorded telemetry; no simulations or model calls were used.");
+  if (recorded) addMsg(`Replay · 0 runs · 0 model calls (recorded with ${recorded.planner_model} · ${recorded.builder_model}: ${recorded.cost.text})`);
+}
+let demoRuns = [];
+function renderDemoRuns() {   // recorded once with the Meta models; replayed with no simulation and no model call
+  $("demoRuns").hidden = !demoRuns.length;
+  $("demoRunList").replaceChildren(...demoRuns.map(demo => {
+    const button = textEl("button", demo.title, "chip"); button.type = "button"; button.title = demo.prompt;
+    button.dataset.demoId = demo.id; button.onclick = () => playDemo(demo); return button;
+  }));
+}
+async function playDemo(demo) {
+  if (demo.kind === "evolution") {
+    try {
+      const response = await fetch(`/demos/${encodeURIComponent(demo.id)}`);
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      replayEvolutionReport((await response.json()).report, `Demo run: ${demo.prompt}`, demo.recorded);
+    } catch (error) { addMsg(`Could not load the ${demo.title} demo: ${error.message}`, "err"); }
+    return;
+  }
+  showWorkbench(); addMsg(`Demo run: ${demo.prompt}`, "user");
+  sendEvent({ type: "play_demo", demo_id: demo.id });
 }
 function textEl(tag, text, cls) { const el = document.createElement(tag); el.textContent = text; if (cls) el.className = cls; return el; }
 function renderDiagnosis(r) {

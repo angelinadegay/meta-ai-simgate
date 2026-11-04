@@ -1,9 +1,9 @@
-"""Built-in controllers for uploaded robots that have no trained policy: a wheel controller, a baseline gait
-for legged robots, and holding the default pose. Joints and actuators are found by name (with the robot's
+"""Built-in controllers written as plain code (no learned model): a wheel controller, a baseline gait for legged
+robots, holding the default pose, and the G1's standing hold (PD to fixed standing angles, fixed gains). Joints and actuators are found by name (with the robot's
 prefix in a shared scene), and each actuator is driven the way its type expects: a position actuator gets
 the target angle, a velocity actuator the target speed, a motor a PD torque.
 
-It has the PolicyRunner interface the scene loop uses: card.command, set_command, step and hold_default.
+The scene loop drives it through card.command, set_command, step and hold_default.
 """
 import math
 from typing import Mapping
@@ -11,7 +11,7 @@ from typing import Mapping
 import mujoco
 import numpy as np
 
-from .library.cards import PolicyCard, RobotCard
+from .library.cards import ControllerCard, RobotCard
 
 GAIT_HZ = 1.5
 HIP_SWING_RAD = 0.5      # full stride from FULL_STRIDE_M_S up
@@ -20,9 +20,9 @@ FULL_STRIDE_M_S = 0.6    # the default walking speed asked of library robots
 
 
 class SimpleController:
-    def __init__(self, robot: RobotCard, card: PolicyCard, model: mujoco.MjModel, data: mujoco.MjData,
+    def __init__(self, robot: RobotCard, card: ControllerCard, model: mujoco.MjModel, data: mujoco.MjData,
                  name_prefix: str = "") -> None:
-        if robot.controller not in ("wheels", "gait", "hold"):
+        if robot.controller not in ("wheels", "gait", "hold", "stand"):
             raise ValueError(f"{robot.id} has no built-in controller (controller={robot.controller!r}).")
         self.robot, self.card, self.model, self.data = robot, card, model, data
         self.mode = robot.controller
@@ -64,7 +64,7 @@ class SimpleController:
                 if name not in wheels:
                     self._drive(name, position=self._joint[name][3])
             return
-        if self.mode == "hold":
+        if self.mode in ("hold", "stand"):   # "stand" cannot walk: commands are accepted and ignored
             self.hold_default()
             return
         stride = HIP_SWING_RAD * float(np.clip(vx / FULL_STRIDE_M_S, -1.0, 1.0))

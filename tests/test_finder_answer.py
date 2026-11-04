@@ -45,7 +45,7 @@ def g1_scene():
     return SceneSpec(
         domain="robot_terrain",
         terrain=Terrain(kind="flat", roughness=0),
-        robot=Robot(kind="library", robot_id="g1", policy_id="g1_walking"),
+        robot=Robot(kind="library", robot_id="g1", controller_id="g1_stand"),
     ).fill_defaults()
 
 
