@@ -4418,6 +4418,26 @@ def test_library_selection_sets_up_one_scene_only():
     assert spec.environment.body == "mars"
 
 
+def test_library_selection_of_another_world_replaces_the_old_ground():
+    import asyncio
+
+    from simgate.orchestrator import Session
+
+    async def emit(event):
+        pass
+
+    async def scenario():
+        session = Session(emit)
+        await session.select_library("rover", "rover_wheel_controller", "real-gale", start_scene=True, terrain_kind="real")
+        grounds = []
+        for world in ("real-jezero", "moon-regolith", "apartment"):
+            await session.select_library("rover", "rover_wheel_controller", world)   # the Library panel's Apply
+            grounds.append((session.spec.environment.body, session.spec.terrain.kind, session.spec.terrain.preset))
+        return grounds
+
+    assert asyncio.run(scenario()) == [("mars", "real", "jezero"), ("moon", "hills", None), ("earth", "indoor", "apartment")]
+
+
 def test_rules_planner_reads_a_unitree_robot_as_the_g1_and_refuses_racing_it():
     from simgate.director import STANDING_ONLY, Director
 

@@ -213,7 +213,7 @@
   body { height: 100dvh; overflow: hidden; }
   .app { display: block; height: 100dvh; min-height: 0; }
   .top { height: 72px; display: flex; align-items: center; justify-content: space-between; gap: 20px; padding: 0 clamp(20px, 4vw, 72px); background: #fff; border-bottom: 1px solid #f0eef3; }
-  .brand { display: inline-flex; align-items: center; gap: 10px; padding: 0; color: var(--ink); font: 700 20px/1 "Space Grotesk", sans-serif; }
+  .brand { display: inline-flex; align-items: center; gap: 10px; padding: 0; border: 0; background: none; cursor: pointer; color: var(--ink); font: 700 20px/1 "Space Grotesk", sans-serif; }
   .brand-mark { width: 31px; height: 31px; display: grid; place-items: center; border-radius: 11px; background: #292540; color: white; }
   .brand-mark svg { width: 21px; height: 21px; }
   .brand small { margin-left: 1px; color: #a8a2b4; font: 500 11px "DM Sans", sans-serif; }
@@ -253,7 +253,7 @@
   .section-head { display: flex; align-items: end; justify-content: space-between; gap: 16px; margin-bottom: 18px; }
   .section-head h2 { margin: 0 0 4px; font: 600 22px/1.2 "Space Grotesk", sans-serif; letter-spacing: -.3px; }
   .section-head p { margin: 0; color: #9390a0; font-size: 13px; }
-  .text-link { color: #7664b6; font-size: 12px; font-weight: 650; }
+  .text-link { border: 0; background: none; padding: 0; cursor: pointer; color: #7664b6; font-size: 12px; font-weight: 650; }
   .tile-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 16px; }
   .tile { min-width: 0; overflow: hidden; padding: 0; border: 1px solid #eceaf0; border-radius: 15px; background: #fff; box-shadow: 0 4px 14px #20203b04; text-align: left; transition: transform .2s, box-shadow .2s, border-color .2s; }
   .tile:hover { transform: translateY(-4px); border-color: #cfc5ed; box-shadow: var(--shadow); }
@@ -516,7 +516,7 @@
     </section>
     <div id="homeExplore">
       <section class="section">
-        <div class="section-head"><div><h2>Explore a world</h2><p>Pick a place to start your next experiment.</p></div><button class="text-link" id="allWorlds" type="button">See all worlds ↗</button></div>
+        <div class="section-head"><div><h2>Explore a world</h2><p>Pick a place to start your next experiment.</p></div></div>
         <div class="tile-grid worlds" id="homeWorlds" aria-live="polite"></div>
       </section>
       <section class="section robots-section">
@@ -1202,11 +1202,16 @@ function homeWorldOptions() {
     const world = libraryData.worlds.find((item) => item.id === (template.terrain === "indoor" ? "apartment" : `${template.body}-${template.surface}`));
     return world ? { ...template, world, worldId: world.id } : null;
   }).filter(Boolean);
-  const real = libraryData.worlds.filter((world) => world.terrain_kind === "real").map((world) => ({
-    key: world.id, title: world.name.replace(/ · real terrain$/i, ""), description: `Real elevation · ${world.body.replace(/^\w/, (letter) => letter.toUpperCase())} · ${world.surface}`,
-    body: world.body, surface: world.surface, terrain: "real", worldId: world.id, world,
-    badge: world.source === "upload" ? "Uploaded" : "Real NASA data",
-  }));
+  const real = libraryData.worlds.filter((world) => world.terrain_kind === "real").map((world) => {
+    const note = (world.accuracy_note || "").split(":")[0];   // "U01 uncontrolled": details, never the title
+    return {
+      key: world.id, title: world.card_title || world.name.replace(/ · real terrain$/i, ""),
+      description: [world.body.replace(/^\w/, (letter) => letter.toUpperCase()), world.surface, note].filter(Boolean).join(" · "),
+      details: [world.name.replace(/ · real terrain$/i, ""), world.accuracy_note].filter(Boolean).join(". "),
+      body: world.body, surface: world.surface, terrain: "real", worldId: world.id, world,
+      badge: world.source === "upload" ? "Uploaded" : world.body === "earth" ? "Real USGS data" : "Real NASA data",
+    };
+  });
   return [...generated.filter(item => item.terrain === "indoor"), ...real, ...generated.filter(item => item.terrain !== "indoor")];
 }
 function terrainIllustration(item) {
@@ -1231,9 +1236,16 @@ function renderWorldTile(item) {
   const button = document.createElement("button"); button.type = "button";
   button.className = `tile terrain-${item.body}${selectedHomeWorld?.key === item.key ? " selected" : ""}`;
   const thumb = document.createElement("div"); thumb.className = "thumb";
-  if (item.world.preview_url) {
-    const image = document.createElement("img"); image.src = item.world.preview_url; image.alt = `${item.title} terrain preview`;
-    image.onerror = () => { image.remove(); thumb.insertAdjacentHTML("afterbegin", `<div class="thumb-motion">${terrainIllustration(item)}</div>`); };
+  const pictures = [item.world.thumbnail_url || `/static/thumbnails/${item.key}.webp`,
+                    item.world.terrain_preset && item.terrain === "real" ? `/terrain-thumbnail/${item.world.terrain_preset}` : null]
+    .filter((url, index, all) => url && all.indexOf(url) === index);
+  if (pictures.length) {
+    const image = document.createElement("img"); image.src = pictures.shift(); image.alt = `${item.title}`;
+    image.loading = "lazy"; image.decoding = "async";
+    image.onerror = () => {
+      if (pictures.length) { image.src = pictures.shift(); return; }
+      image.remove(); thumb.insertAdjacentHTML("afterbegin", `<div class="thumb-motion">${terrainIllustration(item)}</div>`);
+    };
     thumb.appendChild(image);
   } else {
     const art = document.createElement("div"); art.className = "thumb-motion"; art.innerHTML = terrainIllustration(item); thumb.appendChild(art);
@@ -1241,6 +1253,7 @@ function renderWorldTile(item) {
   if (item.badge) { const badge = document.createElement("span"); badge.className = "tile-label"; badge.textContent = item.badge; thumb.appendChild(badge); }
   const info = document.createElement("div"); info.className = "tile-info";
   info.append(textEl("h3", item.title), textEl("p", item.description)); button.append(thumb, info);
+  if (item.details) button.title = item.details;
   button.onclick = () => { selectedHomeWorld = item; renderHome(); };
   return button;
 }
@@ -1326,7 +1339,6 @@ $("navMyWorlds").onclick = () => showHome("myworlds");
 $("navLibrary").onclick = () => { showWorkbench(); showPanel("library"); };
 $("navAbout").onclick = () => addInsight("A plain-language gateway to physical simulation.", "Describe a physical idea, inspect the scene, and explore measured results.", "scene");
 $("backToHome").onclick = () => showHome("explore");
-$("allWorlds").onclick = () => { showWorkbench(); showPanel("library"); libraryTab = "worlds"; renderLibrary(); };
 $("allRobots").onclick = () => { showWorkbench(); showPanel("library"); libraryTab = "robots"; renderLibrary(); };
 $("backToExplore").onclick = () => showHome("explore");
 $("startExploring").onclick = launchHomeSelection;
@@ -3260,6 +3272,48 @@ function loadScene(s) {
   }
   if (!qualityHigh) setQuality(false);
 }
+// Thumbnails (scripts/build_thumbnails.py, ?thumbnail): the world alone in a three-quarter view, with the app's own
+// materials, sky and lighting. Visual only: nothing is simulated.
+let thumbnailHold = null;
+if (new URLSearchParams(location.search).has("thumbnail")) {
+  window.simgateThumbnail = (sceneData, view = {}) => new Promise(resolve => {
+    thumbnailHold = null; showWorkbench(); resize(); setQuality(true); loadScene(sceneData); followCam = false;
+    for (const g of sceneData.geoms) if (g.body !== "world" && meshes[g.id]) meshes[g.id].visible = false;   // no robot
+    for (const object of [missionMarkers, followRing, trail, trailRibbon.mesh, ...robotLabels.values()])
+      if (object) object.visible = false;
+    // the measured patch alone, against the app's sky: no horizon continuation or haze to hide its relief
+    const horizon = terrainMesh?.getObjectByName("visual_terrain_horizon"); if (horizon) horizon.visible = !!view.horizon;
+    scene.fog = null;
+    world.updateMatrixWorld(true);
+    let bounds;
+    if (sceneData.indoor) {
+      const [width, depth] = sceneData.indoor.size_m;
+      bounds = new THREE.Box3(new THREE.Vector3(-width / 2, -depth / 2, 0), new THREE.Vector3(width / 2, depth / 2, 1.2));
+      bounds.applyMatrix4(world.matrixWorld);
+    } else {
+      terrainMesh.geometry.computeBoundingBox();
+      bounds = terrainMesh.geometry.boundingBox.clone().applyMatrix4(terrainMesh.matrixWorld);
+    }
+    frameBounds(camera, controls, bounds);
+    const offset = camera.position.clone().sub(controls.target), distance = offset.length();
+    const elevation = (view.elevation_deg ?? (sceneData.indoor ? 39 : 26)) * Math.PI / 180;   // three-quarter, low enough for relief
+    const flat = new THREE.Vector3(offset.x, 0, offset.z).normalize();
+    offset.copy(flat.multiplyScalar(Math.cos(elevation))).setY(Math.sin(elevation)).multiplyScalar(distance * (view.zoom ?? (sceneData.indoor ? 0.86 : 0.6)));
+    camera.position.copy(controls.target).add(offset); camera.lookAt(controls.target);
+    controls.update();
+    thumbnailHold = { target: controls.target.clone(), position: camera.position.clone() };   // a later run can't move it
+    const framed = { min: bounds.min.toArray(), max: bounds.max.toArray(), camera: camera.position.toArray(),
+                     target: controls.target.toArray() };
+    requestAnimationFrame(() => requestAnimationFrame(() => setTimeout(() => resolve(framed), 400)));
+  });
+  window.simgateThumbnailCards = () => homeWorldOptions().map(item => ({ key: item.key, title: item.title,
+    terrain: item.terrain, body: item.body, surface: item.surface, source: item.world.source,
+    preset: item.world.terrain_preset, obstacles: item.obstacles || [] }));
+  window.simgateThumbnailLaunch = (key) => {   // the same scene a visitor gets from this card (with a rover)
+    selectedHomeWorld = homeWorldOptions().find(item => item.key === key); selectedHomeRobot = null; launchHomeSelection();
+  };
+  window.simgateThumbnailScene = () => current;
+}
 
 // Building: two parallel frames with floor slabs, members colored by drift.
 const DEPTH = 4;
@@ -3494,6 +3548,7 @@ function tick() {
     }
     applyFrame(frames[idx]);
   }
+  if (thumbnailHold) { controls.target.copy(thumbnailHold.target); camera.position.copy(thumbnailHold.position); }
   controls.update(); renderer.render(scene, camera); requestAnimationFrame(tick);
 }
 tick();

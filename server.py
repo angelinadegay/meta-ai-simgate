@@ -7,6 +7,7 @@ import json
 import logging
 import os
 from contextlib import asynccontextmanager
+from functools import lru_cache
 from pathlib import Path
 
 from fastapi import Body, FastAPI, File, Form, UploadFile, WebSocket, WebSocketDisconnect
@@ -21,6 +22,7 @@ from simgate.library.uploads import MAX_UPLOAD_BYTES, discard_upload, get_upload
 from simgate.demos import DEMOS_DIR, list_demos
 from simgate.orchestrator import Session
 from simgate.terrain_data import list_presets, load_ortho_image, load_preview_image
+from simgate.thumbnails import CARD_TITLES, shaded_relief, thumbnail_url, webp_bytes
 
 STATIC = Path(__file__).parent / "static"
 INSIGHT_GLB = Path(__file__).parent / "assets" / "nasa" / "insight_lander.glb"
@@ -80,6 +82,7 @@ def insight_visual():
 def library_view() -> dict:
     """Every Library card, plus each upload's state (listed, needs answers, not ready with reasons)."""
     library = LibraryRegistry()
+    presets = list_presets()
     worlds = []
     for card in library.worlds():
         world = card.model_dump(mode="json")
@@ -90,6 +93,13 @@ def library_view() -> dict:
         if card.terrain_preset and (load_ortho_image(card.terrain_preset) is not None
                        or load_preview_image(card.terrain_preset) is not None):
             world["preview_url"] = f"/terrain-preview/{card.terrain_preset}"
+        if card.terrain_kind == "real":   # the home card: a plain title, its notes kept as details, and a picture
+            meta = presets.get(card.terrain_preset, {})
+            world["card_title"] = CARD_TITLES.get(card.terrain_preset) or meta.get("site") or meta.get("label")
+            world["accuracy_note"] = meta.get("accuracy_note") or ""
+            world["thumbnail_url"] = thumbnail_url(card.id) or f"/terrain-thumbnail/{card.terrain_preset}"
+        elif card.terrain_kind == "indoor":
+            world["thumbnail_url"] = thumbnail_url(card.id)
         worlds.append(world)
     return {"robots": [card.model_dump(mode="json") for card in library.robots()],
             "controllers": [card.model_dump(mode="json") for card in library.controllers()],
@@ -104,6 +114,22 @@ def terrain_preview(name: str):
         return JSONResponse({"ok": False, "error": "No terrain preview is available."}, status_code=404)
     data, _ = image
     return Response(data, media_type="image/png", headers={"Cache-Control": "public, max-age=3600"})
+
+
+@app.get("/terrain-thumbnail/{name}")
+def terrain_thumbnail(name: str):
+    """A smooth shaded-relief card picture for a terrain without a shipped 3D thumbnail (an uploaded one)."""
+    if name not in list_presets():
+        return JSONResponse({"ok": False, "error": "No such terrain."}, status_code=404)
+    return Response(_relief_thumbnail(name), media_type="image/webp", headers={"Cache-Control": "public, max-age=3600"})
+
+
+@lru_cache(maxsize=32)
+def _relief_thumbnail(name: str) -> bytes:
+    from simgate.terrain_data import load_preset
+
+    heights, meta = load_preset(name)
+    return webp_bytes(shaded_relief(heights, float(meta["size_m"]), meta.get("body", "earth")))
 
 
 @app.get("/demos")

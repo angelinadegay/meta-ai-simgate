@@ -659,6 +659,14 @@ class Session:
             raise ValueError(f"Unknown world library id: {world_id}")
         if controller not in registry.compatible_controllers(robot_id):
             raise ValueError(f"Controller {controller_id!r} is not compatible with robot {robot_id!r}.")
+        if not start_scene and self.spec is not None and self.spec.domain == "robot_terrain":
+            current = self.spec.terrain
+            if world.terrain_kind in {"real", "indoor"}:
+                new_ground = (current.kind, current.preset) != (world.terrain_kind, world.terrain_preset)
+            else:
+                new_ground = current.kind in {"real", "indoor"}
+            if new_ground:   # a different map: a fresh scene, not the old terrain's start, goal and objects
+                self.spec, start_scene = None, True
         if start_scene and self.spec is None:
             from .spec import Environment, Mission, Obstacle, Robot, SceneSpec, Terrain
 
